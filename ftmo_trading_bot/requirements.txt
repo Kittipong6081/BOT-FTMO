@@ -1,0 +1,26 @@
+# === FTMO Trading Bot Dependencies ===
+# === ไลบรารีที่จำเป็นสำหรับระบบเทรดอัตโนมัติ ===
+
+# การเชื่อมต่อ MetaTrader 5
+MetaTrader5>=5.0.45
+
+# การจัดการและวิเคราะห์ข้อมูล
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+
+# Technical Analysis Indicators
+ta>=0.11.0
+
+# Reinforcement Learning (Phase 5)
+gymnasium>=0.29.0
+stable-baselines3>=2.1.0
+torch>=2.0.0
+
+# ตั้งเวลาและจัดการ Schedule
+schedule>=1.2.0
+python-dateutil>=2.8.0
+
+# Logging และ Utilities
+colorama>=0.4.6
+pytz>=2023.3
