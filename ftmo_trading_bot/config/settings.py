@@ -25,7 +25,7 @@ class MT5Config:
     ผู้ใช้ต้องกรอกข้อมูลบัญชีจริงก่อนใช้งาน
     """
     # เส้นทางไปยังไฟล์ terminal64.exe ของ MT5
-    terminal_path: str = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+    terminal_path: str = r"C:\Program Files\MetaTrader 5/terminal64.exe"
     
     # ข้อมูลบัญชี MT5 (ต้องเปลี่ยนเป็นข้อมูลจริง)
     login: int = 1513071869              # หมายเลขบัญชี MT5
@@ -36,7 +36,7 @@ class MT5Config:
     timeout: int = 10000        # รอเชื่อมต่อสูงสุด 10 วินาที
     
     # โหมดเทรด: True = เทรดจริง, False = เทรดจำลอง (Paper Trading)
-    live_trading: bool = False  # ⚠️ เริ่มต้นเป็น False เพื่อความปลอดภัย
+    live_trading: bool = False# ⚠️ เริ่มต้นเป็น False เพื่อความปลอดภัย
 
 
 # =============================================================================
@@ -101,6 +101,11 @@ class SymbolConfig:
         "GBPUSD",   # British Pound / US Dollar
         "USDJPY",   # US Dollar / Japanese Yen
         "AUDUSD",   # Australian Dollar / US Dollar
+	"USDCAD",   # US Dollar / Canadian Dollar
+        "USDCHF",   # US Dollar / Swiss Franc
+        "NZDUSD",   # New Zealand Dollar / US Dollar
+        "EURJPY",   # Euro / Japanese Yen
+        "GBPJPY",   # British Pound / Japanese Yen
     ])
     
     # Timeframe หลักสำหรับการวิเคราะห์ (ใช้ค่า MT5 constant)
@@ -118,6 +123,11 @@ class SymbolConfig:
         "GBPUSD": 20,   # ไม่เทรดถ้า Spread > 2.0 pips
         "USDJPY": 15,   # ไม่เทรดถ้า Spread > 1.5 pips
         "AUDUSD": 18,   # ไม่เทรดถ้า Spread > 1.8 pips
+	"USDCAD": 20,   # ไม่เทรดถ้า Spread > 2.0 pips
+        "USDCHF": 20,   # ไม่เทรดถ้า Spread > 2.0 pips
+        "NZDUSD": 20,   # ไม่เทรดถ้า Spread > 2.0 pips
+        "EURJPY": 25,   # ไม่เทรดถ้า Spread > 2.5 pips
+        "GBPJPY": 30,   # ไม่เทรดถ้า Spread > 3.0 pips
     })
 
 

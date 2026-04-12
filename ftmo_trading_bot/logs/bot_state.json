@@ -1,11 +1,11 @@
 {
   "state": "ACTIVE",
-  "initial_balance": 100000.0,
-  "highest_balance": 100000.0,
-  "daily_start_equity": 100000.0,
-  "daily_start_balance": 100000.0,
-  "current_day": "2026-04-11",
-  "daily_closed_pnl": 432.0,
-  "daily_trades_count": 3,
-  "last_updated": "2026-04-11T13:05:38.744687"
+  "initial_balance": 10000.0,
+  "highest_balance": 10000.0,
+  "daily_start_equity": 10000.0,
+  "daily_start_balance": 10000.0,
+  "current_day": "2026-04-12",
+  "daily_closed_pnl": 0.0,
+  "daily_trades_count": 0,
+  "last_updated": "2026-04-12T09:42:12.602332"
 }
