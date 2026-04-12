@@ -3,7 +3,7 @@
 ## 📌 Project Overview
 **Name:** FTMO Algorithmic Forex Trading Bot
 **Goal:** A fully autonomous trading system tailored specifically to pass the FTMO challenge and manage a funded account securely.
-**Current Status:** Phase 5 (RL Self-Learning Automation) Completed. All 5 phases finished.
+**Current Status:** All 5 phases finished. Discord Webhook integration active for real-time monitoring.
 
 ## 🏗️ Architecture & Modules
 
@@ -11,6 +11,7 @@
 - **`MT5Connector`**: Deals with MetaTrader 5 API connection, OHLCV data retrieval, position fetching, and emergency hard-closing. Currently supports a mock mode if `MetaTrader5` is unavailable.
 - **`RiskManager`**: Enforces strict FTMO rules (4% daily drawdown, 8% max total drawdown). Persists state locally via JSON to survive restarts.
 - **`PositionSizer`**: Calculates trade lot size based on account equity, risk per trade, and ATR multiplier.
+- **`DiscordNotifier`**: A centralized notification engine leveraging Discord Webhooks to broadcast system events (startup/shutdown), AI tuning results, hourly status overviews, risk-limit alerts, and detailed trade logs (open/close with P/L embeddings).
 
 ### 2. Phase 2: strategy (`strategy/`)
 - **`TechnicalIndicators`**: Computes ATR, EMA (fast/med/slow), and RSI.
@@ -19,7 +20,7 @@
 - **`SMCStrategy`**: The backbone. Generates trade signals by scoring setups based on HTF structure, MTF bias, RSI, volatility, and executing strict RR filtering. Will only trigger if the Confluence Score is above `MIN_CONFLUENCE_SCORE` (auto-tuned by AI).
 
 ### 3. Phase 3: Trade Execution (`execution/`)
-- **`TradeExecutor`**: Verifies signals across 7 gates (Session, Hard Stop, Data, Spread, Risk Limit, Duplicate, Mocking). Executes orders into MT5 and logs opening/closing to `analytics/trade_logger`.
+- **`TradeExecutor`**: Verifies signals across 7 gates (Session, Hard Stop, Data, Spread, Risk Limit, Duplicate, Mocking). Executes orders into MT5, broadcasts notifications to Discord, and logs opening/closing to `analytics/trade_logger`.
 - **`TradeManager`**: Actively manages positions via ATR-Trailing Stop, Break-Even rules, and Session-end liquidation limits.
 
 ### 4. Phase 4: Analytics (`analytics/`)
@@ -33,7 +34,7 @@
 - **`main.py (Integration)`**: Phase 5 enables Auto-Tuning at the initial system boot. `FTMOTradingBot` connects to the `SelfLearningAgent` object and fetches parameters dynamically bounding the `bot_config`.
 
 ## ⚙️ Active Variables (`config/settings.py`)
-- **Core Parameters**: Bound to `bot_config` Singleton. Holds dynamic variables overridden by Phase 5 AI Agent.
+- **Core Parameters**: Bound to `bot_config` Singleton. Holds dynamic variables overridden by Phase 5 AI Agent. Connective credentials and API webhooks are isolated via `python-dotenv` reading from the `.env` file for enhanced security.
   - `ftmo.DEFAULT_RISK_PER_TRADE_PCT` (Range: 0.5% - 1.0%)
   - `ftmo.PREFERRED_RISK_REWARD_RATIO` (Range: 1.5 - 3.0)
   - `indicators.atr_sl_multiplier` (Range: 1.0 - 2.5)

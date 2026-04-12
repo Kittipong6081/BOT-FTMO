@@ -13,6 +13,11 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Dict
 from datetime import time
+from dotenv import load_dotenv
+
+# โหลดค่าจากไฟล์ .env ที่อยู่ในโฟลเดอร์รันของบอท
+_base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(_base_dir, ".env"))
 
 
 # =============================================================================
@@ -25,12 +30,12 @@ class MT5Config:
     ผู้ใช้ต้องกรอกข้อมูลบัญชีจริงก่อนใช้งาน
     """
     # เส้นทางไปยังไฟล์ terminal64.exe ของ MT5
-    terminal_path: str = r"C:\Program Files\MetaTrader 5/terminal64.exe"
+    terminal_path: str = os.getenv("MT5_TERMINAL_PATH", r"C:\Program Files\MetaTrader 5/terminal64.exe")
     
-    # ข้อมูลบัญชี MT5 (ต้องเปลี่ยนเป็นข้อมูลจริง)
-    login: int = 1513071869              # หมายเลขบัญชี MT5
-    password: str = "DP5Ef415jx!!K"          # รหัสผ่านบัญชี
-    server: str = "FTMO-Demo"            # ชื่อเซิร์ฟเวอร์โบรกเกอร์
+    # ข้อมูลบัญชี MT5
+    login: int = int(os.getenv("MT5_LOGIN", "0"))
+    password: str = os.getenv("MT5_PASSWORD", "")
+    server: str = os.getenv("MT5_SERVER", "")
     
     # Timeout สำหรับการเชื่อมต่อ (มิลลิวินาที)
     timeout: int = 10000        # รอเชื่อมต่อสูงสุด 10 วินาที
@@ -206,6 +211,18 @@ class IndicatorConfig:
 
 
 # =============================================================================
+# 📱 การตั้งค่าการแจ้งเตือน (Notifications)
+# =============================================================================
+@dataclass
+class NotificationConfig:
+    """
+    การตั้งค่าสำหรับการแจ้งเตือนผ่าน Discord Webhook
+    """
+    enable_notifications: bool = os.getenv("DISCORD_ENABLE", "True").lower() in ("true", "1", "yes")
+    discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+
+# =============================================================================
 # 📁 การตั้งค่าเส้นทางไฟล์ (File Paths)
 # =============================================================================
 @dataclass
@@ -255,6 +272,7 @@ class BotConfig:
     symbols: SymbolConfig = field(default_factory=SymbolConfig)
     sessions: SessionConfig = field(default_factory=SessionConfig)
     indicators: IndicatorConfig = field(default_factory=IndicatorConfig)
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     
     # === โหมดดีบัก ===

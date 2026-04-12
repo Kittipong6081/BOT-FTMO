@@ -29,6 +29,7 @@ from execution.trade_manager import TradeManager
 from analytics.trade_logger import TradeLogger
 from analytics.performance import PerformanceAnalyzer
 from core.time_manager import TimeManager
+from core.notifier import DiscordNotifier
 
 try:
     from ml.rl_agent import SelfLearningAgent
@@ -56,6 +57,7 @@ class FTMOTradingBot:
     def __init__(self):
         """เริ่มต้น Bot — สร้างทุกโมดูลแต่ยังไม่เชื่อมต่อ"""
         self._running = False
+        self._notifier = DiscordNotifier()
         
         # === สร้างโมดูลหลัก ===
         self._connector = MT5Connector()
@@ -151,6 +153,7 @@ class FTMOTradingBot:
                       f"Confluence: {optimized_params['min_confluence_score']} | "
                       f"RR: 1:{optimized_params['preferred_risk_reward_ratio']} | "
                       f"ATR: {optimized_params['atr_sl_multiplier']}x")
+                self._notifier.send_ai_tuning(optimized_params)
             except Exception as e:
                 print(f"⚠️ [RL] AI ประเมินล้มเหลว ใช้ค่าดั้งเดิม: {e}")
 
@@ -194,6 +197,7 @@ class FTMOTradingBot:
         self._print_config_summary()
 
         print("\n✅ [Bot] เริ่มต้นระบบสำเร็จ — พร้อมทำงาน!\n")
+        self._notifier.send_startup()
         return True
 
     def _print_config_summary(self):
@@ -243,6 +247,7 @@ class FTMOTradingBot:
                 
                 if bot_state == BotState.MAX_DRAWDOWN_HALT:
                     print("🛑 [Bot] Max Drawdown เกินขีดจำกัด — Bot หยุดถาวร")
+                    self._notifier.send_risk_alert("🛑 MAX DRAWDOWN LIMIT", "พอร์ตสูญเสียเกิน Max Drawdown ของ FTMO เรียบร้อยแล้ว (Bot จะหยุดถาวร)")
                     self._running = False
                     break
                     
@@ -250,6 +255,8 @@ class FTMOTradingBot:
                     # รอจนกว่าวันจะเปลี่ยน
                     if self._loop_count % 60 == 0:  # แสดงทุก 5 นาที (60 loops × 5s)
                         print(f"🔒 [Bot] Daily Halt — รอวันถัดไป (เวลาปัจจุบัน: {datetime.now().strftime('%H:%M:%S')})")
+                        if self._loop_count == 60: # ส่งเตือนครั้งแรกที่เข้าเงื่อนไข
+                            self._notifier.send_risk_alert("🔒 DAILY LOSS LIMIT", "พอร์ตชนค่าจำกัดขาดทุนรายวัน (Daily Drawdown) บอทเข้าโหมดระงับการเทรดชั่วคราวจนกว่าจะขึ้นวันใหม่รอยัลโอเวอร์")
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
                     
@@ -337,7 +344,14 @@ class FTMOTradingBot:
             hours = int(uptime.total_seconds() // 3600)
             minutes = int((uptime.total_seconds() % 3600) // 60)
             print(f"   ⏱️ Uptime:    {hours}h {minutes}m")
+            uptime_str = f"{hours}h {minutes}m"
+        else:
+            uptime_str = "0h 0m"
         print(f"{'─' * 50}\n")
+        
+        # ส่งแจ้งเตือนทุกชั่วโมง (720 loop * 5s = 3600s = 1 ชั่วโมง)
+        if self._loop_count % 720 == 0 or self._loop_count == 1:
+            self._notifier.send_periodic_status(risk_status, self._loop_count, uptime_str)
 
     # =========================================================================
     # 🛑 Shutdown
@@ -349,6 +363,7 @@ class FTMOTradingBot:
         print("🛑 [Bot] กำลังหยุดการทำงาน...")
         print("=" * 70)
         
+        self._notifier.send_shutdown()
         self._running = False
         
         # ตัดการเชื่อมต่อ MT5

@@ -48,16 +48,23 @@
    pip install -r requirements.txt
    ```
 
-2. **แก้ไขการตั้งค่าใน `config/settings.py`**
-   เปิดไฟล์ `config/settings.py` และเปลี่ยนค่าดังนี้:
-   ```python
-   # ในส่วนของ MT5Config
-   terminal_path: str = r"C:\Program Files\FTMO MetaTrader 5\terminal64.exe" # เช็คให้ตรงกับที่ติดตั้งจริง
-   login: int = 12345678              # ใส่หมายเลขบัญชีของคุณ
-   password: str = "รหัสผ่านFTMO"        # ใส่รหัสผ่านของคุณ
-   server: str = "FTMO-Server"        # ใส่เซิร์ฟเวอร์ของคุณ
-   live_trading: bool = True          # ⚠️ เปลี่ยนจาก False เป็น True
+2. **ตั้งค่า Environment Variables (`.env`)**
+   ระบบรักษาความปลอดภัยเปลี่ยนเป็นการใช้ไฟล์ `.env` แทนการแก้โค้ดโดยตรง
+   - คัดลอกเบื้องต้นโดยเปลี่ยนชื่อไฟล์จาก `.env.example` ให้เป็น `.env` (ลบคำว่า .example ออก)
+   - เปิดไฟล์ `.env` ขึ้นมาแก้ไขข้อมูลการเชื่อมต่อดังนี้:
+     
+   ```env
+   # 📊 MT5 Configuration
+   MT5_TERMINAL_PATH="C:\Program Files\MetaTrader 5\terminal64.exe"
+   MT5_LOGIN=12345678              # เปลี่ยนเป็นหมายเลขบัญชีของคุณ
+   MT5_PASSWORD="รหัสผ่านFTMO"       # เปลี่ยนเป็นรหัสผ่าน
+   MT5_SERVER="FTMO-Server"        # เปลี่ยนเป็นชื่อเซิร์ฟเวอร์
+   
+   # 📱 Discord Notification
+   DISCORD_ENABLE=True
+   DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/...ของคุณ"
    ```
+   *หมายเหตุ: อย่าลืมแก้บรรทัด `live_trading = True` ใน `config/settings.py` หากต้องการเทรดจริงเต็มรูปแบบ*
 
 ## 5. วิธีการตื่นตัวและรัน (Execution)
 

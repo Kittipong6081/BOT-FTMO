@@ -33,6 +33,8 @@ try:
 except ImportError:
     pass
 
+from core.notifier import DiscordNotifier
+
 
 @dataclass
 class ExecutedTrade:
@@ -143,6 +145,7 @@ class TradeExecutor:
         # สถิติ
         self._total_executed = 0
         self._total_rejected = 0
+        self._notifier = DiscordNotifier()
 
         print("⚡ [Trade Executor] เริ่มต้นระบบส่งคำสั่งเทรด")
 
@@ -277,6 +280,8 @@ class TradeExecutor:
 
         if self._logger:
             self._logger.log_trade_opened(executed.to_dict())
+            
+        self._notifier.send_trade_open(executed.to_dict())
 
         # อัพเดท Risk Manager
         print(f"\n✅ [Executor] เปิดเทรดสำเร็จ!")
@@ -399,6 +404,8 @@ class TradeExecutor:
                 self._logger.log_trade_closed(trade.to_dict())
             if self._analyzer:
                 self._analyzer.add_trade(trade.to_dict())
+                
+            self._notifier.send_trade_close(trade.to_dict())
 
             print(f"✅ [Executor] ปิดเทรด Ticket {ticket}: P/L=${trade.profit:,.2f} ({reason})")
             return True
@@ -441,6 +448,8 @@ class TradeExecutor:
                 self._logger.log_trade_closed(trade.to_dict())
             if self._analyzer:
                 self._analyzer.add_trade(trade.to_dict())
+                
+            self._notifier.send_trade_close(trade.to_dict())
 
             pnl_emoji = "🟢" if profit >= 0 else "🔴"
             print(f"{pnl_emoji} [Executor] เทรด Ticket {ticket} ปิดจากภายนอก: "
