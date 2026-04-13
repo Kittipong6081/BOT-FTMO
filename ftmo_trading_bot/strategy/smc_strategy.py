@@ -32,6 +32,7 @@ from enum import Enum
 
 import pandas as pd
 import numpy as np
+import pytz
 
 from config.settings import bot_config
 from core.mt5_connector import MT5Connector
@@ -608,8 +609,11 @@ class SMCStrategy:
             bool: True ถ้าอยู่ในช่วงเทรด
         """
         now = TimeManager.get_server_time()  # ใช้เวลาจริงของโบรกเกอร์ (EET) แบบเรียลไทม์
-        current_time = now.time()
-        current_weekday = now.weekday()  # 0=จันทร์, 6=อาทิตย์
+        
+        # แปลงเวลาให้เป็น UTC ก่อนนำไปเทียบกับ Config
+        now_utc = now.astimezone(pytz.UTC)
+        current_time = now_utc.time()
+        current_weekday = now_utc.weekday()  # 0=จันทร์, 6=อาทิตย์
         
         session_config = bot_config.sessions
         

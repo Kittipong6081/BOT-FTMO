@@ -17,7 +17,7 @@
 - **`TechnicalIndicators`**: Computes ATR, EMA (fast/med/slow), and RSI.
 - **`MarketStructure`**: Evaluates H1 market bias (BOS, CHoCH) holding swing highs and lows.
 - **`OrderBlockDetector`**: Detects bearish/bullish Order Blocks (OB) on M15 timeframe.
-- **`SMCStrategy`**: The backbone. Generates trade signals by scoring setups based on HTF structure, MTF bias, RSI, volatility, and executing strict RR filtering. Will only trigger if the Confluence Score is above `MIN_CONFLUENCE_SCORE` (auto-tuned by AI).
+- **`SMCStrategy`**: The backbone. Generates trade signals by scoring setups based on HTF structure, MTF bias, RSI, volatility, and executing strict RR filtering. Enforces correct trading session windows by rigorously converting server time (EET) to UTC using `pytz` prior to session config comparisons to prevent timezone shifting bugs. Will only trigger if the Confluence Score is above `MIN_CONFLUENCE_SCORE` (auto-tuned by AI).
 
 ### 3. Phase 3: Trade Execution (`execution/`)
 - **`TradeExecutor`**: Verifies signals across 7 gates (Session, Hard Stop, Data, Spread, Risk Limit, Duplicate, Mocking). Executes orders into MT5, broadcasts notifications to Discord, and logs opening/closing to `analytics/trade_logger`.
