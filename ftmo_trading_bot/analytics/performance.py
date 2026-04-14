@@ -130,6 +130,25 @@ class PerformanceAnalyzer:
         for trade in trades:
             self.add_trade(trade)
 
+    def set_initial_balance(self, initial_balance: float, peak_balance: float = None):
+        """
+        อัพเดท initial balance ให้ตรงกับค่าจริงจาก broker (เรียกหลัง RiskManager.initialize)
+        ใช้ได้เฉพาะก่อน load_from_excel / add_trade → ไม่งั้นจะเสียความต่อเนื่องของ curve
+
+        Args:
+            initial_balance: ยอดเงินเริ่มต้นจริงจาก broker
+            peak_balance: ยอด peak จาก RiskManager._highest_balance (optional)
+        """
+        if self._trades:
+            print("⚠️ [Performance] set_initial_balance ต้องเรียกก่อน add_trade — ข้าม")
+            return
+        self._initial_balance = float(initial_balance)
+        self._equity_curve = [float(initial_balance)]
+        # ถ้ามี peak สูงกว่า initial → insert เพื่อให้ Max DD ยังสะท้อนประวัติก่อน restart
+        if peak_balance and peak_balance > initial_balance:
+            self._equity_curve.append(float(peak_balance))
+            self._equity_curve.append(float(initial_balance))
+
     def load_from_excel(self, excel_path: str = None) -> int:
         """
         โหลดเทรดที่ปิดแล้วจากไฟล์ Excel (ftmo_trades.xlsx) เข้าสู่ analyzer

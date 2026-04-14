@@ -41,6 +41,7 @@ class TrailingState:
     partial_closed: bool        # ปิดบางส่วนแล้วหรือยัง
     trailing_active: bool       # Trailing Stop กำลังทำงานหรือไม่
     trail_distance: float       # ระยะ Trailing (ราคา)
+    pip_size: float = 0.0001    # cache pip_size → กันเรียก get_symbol_info ทุก tick
 
 
 class TradeManager:
@@ -136,33 +137,10 @@ class TradeManager:
 
         current_price = price_info["bid"] if trade.trade_type == "BUY" else price_info["ask"]
 
-        # === MAE/MFE Tracking (ML Schema v2) ===
-        # MAE = Max Adverse Excursion (pips ที่ขาดทุนสูงสุดระหว่างถือ)
-        # MFE = Max Favorable Excursion (pips ที่กำไรสูงสุดระหว่างถือ)
-        # บันทึกเป็น pips เพื่อใช้ train ML (independent ของ lot size)
-        try:
-            symbol_info = self._connector.get_symbol_info(trade.symbol)
-            if symbol_info:
-                pip_size = 0.0001 if symbol_info["digits"] >= 4 else 0.01
-                if trade.trade_type == "BUY":
-                    adverse_price = trade.entry_price - current_price  # +ve = loss side
-                    favorable_price = current_price - trade.entry_price
-                else:
-                    adverse_price = current_price - trade.entry_price
-                    favorable_price = trade.entry_price - current_price
-
-                adverse_pips = max(0.0, adverse_price / pip_size)
-                favorable_pips = max(0.0, favorable_price / pip_size)
-
-                if adverse_pips > (trade.mae or 0):
-                    trade.mae = round(adverse_pips, 1)
-                if favorable_pips > (trade.mfe or 0):
-                    trade.mfe = round(favorable_pips, 1)
-        except Exception:
-            pass
-
-        # สร้าง Trailing State ถ้ายังไม่มี
+        # สร้าง Trailing State ถ้ายังไม่มี — cache pip_size ไว้ตอนสร้าง (1 ครั้ง/ตำแหน่ง)
         if trade.ticket not in self._trail_states:
+            sym_info = self._connector.get_symbol_info(trade.symbol)
+            pip_sz = 0.0001 if (sym_info and sym_info["digits"] >= 4) else 0.01
             self._trail_states[trade.ticket] = TrailingState(
                 ticket=trade.ticket,
                 initial_sl=trade.sl_price,
@@ -172,9 +150,27 @@ class TradeManager:
                 partial_closed=False,
                 trailing_active=False,
                 trail_distance=trade.atr_value * self.TRAIL_ATR_MULTIPLIER,
+                pip_size=pip_sz,
             )
 
         state = self._trail_states[trade.ticket]
+
+        # === MAE/MFE Tracking (ML Schema v2) — ใช้ pip_size cached ===
+        # MAE = Max Adverse Excursion, MFE = Max Favorable Excursion (เป็น pips)
+        if trade.trade_type == "BUY":
+            adverse_price = trade.entry_price - current_price
+            favorable_price = current_price - trade.entry_price
+        else:
+            adverse_price = current_price - trade.entry_price
+            favorable_price = trade.entry_price - current_price
+
+        if state.pip_size > 0:
+            adverse_pips = max(0.0, adverse_price / state.pip_size)
+            favorable_pips = max(0.0, favorable_price / state.pip_size)
+            if adverse_pips > (trade.mae or 0):
+                trade.mae = round(adverse_pips, 1)
+            if favorable_pips > (trade.mfe or 0):
+                trade.mfe = round(favorable_pips, 1)
 
         # คำนวณกำไรปัจจุบัน (pips)
         if trade.trade_type == "BUY":
@@ -221,9 +217,8 @@ class TradeManager:
             state: สถานะ Trailing
             price_info: ราคาปัจจุบัน
         """
-        symbol_info = self._connector.get_symbol_info(trade.symbol)
-        pip_size = 0.0001 if symbol_info and symbol_info["digits"] >= 4 else 0.01
-        offset = self.BE_OFFSET_PIPS * pip_size
+        # ใช้ pip_size cached ใน state (ไม่เรียก get_symbol_info ทุก tick)
+        offset = self.BE_OFFSET_PIPS * state.pip_size
 
         if trade.trade_type == "BUY":
             new_sl = trade.entry_price + offset
@@ -240,7 +235,7 @@ class TradeManager:
         if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
             state.current_sl = new_sl
             state.breakeven_moved = True
-            digits = symbol_info["digits"] if symbol_info else 5
+            digits = 5 if state.pip_size <= 0.0001 else 3
             print(f"🔒 [Trade Manager] เลื่อน SL มา Break-Even: Ticket {trade.ticket} "
                   f"SL={new_sl:.{digits}f} (Entry+{self.BE_OFFSET_PIPS} pip)")
 

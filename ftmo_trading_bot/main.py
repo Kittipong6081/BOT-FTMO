@@ -187,7 +187,17 @@ class FTMOTradingBot:
         else:
             print("✅ ไม่มี Position ค้าง")
 
-        # ขั้นตอนที่ 3.5: โหลดประวัติเทรดที่ปิดแล้วเข้า Performance Analyzer
+        # ขั้นตอนที่ 3.5: Seed Analyzer ด้วย balance จริงจาก broker + peak จาก state
+        # → Max DD / Sharpe / equity curve จะสอดคล้องกับบัญชีจริง ไม่ใช่ hardcoded 100k
+        try:
+            real_initial = self._risk_manager.initial_balance
+            peak_balance = getattr(self._risk_manager, "_highest_balance", None)
+            if real_initial > 0:
+                self._analyzer.set_initial_balance(real_initial, peak_balance)
+        except Exception as e:
+            print(f"⚠️ [Bot] seed analyzer balance ล้มเหลว: {e}")
+
+        # ขั้นตอนที่ 3.6: โหลดประวัติเทรดที่ปิดแล้วเข้า Performance Analyzer
         #  → เพื่อคง equity curve, DD history, Sharpe/Sortino ระหว่าง restart
         try:
             trade_log_path = os.path.join(

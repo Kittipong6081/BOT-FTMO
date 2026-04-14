@@ -119,8 +119,9 @@ class SMCStrategy:
     - Trading Session ถูกต้อง
     """
 
-    # คะแนน Confluence ขั้นต่ำสำหรับเปิดเทรด (เพิ่มจาก 60 → 70 เพื่อลด over-trading)
-    MIN_CONFLUENCE_SCORE = 70.0
+    # คะแนน Confluence ขั้นต่ำสำหรับเปิดเทรด (อ่านจาก bot_config.ftmo.MIN_CONFLUENCE_SCORE)
+    # ดีฟอลต์ 70 — RL Agent อาจ override ที่ runtime
+    MIN_CONFLUENCE_SCORE = float(bot_config.ftmo.MIN_CONFLUENCE_SCORE)
 
     def __init__(self, connector: MT5Connector):
         """

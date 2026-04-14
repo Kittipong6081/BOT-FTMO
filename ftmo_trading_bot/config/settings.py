@@ -92,6 +92,7 @@ class FTMOConfig:
     # === Anti-Overtrading Guardrails ===
     MAX_TRADES_PER_DAY: int = 5                 # ยิงได้สูงสุด 5 ออเดอร์/วัน
     MAX_CORRELATED_POSITIONS: int = 1           # 1 ตำแหน่งต่อกลุ่ม correlation
+    MIN_CONFLUENCE_SCORE: float = 70.0          # เกณฑ์ confluence ขั้นต่ำ (ปรับได้ runtime)
 
     # === Cooldown / Anti-Revenge-Trading ===
     # หลังโดน SL บนคู่เงินใดคู่เงินหนึ่ง ต้องรอกี่นาทีก่อนเปิดคู่เดิมอีกครั้ง
