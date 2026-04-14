@@ -130,6 +130,93 @@ class PerformanceAnalyzer:
         for trade in trades:
             self.add_trade(trade)
 
+    def load_from_excel(self, excel_path: str = None) -> int:
+        """
+        โหลดเทรดที่ปิดแล้วจากไฟล์ Excel (ftmo_trades.xlsx) เข้าสู่ analyzer
+        ใช้ตอน startup เพื่อให้ equity curve / DD history คงความต่อเนื่อง
+        ข้ามแถวที่ยังไม่ปิด (Close Time ว่าง)
+
+        Args:
+            excel_path: path ไฟล์ Excel (ดีฟอลต์ = logs/ftmo_trades.xlsx)
+
+        Returns:
+            int: จำนวนเทรดที่โหลดสำเร็จ
+        """
+        try:
+            import openpyxl
+        except ImportError:
+            print("⚠️ [Performance] openpyxl ไม่พร้อม — ข้าม load_from_excel")
+            return 0
+
+        import os
+        if excel_path is None:
+            excel_path = os.path.join(os.getcwd(), "logs", "ftmo_trades.xlsx")
+
+        if not os.path.exists(excel_path):
+            print(f"ℹ️  [Performance] ไม่พบไฟล์ {excel_path} — เริ่มต้นจากศูนย์")
+            return 0
+
+        try:
+            wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
+            if "Trades" not in wb.sheetnames:
+                print(f"⚠️ [Performance] ไฟล์ {excel_path} ไม่มี sheet 'Trades'")
+                return 0
+
+            ws = wb["Trades"]
+            rows = list(ws.iter_rows(values_only=True))
+            if len(rows) < 2:
+                return 0
+
+            headers = [str(h) if h is not None else "" for h in rows[0]]
+            idx = {name: i for i, name in enumerate(headers)}
+
+            def _get(row, key, default=None):
+                i = idx.get(key)
+                if i is None or i >= len(row):
+                    return default
+                return row[i] if row[i] is not None else default
+
+            loaded = 0
+            for row in rows[1:]:
+                close_time = _get(row, "Close Time")
+                if close_time in (None, "", "-"):
+                    continue  # ข้ามเทรดที่ยังไม่ปิด
+
+                try:
+                    profit = float(_get(row, "P/L ($)", 0) or 0)
+                    risk_amt = float(_get(row, "Risk$", 0) or 0)
+                    if risk_amt <= 0:
+                        # fallback: คำนวณจาก Risk% * initial balance
+                        risk_pct = float(_get(row, "Risk%", 0) or 0)
+                        risk_amt = self._initial_balance * (risk_pct / 100.0) if risk_pct > 0 else 1.0
+
+                    trade_dict = {
+                        "ticket": int(_get(row, "Ticket", 0) or 0),
+                        "symbol": str(_get(row, "Symbol", "") or ""),
+                        "type": str(_get(row, "Type", "") or ""),
+                        "entry_price": float(_get(row, "Entry", 0) or 0),
+                        "close_price": float(_get(row, "Close Price", 0) or 0),
+                        "lot_size": float(_get(row, "Lot", 0) or 0),
+                        "risk_amount": risk_amt,
+                        "profit": profit,
+                        "open_time": _get(row, "Open Time", ""),
+                        "close_time": close_time,
+                        "confluence": float(_get(row, "Confluence", 0) or 0),
+                    }
+                    self.add_trade(trade_dict)
+                    loaded += 1
+                except (ValueError, TypeError) as e:
+                    print(f"⚠️ [Performance] ข้ามแถวเสีย: {e}")
+                    continue
+
+            wb.close()
+            print(f"📥 [Performance] โหลด {loaded} เทรดจาก {excel_path}")
+            return loaded
+
+        except Exception as e:
+            print(f"⚠️ [Performance] load_from_excel ล้มเหลว: {e}")
+            return 0
+
     # =========================================================================
     # 📊 สถิติพื้นฐาน (Basic Stats)
     # =========================================================================

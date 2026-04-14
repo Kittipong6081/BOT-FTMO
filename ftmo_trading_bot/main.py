@@ -13,6 +13,7 @@ FTMO Trading Bot — จุดเริ่มต้นของโปรแก�
 ===============================================================================
 """
 
+import os
 import sys
 import signal
 import time as time_module
@@ -185,6 +186,18 @@ class FTMOTradingBot:
                 print(f"   📌 {pos['symbol']} {pos['type']} Vol={pos['volume']} P/L=${pos['profit']:,.2f}")
         else:
             print("✅ ไม่มี Position ค้าง")
+
+        # ขั้นตอนที่ 3.5: โหลดประวัติเทรดที่ปิดแล้วเข้า Performance Analyzer
+        #  → เพื่อคง equity curve, DD history, Sharpe/Sortino ระหว่าง restart
+        try:
+            trade_log_path = os.path.join(
+                os.getcwd(), "logs", bot_config.paths.trade_log_file
+            )
+            loaded = self._analyzer.load_from_excel(trade_log_path)
+            if loaded > 0:
+                print(f"📥 [Bot] โหลด {loaded} เทรดจากประวัติเดิมเข้า Analyzer")
+        except Exception as e:
+            print(f"⚠️ [Bot] โหลดประวัติเทรดล้มเหลว (ไม่หยุดการทำงาน): {e}")
 
         # ขั้นตอนที่ 4: เตรียมกลยุทธ์ SMC
         print("\n" + "━" * 40)
@@ -366,7 +379,14 @@ class FTMOTradingBot:
         
         self._notifier.send_shutdown()
         self._running = False
-        
+
+        # บันทึก state ล่าสุดก่อนปิด (atomic write)
+        try:
+            self._risk_manager.save()
+            print("💾 [Bot] บันทึก state ก่อนปิดเรียบร้อย")
+        except Exception as e:
+            print(f"⚠️ [Bot] บันทึก state ก่อนปิดไม่สำเร็จ: {e}")
+
         # ตัดการเชื่อมต่อ MT5
         self._connector.disconnect()
         

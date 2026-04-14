@@ -29,7 +29,7 @@ class SelfLearningAgent:
 
     def __init__(
         self,
-        excel_path: str = "logs/trading_log.xlsx",
+        excel_path: str = "logs/ftmo_trades.xlsx",
         model_dir: str = "models",
         data_dir: str = None,
         verbose: int = 0,

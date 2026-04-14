@@ -44,15 +44,17 @@ class FTMORewardCalculator:
         - sortino_ratio: อัตราผลตอบแทนเทียบความเสี่ยงขาลง
         - balance: ยอดเงินจำลอง (Equity)
         - target_progress_pct: ความคืบหน้าของกำไร (%)
+        - trades_today: จำนวนเทรดวันนี้ (สำหรับ over-trading penalty)
         """
-        
+
         reward = 0.0
-        
+
         daily_dd = current_stats.get('daily_dd_pct', 0.0)
         total_dd = current_stats.get('total_dd_pct', 0.0)
         sortino = current_stats.get('sortino_ratio', 0.0)
         progress = current_stats.get('target_progress_pct', 0.0)
         prev_progress = previous_stats.get('target_progress_pct', 0.0)
+        trades_today = current_stats.get('trades_today', 0)
 
         # ==========================================
         # 1. บทลงโทษ (Drawdown Penalty) - แบบ Exponential (ยิ่งใกล้ 4% หรือ 8% ยิ่งติดลบหนัก)
@@ -99,5 +101,15 @@ class FTMORewardCalculator:
         # โบนัสก้อนใหญ่ถ้าเข้าถึงเป้า 10% สำเร็จ
         if progress >= 100.0:
             reward += 50.0
+
+        # ==========================================
+        # 4. Over-trading Penalty — ลงโทษถ้าเทรดเกิน MAX_TRADES_PER_DAY
+        # ==========================================
+        # เป้าหมาย: บังคับ Agent ให้เลือก setup คุณภาพสูง (ลด 45/วัน → ≤5/วัน)
+        # Penalty เริ่มที่เทรดที่ 6 และโตแบบ linear × จำนวนเกิน
+        MAX_DAILY_TRADES = 5
+        if trades_today > MAX_DAILY_TRADES:
+            excess = trades_today - MAX_DAILY_TRADES
+            reward -= min(excess * 2.0, 20.0)  # cap ที่ -20 กันเหวี่ยง
 
         return float(reward)

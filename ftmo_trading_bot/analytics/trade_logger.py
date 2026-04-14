@@ -15,7 +15,7 @@ FTMO Trading Bot — Trade Logger (ระบบบันทึกเทรดอ
 """
 
 import os
-from datetime import datetime, date
+from datetime import date
 from typing import Optional, Dict, List
 from pathlib import Path
 
@@ -45,12 +45,21 @@ class TradeLogger:
     Confluence | Open Time | Close Price | Close Time | P/L | Reason | Close Reason
     """
 
-    # === คอลัมน์สำหรับ Sheet "Trades" ===
+    # === คอลัมน์สำหรับ Sheet "Trades" (Schema v2) ===
+    # v2 เพิ่ม features สำหรับ ML: session, spread, htf_bias, MAE/MFE,
+    # consecutive_losses_before, drawdown_at_entry, exit_path, time_in_trade
     TRADE_HEADERS = [
         "Ticket", "Symbol", "Type", "Entry", "SL", "TP", "Lot",
         "Risk%", "Risk$", "RR", "Confluence", "ATR",
         "Open Time", "Close Price", "Close Time",
-        "P/L ($)", "P/L (%)", "Close Reason", "Signal Reasons"
+        "P/L ($)", "P/L (%)", "Close Reason", "Signal Reasons",
+        # --- ML features v2 ---
+        "Session", "DayOfWeek", "HourOfDay",
+        "Spread@Entry", "Slippage",
+        "HTF Bias", "Volatility Regime",
+        "ConsecLoss Before", "DD@Entry %",
+        "MAE", "MFE",
+        "Time-in-Trade (s)", "Exit Path",
     ]
 
     # === คอลัมน์สำหรับ Sheet "Daily" ===
@@ -101,7 +110,7 @@ class TradeLogger:
             wb, filepath = self._get_or_create_workbook()
             ws = wb["Trades"]
 
-            # เพิ่มแถวใหม่
+            # เพิ่มแถวใหม่ (Schema v2 — ML features)
             row = [
                 trade_data.get("ticket", 0),
                 trade_data.get("symbol", ""),
@@ -122,6 +131,20 @@ class TradeLogger:
                 "",   # P/L %
                 "",   # close_reason
                 trade_data.get("reasons", ""),
+                # --- ML features v2 ---
+                trade_data.get("session", ""),
+                trade_data.get("day_of_week", ""),
+                trade_data.get("hour_of_day", ""),
+                trade_data.get("spread_at_entry", 0),
+                trade_data.get("slippage", 0),
+                trade_data.get("htf_bias", ""),
+                trade_data.get("volatility_regime", ""),
+                trade_data.get("consec_loss_before", 0),
+                trade_data.get("dd_at_entry_pct", 0),
+                "",   # MAE (อัพเดตตอนปิด)
+                "",   # MFE
+                "",   # time_in_trade
+                "",   # exit_path
             ]
             ws.append(row)
 
@@ -190,6 +213,13 @@ class TradeLogger:
                 # ใส่สี P/L
                 pnl_fill = PatternFill("solid", fgColor="C6EFCE") if profit >= 0 else PatternFill("solid", fgColor="FFC7CE")
                 ws.cell(row=target_row, column=16).fill = pnl_fill
+
+                # --- ML features v2: MAE, MFE, time_in_trade, exit_path ---
+                # คอลัมน์ 28=MAE, 29=MFE, 30=Time-in-Trade, 31=Exit Path
+                ws.cell(row=target_row, column=28, value=trade_data.get("mae", 0))
+                ws.cell(row=target_row, column=29, value=trade_data.get("mfe", 0))
+                ws.cell(row=target_row, column=30, value=trade_data.get("time_in_trade", 0))
+                ws.cell(row=target_row, column=31, value=trade_data.get("exit_path", trade_data.get("close_reason", "")))
             else:
                 # ไม่เจอ Ticket — เพิ่มแถวใหม่พร้อมข้อมูลครบ
                 row = [
@@ -296,13 +326,13 @@ class TradeLogger:
         """
         ดึง Workbook ปัจจุบัน หรือสร้างใหม่ถ้ายังไม่มี
 
-        สร้างไฟล์ใหม่ทุกเดือน: ftmo_trades_2026_04.xlsx
+        ใช้ไฟล์คงที่ชื่อ ftmo_trades.xlsx (single consolidated file)
+        เพื่อให้ ML อ่านประวัติทั้งหมดได้ในไฟล์เดียว
 
         Returns:
             Tuple[Workbook, str]: (Workbook, filepath)
         """
-        now = datetime.now()
-        filename = f"ftmo_trades_{now.strftime('%Y_%m')}.xlsx"
+        filename = "ftmo_trades.xlsx"
         filepath = os.path.join(self._log_dir, filename)
 
         if os.path.exists(filepath):
@@ -356,8 +386,13 @@ class TradeLogger:
             cell.alignment = header_align
             cell.border = thin_border
 
-        # กำหนดความกว้างคอลัมน์
-        col_widths = [12, 10, 6, 10, 10, 10, 7, 7, 10, 6, 10, 10, 20, 10, 20, 12, 8, 20, 40]
+        # กำหนดความกว้างคอลัมน์ (Schema v2 — 31 คอลัมน์)
+        col_widths = [
+            12, 10, 6, 10, 10, 10, 7, 7, 10, 6, 10, 10, 20, 10, 20, 12, 8, 20, 40,
+            # v2 cols: Session, DoW, Hour, Spread, Slippage, HTF, VolRegime,
+            # ConsecLoss, DD%, MAE, MFE, TimeInTrade, ExitPath
+            10, 6, 6, 10, 10, 8, 10, 10, 10, 10, 10, 14, 14,
+        ]
         for idx, width in enumerate(col_widths, 1):
             ws.column_dimensions[get_column_letter(idx)].width = width
 

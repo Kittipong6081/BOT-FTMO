@@ -712,6 +712,8 @@ class MT5Connector:
                 result.append({
                     "ticket": deal.ticket,
                     "order": deal.order,
+                    # ⚠️ สำคัญ: position = position ticket ที่ถูกปิด (join กับ ExecutedTrade.ticket)
+                    "position": getattr(deal, "position_id", None) or getattr(deal, "position", None) or deal.order,
                     "time": datetime.fromtimestamp(deal.time),
                     "symbol": deal.symbol,
                     "type": "BUY" if deal.type == 0 else "SELL",

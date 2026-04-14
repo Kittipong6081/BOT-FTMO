@@ -113,14 +113,14 @@ class SMCStrategy:
     5. ส่ง Signal ถ้าผ่านเกณฑ์
     
     ⚠️ Bot จะเทรดเฉพาะเมื่อ:
-    - Confluence Score >= 60
+    - Confluence Score >= 70 (ยกเกณฑ์จาก 60 เพื่อกรอง over-trading)
     - Risk:Reward >= 1:1.5
     - Volatility อยู่ในช่วง
     - Trading Session ถูกต้อง
     """
 
-    # คะแนน Confluence ขั้นต่ำสำหรับเปิดเทรด
-    MIN_CONFLUENCE_SCORE = 60.0
+    # คะแนน Confluence ขั้นต่ำสำหรับเปิดเทรด (เพิ่มจาก 60 → 70 เพื่อลด over-trading)
+    MIN_CONFLUENCE_SCORE = 70.0
 
     def __init__(self, connector: MT5Connector):
         """

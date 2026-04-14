@@ -134,24 +134,53 @@ class DiscordNotifier:
         }
         self._send_payload(payload)
 
+    @staticmethod
+    def _fmt_price(v) -> str:
+        """Format ราคาให้ปลอดภัย — ถ้า 0/None แสดง 'N/A' ไม่ให้โชว์ 0"""
+        try:
+            x = float(v or 0)
+        except Exception:
+            return "N/A"
+        if x == 0:
+            return "N/A"
+        # 5 decimals for FX, auto-trim trailing zeros
+        s = f"{x:.5f}".rstrip("0").rstrip(".")
+        return s or "N/A"
+
+    @staticmethod
+    def _fmt_num(v, fmt: str = ",.2f") -> str:
+        try:
+            return format(float(v or 0), fmt)
+        except Exception:
+            return "0"
+
     def send_trade_open(self, trade_dict: dict):
         """แจ้งเตือนเมื่อเปิดเทรด (มีสีต่างกันตามประเภท)"""
-        is_buy = trade_dict.get("type", "").upper() == "BUY"
+        is_buy = (trade_dict.get("type") or "").upper() == "BUY"
         color = 3447003 if is_buy else 15158332  # Blue for BUY, Red for SELL
         emoji = "🔵" if is_buy else "🔴"
-        
+
+        entry_str = self._fmt_price(trade_dict.get("entry_price"))
+        sl_str = self._fmt_price(trade_dict.get("sl_price"))
+        tp_str = self._fmt_price(trade_dict.get("tp_price"))
+        # ถ้า entry ยังเป็น 0 แปลว่า MT5 ไม่ได้คืน price → แสดง warning
+        entry_warn = " ⚠️" if entry_str == "N/A" else ""
+
         payload = {
             "username": "FTMO Bot",
             "embeds": [{
                 "title": f"{emoji} OPENED: {trade_dict.get('type')} {trade_dict.get('symbol')}",
                 "color": color,
                 "fields": [
-                    {"name": "Ticket", "value": str(trade_dict.get("ticket")), "inline": True},
-                    {"name": "Lot Size", "value": f"{trade_dict.get('lot_size'):.2f}", "inline": True},
-                    {"name": "Entry", "value": str(trade_dict.get("entry_price")), "inline": True},
-                    {"name": "SL", "value": str(trade_dict.get("sl_price")), "inline": True},
-                    {"name": "TP", "value": str(trade_dict.get("tp_price")), "inline": True},
-                    {"name": "Risk", "value": f"{trade_dict.get('risk_pct', 0):.2%} (${trade_dict.get('risk_amount', 0):.2f})", "inline": True},
+                    {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
+                    {"name": "Lot Size", "value": self._fmt_num(trade_dict.get("lot_size"), ",.2f"), "inline": True},
+                    {"name": "Entry", "value": entry_str + entry_warn, "inline": True},
+                    {"name": "SL", "value": sl_str, "inline": True},
+                    {"name": "TP", "value": tp_str, "inline": True},
+                    {"name": "Risk", "value": f"{(trade_dict.get('risk_pct') or 0):.2%} (${self._fmt_num(trade_dict.get('risk_amount'), ',.2f')})", "inline": True},
+                    {"name": "Confluence", "value": self._fmt_num(trade_dict.get("confluence"), ".0f"), "inline": True},
+                    {"name": "Session", "value": str(trade_dict.get("session") or "-"), "inline": True},
+                    {"name": "RR", "value": f"1:{(trade_dict.get('rr_ratio') or 0):.1f}", "inline": True},
                 ],
                 "timestamp": datetime.utcnow().isoformat()
             }]
@@ -159,22 +188,31 @@ class DiscordNotifier:
         self._send_payload(payload)
 
     def send_trade_close(self, trade_dict: dict):
-        """แจ้งเตือนเมื่อเทรดถูกปิด พร้อม P/L"""
-        profit = float(trade_dict.get("profit", 0))
+        """แจ้งเตือนเมื่อเทรดถูกปิด พร้อม P/L (แสดงค่า 0 ไม่เงียบ)"""
+        profit = float(trade_dict.get("profit") or 0)
+        risk_amt = float(trade_dict.get("risk_amount") or 0)
+        pnl_pct = (profit / risk_amt * 100) if risk_amt > 0 else 0.0
         is_win = profit > 0
-        color = 3066993 if is_win else 15158332  # Green if win, Red if loss
+        color = 3066993 if is_win else 15158332
         emoji = "✅" if is_win else "❌"
-        
+
+        # แสดงเตือนถ้า profit เป็น 0 ทั้งที่ไม่ควร (เช่น sync ไม่เจอ deal)
+        pnl_line = f"**P/L: ${profit:,.2f}**  ({pnl_pct:+.1f}R)"
+        reason = trade_dict.get("close_reason") or trade_dict.get("exit_path") or "-"
+
         payload = {
             "username": "FTMO Bot",
             "embeds": [{
                 "title": f"{emoji} CLOSED: {trade_dict.get('type')} {trade_dict.get('symbol')}",
-                "description": f"**P/L: ${profit:,.2f}**\nReason: {trade_dict.get('close_reason')}",
+                "description": f"{pnl_line}\nReason: {reason}",
                 "color": color,
                 "fields": [
-                    {"name": "Ticket", "value": str(trade_dict.get("ticket")), "inline": True},
-                    {"name": "Entry", "value": str(trade_dict.get("entry_price")), "inline": True},
-                    {"name": "Close Price", "value": str(trade_dict.get("close_price")), "inline": True},
+                    {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
+                    {"name": "Entry", "value": self._fmt_price(trade_dict.get("entry_price")), "inline": True},
+                    {"name": "Close", "value": self._fmt_price(trade_dict.get("close_price")), "inline": True},
+                    {"name": "SL", "value": self._fmt_price(trade_dict.get("sl_price")), "inline": True},
+                    {"name": "TP", "value": self._fmt_price(trade_dict.get("tp_price")), "inline": True},
+                    {"name": "Time-in-Trade", "value": f"{int(trade_dict.get('time_in_trade') or 0)}s", "inline": True},
                 ],
                 "timestamp": datetime.utcnow().isoformat()
             }]

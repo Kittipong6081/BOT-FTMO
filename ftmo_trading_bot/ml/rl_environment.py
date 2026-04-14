@@ -433,6 +433,7 @@ class FTMOOptimizationEnv(gym.Env):
             'target_progress_pct': self.target_progress_pct,
             'balance': self.balance,
             'last_trade_win': self.last_trade_result,
+            'trades_today': getattr(self, 'trades_today', 0),
         }
 
     def _get_obs(self) -> np.ndarray:
@@ -503,6 +504,7 @@ class FTMOOptimizationEnv(gym.Env):
         self.daily_start_balance = self.balance
         self.balance += day_result['pnl']
         self.trade_results.extend(day_result['trades'])
+        self.trades_today = len(day_result.get('trades', []))
         self.daily_pnl_history.append(day_result['pnl'])
 
         # Peak balance (ใช้สำหรับคำนวณ Total DD from peak)
@@ -600,16 +602,21 @@ class FTMOOptimizationEnv(gym.Env):
         if a.size < 4:
             a = np.concatenate([a, np.zeros(4 - a.size, dtype=np.float32)])
 
-        val_risk = 0.0075 + float(a[0]) * 0.0025    # [-1, 1] → [0.5%, 1.0%]
-        val_conf = 65.0 + float(a[1]) * 15.0         # [-1, 1] → [50, 80]
-        val_atr = 1.75 + float(a[2]) * 0.75          # [-1, 1] → [1.0, 2.5]
-        val_rr = 2.25 + float(a[3]) * 0.75           # [-1, 1] → [1.5, 3.0]
+        # === Tightened bounds (v2) เพื่อลด over-trading & ระเบิดพอร์ต ===
+        # risk: [0.3%, 0.7%] (เดิม 0.5%-1.0%) → ลด exposure
+        # confluence: [65, 85] (เดิม 50-80) → บังคับให้เลือกเฉพาะ setup ชัด
+        # atr_sl_mult: [1.2, 2.5] (เดิม 1.0-2.5) → กัน SL แคบไป
+        # rr: [2.0, 4.0] (เดิม 1.5-3.0) → บังคับ edge เชิงสถิติ
+        val_risk = 0.005 + float(a[0]) * 0.002       # [-1, 1] → [0.3%, 0.7%]
+        val_conf = 75.0 + float(a[1]) * 10.0         # [-1, 1] → [65, 85]
+        val_atr = 1.85 + float(a[2]) * 0.65          # [-1, 1] → [1.2, 2.5]
+        val_rr = 3.0 + float(a[3]) * 1.0             # [-1, 1] → [2.0, 4.0]
 
         # Clamp เผื่อ action เกินช่วง
-        val_risk = max(0.005, min(val_risk, 0.01))
-        val_conf = max(50.0, min(val_conf, 80.0))
-        val_atr = max(1.0, min(val_atr, 2.5))
-        val_rr = max(1.5, min(val_rr, 3.0))
+        val_risk = max(0.003, min(val_risk, 0.007))
+        val_conf = max(65.0, min(val_conf, 85.0))
+        val_atr = max(1.2, min(val_atr, 2.5))
+        val_rr = max(2.0, min(val_rr, 4.0))
 
         return {
             'risk_per_trade_pct': round(val_risk, 4),

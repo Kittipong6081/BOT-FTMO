@@ -65,6 +65,21 @@ class ExecutedTrade:
     profit: float = 0.0             # กำไร/ขาดทุน (USD)
     close_reason: str = ""          # เหตุผลที่ปิด
 
+    # === ML features v2 (Schema v2) ===
+    session: str = ""                       # Asian / London / NY / Overlap
+    day_of_week: int = 0                    # 0=Mon..6=Sun
+    hour_of_day: int = 0
+    spread_at_entry: float = 0.0            # points
+    slippage: float = 0.0                   # price diff (signal vs fill)
+    htf_bias: str = ""                      # BULLISH / BEARISH / RANGING
+    volatility_regime: str = ""             # quiet / normal / high
+    consec_loss_before: int = 0             # แพ้ติดกันก่อนเปิดเทรดนี้
+    dd_at_entry_pct: float = 0.0            # daily DD % ณ เวลาเปิด
+    mae: float = 0.0                        # Max Adverse Excursion (price)
+    mfe: float = 0.0                        # Max Favorable Excursion (price)
+    time_in_trade: int = 0                  # seconds
+    exit_path: str = ""                     # SL / TP / Trail / BE / Manual / Friday / SessionEnd
+
     def to_dict(self) -> Dict:
         """แปลงเป็น Dictionary สำหรับ Excel Logging"""
         return {
@@ -86,6 +101,20 @@ class ExecutedTrade:
             "profit": self.profit,
             "close_reason": self.close_reason,
             "reasons": "; ".join(self.signal_reasons),
+            # --- ML features v2 ---
+            "session": self.session,
+            "day_of_week": self.day_of_week,
+            "hour_of_day": self.hour_of_day,
+            "spread_at_entry": self.spread_at_entry,
+            "slippage": self.slippage,
+            "htf_bias": self.htf_bias,
+            "volatility_regime": self.volatility_regime,
+            "consec_loss_before": self.consec_loss_before,
+            "dd_at_entry_pct": self.dd_at_entry_pct,
+            "mae": self.mae,
+            "mfe": self.mfe,
+            "time_in_trade": self.time_in_trade,
+            "exit_path": self.exit_path,
         }
 
 
@@ -126,7 +155,8 @@ class TradeExecutor:
     }
 
     # จำนวน Position ต่อกลุ่ม correlation ที่ยอมรับได้
-    MAX_CORRELATED_POSITIONS: int = 2
+    # (ใช้จาก config FTMOConfig.MAX_CORRELATED_POSITIONS ถ้ามี)
+    MAX_CORRELATED_POSITIONS: int = getattr(bot_config.ftmo, "MAX_CORRELATED_POSITIONS", 1)
 
     def __init__(
         self,
@@ -279,12 +309,32 @@ class TradeExecutor:
             self._total_rejected += 1
             return None
 
+        # === Entry price fallback ===
+        # บาง broker/filling-mode คืน result.price = 0 ทำให้ Discord/Log โชว์ 0
+        # → ดึงจาก position จริงใน MT5 หรือจากราคาตลาด ณ ขณะนี้
+        resolved_entry = order_result.get("price") or 0
+        if not resolved_entry:
+            ticket_no = order_result.get("ticket")
+            for pos in self._connector.get_open_positions():
+                if pos.get("ticket") == ticket_no:
+                    resolved_entry = pos.get("price_open") or pos.get("price") or 0
+                    break
+            if not resolved_entry:
+                px = self._connector.get_current_price(symbol)
+                if px:
+                    resolved_entry = px["ask"] if signal.signal_type.value == "BUY" else px["bid"]
+            print(f"⚠️ [Executor] MT5 คืน price=0 → ใช้ fallback entry={resolved_entry}")
+
+        # === Capture ML features ณ เวลาเปิดเทรด ===
+        now = datetime.now()
+        entry_ctx = self._capture_entry_context(signal, resolved_entry, symbol_info, price_info)
+
         # === ด่านที่ 7: บันทึกผลลัพธ์ ===
         executed = ExecutedTrade(
             ticket=order_result["ticket"],
             symbol=symbol,
             trade_type=signal.signal_type.value,
-            entry_price=order_result["price"],
+            entry_price=resolved_entry,
             sl_price=signal.sl_price,
             tp_price=signal.tp_price,
             lot_size=lot_size,
@@ -293,9 +343,19 @@ class TradeExecutor:
             rr_ratio=signal.rr_ratio,
             confluence_score=signal.confluence_score,
             atr_value=signal.atr_value,
-            open_time=datetime.now(),
+            open_time=now,
             signal_reasons=signal.reasons,
             magic_number=self.MAGIC_NUMBER,
+            # --- ML features v2 ---
+            session=entry_ctx["session"],
+            day_of_week=now.weekday(),
+            hour_of_day=now.hour,
+            spread_at_entry=entry_ctx["spread"],
+            slippage=entry_ctx["slippage"],
+            htf_bias=entry_ctx["htf_bias"],
+            volatility_regime=entry_ctx["volatility_regime"],
+            consec_loss_before=getattr(self._risk_manager, "_consecutive_losses", 0),
+            dd_at_entry_pct=entry_ctx["dd_pct"],
         )
 
         # เก็บใน Active Trades
@@ -320,6 +380,73 @@ class TradeExecutor:
         print(f"   🏆 Confluence: {executed.confluence_score:.0f}")
 
         return executed
+
+    # =========================================================================
+    # 🧠 ML Features — Capture entry context
+    # =========================================================================
+
+    def _capture_entry_context(self, signal, resolved_entry, symbol_info, price_info) -> Dict:
+        """
+        Capture ML features ณ เวลาเปิดเทรด (Schema v2)
+        - session (Asian/London/NY/Overlap)
+        - spread (points)
+        - slippage (price diff vs signal.entry_price ถ้ามี)
+        - htf_bias, volatility_regime (ถ้า signal มี)
+        - dd_pct (daily DD % ณ เวลาเปิด)
+        """
+        # Session จากชั่วโมง UTC
+        hour = datetime.utcnow().hour
+        if 7 <= hour < 12:
+            session = "LONDON"
+        elif 12 <= hour < 17:
+            session = "LONDON_NY_OVERLAP" if hour < 13 else "NEW_YORK"
+        elif 0 <= hour < 7:
+            session = "ASIAN"
+        else:
+            session = "OFF_HOURS"
+
+        # Spread ณ เวลาเปิด (points)
+        spread_pts = 0.0
+        if symbol_info and price_info:
+            point = symbol_info.get("point") or 0.0001
+            if point > 0:
+                spread_pts = float(price_info.get("spread", 0)) / point
+
+        # Slippage = |fill - signal.entry_price|
+        slippage = 0.0
+        sig_entry = getattr(signal, "entry_price", 0) or 0
+        if sig_entry and resolved_entry:
+            slippage = abs(resolved_entry - sig_entry)
+
+        # DD% ณ เวลาเปิด (จาก risk_manager)
+        dd_pct = 0.0
+        try:
+            status = self._risk_manager.get_risk_status() if hasattr(self._risk_manager, "get_risk_status") else {}
+            dd_pct = float(status.get("daily_loss_pct", 0) or 0)
+        except Exception:
+            dd_pct = 0.0
+
+        # HTF bias / volatility regime — อ่านจาก signal ถ้ามี
+        htf_bias = getattr(signal, "htf_bias", "") or ""
+        vol_regime = getattr(signal, "volatility_regime", "") or ""
+        # Fallback จาก ATR (ถ้ายังว่าง)
+        if not vol_regime and getattr(signal, "atr_value", 0):
+            atr = signal.atr_value
+            if atr > 0.0020:
+                vol_regime = "high"
+            elif atr > 0.0010:
+                vol_regime = "normal"
+            else:
+                vol_regime = "quiet"
+
+        return {
+            "session": session,
+            "spread": round(spread_pts, 1),
+            "slippage": round(slippage, 6),
+            "htf_bias": str(htf_bias),
+            "volatility_regime": vol_regime,
+            "dd_pct": round(dd_pct * 100, 2) if dd_pct <= 1 else round(dd_pct, 2),
+        }
 
     # =========================================================================
     # 🔗 ตรวจสอบ Correlation Risk (กัน Over-exposure)
@@ -493,7 +620,7 @@ class TradeExecutor:
             del self._active_trades[ticket]
 
             # แจ้ง Risk Manager
-            self._risk_manager.update_daily_pnl(trade.profit)
+            self._risk_manager.update_daily_pnl(trade.profit, symbol=trade.symbol)
 
             if self._logger:
                 self._logger.log_trade_closed(trade.to_dict())
@@ -533,17 +660,21 @@ class TradeExecutor:
             trade.close_time = datetime.now()
             trade.profit = profit
             trade.close_reason = reason
+            # Finalize ML features ตอนปิด
+            if trade.open_time:
+                trade.time_in_trade = int((trade.close_time - trade.open_time).total_seconds())
+            trade.exit_path = reason
 
             self._closed_trades.append(trade)
             del self._active_trades[ticket]
 
-            self._risk_manager.update_daily_pnl(profit)
+            self._risk_manager.update_daily_pnl(profit, symbol=trade.symbol)
 
             if self._logger:
                 self._logger.log_trade_closed(trade.to_dict())
             if self._analyzer:
                 self._analyzer.add_trade(trade.to_dict())
-                
+
             self._notifier.send_trade_close(trade.to_dict())
 
             pnl_emoji = "🟢" if profit >= 0 else "🔴"
@@ -584,15 +715,21 @@ class TradeExecutor:
 
         for ticket in closed_tickets:
             trade = self._active_trades[ticket]
-            # ดึง History เพื่อหาราคาปิดและ P/L จริง
-            history = self._connector.get_trade_history(days=1)
+            # ดึง History 7 วัน (เดิม 1 วันทำให้ข้อมูลหายถ้า bot restart)
+            history = self._connector.get_trade_history(days=7)
             actual_profit = 0.0
             actual_close_price = 0.0
+            matched = False
 
             for h in history:
-                if h.get("order") == ticket or h.get("ticket") == ticket:
-                    actual_profit = h.get("profit", 0) + h.get("swap", 0) + h.get("commission", 0)
-                    actual_close_price = h.get("price", 0)
+                # ⚠️ Match ด้วย deal.position == position_ticket (ไม่ใช่ order/ticket)
+                # เพราะ deal.ticket = deal ID, deal.order = order ID เปิด, deal.position = position ticket
+                if h.get("position") == ticket:
+                    actual_profit = (h.get("profit", 0) or 0) \
+                                  + (h.get("swap", 0) or 0) \
+                                  + (h.get("commission", 0) or 0)
+                    actual_close_price = h.get("price", 0) or 0
+                    matched = True
                     break
 
             # ถ้าหาไม่เจอใน History → ประมาณจากราคาปัจจุบัน
@@ -600,6 +737,9 @@ class TradeExecutor:
                 price_info = self._connector.get_current_price(trade.symbol)
                 if price_info:
                     actual_close_price = price_info["bid"] if trade.trade_type == "BUY" else price_info["ask"]
+
+            if not matched:
+                print(f"⚠️ [Executor] Ticket {ticket} ไม่พบใน deal history 7 วัน — PnL อาจไม่ถูกต้อง")
 
             self.record_external_close(
                 ticket=ticket,

@@ -3,7 +3,9 @@
     "allow": [
       "Bash(xargs ls:*)",
       "Bash(awk '{print $5, $9}')",
-      "Bash(sort -k2)"
+      "Bash(sort -k2)",
+      "Bash(cp ftmo_trades_2026_04.xlsx ftmo_trades.xlsx)",
+      "Bash(ls -la ftmo_trades*.xlsx)"
     ]
   }
 }

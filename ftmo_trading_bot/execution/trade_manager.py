@@ -136,6 +136,31 @@ class TradeManager:
 
         current_price = price_info["bid"] if trade.trade_type == "BUY" else price_info["ask"]
 
+        # === MAE/MFE Tracking (ML Schema v2) ===
+        # MAE = Max Adverse Excursion (pips ที่ขาดทุนสูงสุดระหว่างถือ)
+        # MFE = Max Favorable Excursion (pips ที่กำไรสูงสุดระหว่างถือ)
+        # บันทึกเป็น pips เพื่อใช้ train ML (independent ของ lot size)
+        try:
+            symbol_info = self._connector.get_symbol_info(trade.symbol)
+            if symbol_info:
+                pip_size = 0.0001 if symbol_info["digits"] >= 4 else 0.01
+                if trade.trade_type == "BUY":
+                    adverse_price = trade.entry_price - current_price  # +ve = loss side
+                    favorable_price = current_price - trade.entry_price
+                else:
+                    adverse_price = current_price - trade.entry_price
+                    favorable_price = trade.entry_price - current_price
+
+                adverse_pips = max(0.0, adverse_price / pip_size)
+                favorable_pips = max(0.0, favorable_price / pip_size)
+
+                if adverse_pips > (trade.mae or 0):
+                    trade.mae = round(adverse_pips, 1)
+                if favorable_pips > (trade.mfe or 0):
+                    trade.mfe = round(favorable_pips, 1)
+        except Exception:
+            pass
+
         # สร้าง Trailing State ถ้ายังไม่มี
         if trade.ticket not in self._trail_states:
             self._trail_states[trade.ticket] = TrailingState(

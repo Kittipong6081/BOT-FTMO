@@ -89,6 +89,19 @@ class FTMOConfig:
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน
 
+    # === Anti-Overtrading Guardrails ===
+    MAX_TRADES_PER_DAY: int = 5                 # ยิงได้สูงสุด 5 ออเดอร์/วัน
+    MAX_CORRELATED_POSITIONS: int = 1           # 1 ตำแหน่งต่อกลุ่ม correlation
+
+    # === Cooldown / Anti-Revenge-Trading ===
+    # หลังโดน SL บนคู่เงินใดคู่เงินหนึ่ง ต้องรอกี่นาทีก่อนเปิดคู่เดิมอีกครั้ง
+    COOLDOWN_AFTER_LOSS_MIN: int = 30
+    # ถ้าแพ้ติดกันกี่ครั้งให้ pause ทั้งระบบ
+    CONSECUTIVE_LOSS_PAUSE_COUNT: int = 2
+    CONSECUTIVE_LOSS_PAUSE_MIN: int = 60
+    # ถ้าแพ้ติดกันกี่ครั้งให้ halt ทั้งวัน
+    CONSECUTIVE_LOSS_HALT_COUNT: int = 3
+
 
 # =============================================================================
 # 💱 การตั้งค่าคู่เงินและ Symbol ที่เทรด
@@ -248,7 +261,8 @@ class PathConfig:
     
     def __post_init__(self):
         """สร้างเส้นทางไฟล์จาก base_dir และสร้างโฟลเดอร์ที่จำเป็น"""
-        self.trade_log_file = os.path.join(self.base_dir, "logs", "trading_log.xlsx")
+        # ใช้ไฟล์เดียวตลอด (ไม่แยกรายเดือน) เพื่อให้ ML อ่านข้อมูลครบเสมอ
+        self.trade_log_file = os.path.join(self.base_dir, "logs", "ftmo_trades.xlsx")
         self.state_file = os.path.join(self.base_dir, "logs", "bot_state.json")
         self.model_dir = os.path.join(self.base_dir, "models")
         self.log_dir = os.path.join(self.base_dir, "logs")

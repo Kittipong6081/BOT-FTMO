@@ -76,7 +76,15 @@ class RiskManager:
         # === สถิติรายวัน ===
         self._daily_closed_pnl: float = 0.0         # P/L ที่ปิดไปแล้ววันนี้
         self._daily_trades_count: int = 0            # จำนวนเทรดวันนี้
-        
+
+        # === Cooldown / Anti-Revenge-Trading State (v2) ===
+        # เวลาที่โดน SL ล่าสุดของแต่ละ symbol (ISO string)
+        self._last_loss_time_per_symbol: Dict[str, str] = {}
+        # จำนวนครั้งที่แพ้ติดกัน (reset ทุกครั้งที่ชนะ)
+        self._consecutive_losses: int = 0
+        # global halt-until timestamp (ISO) — ใช้ตอนแพ้ติดกันครบ threshold
+        self._halt_until: Optional[str] = None
+
         # === เส้นทางไฟล์สถานะ ===
         self._state_file = bot_config.paths.state_file
         
@@ -376,6 +384,21 @@ class RiskManager:
         if self._state != BotState.ACTIVE:
             return (False, f"❌ Bot ไม่พร้อมเทรด: สถานะ={self._state.value}")
 
+        # === ตรวจสอบที่ 1.1: Global Pause (จาก consecutive losses) ===
+        halted, hmsg = self.is_global_halted()
+        if halted:
+            return (False, f"⏸️ {hmsg}")
+
+        # === ตรวจสอบที่ 1.2: Cooldown ต่อ symbol (Anti-Revenge-Trading) ===
+        in_cd, cd_msg = self.is_symbol_in_cooldown(symbol)
+        if in_cd:
+            return (False, f"🧊 {cd_msg}")
+
+        # === ตรวจสอบที่ 1.3: Max Trades Per Day (Anti-Overtrading) ===
+        max_per_day = getattr(self._config, "MAX_TRADES_PER_DAY", 5)
+        if self._daily_trades_count >= max_per_day:
+            return (False, f"🚫 เทรดครบ {max_per_day} ครั้งวันนี้แล้ว — หยุดเพื่อไม่ over-trade")
+
         # === ตรวจสอบที่ 2: จำนวน Position ===
         current_positions = self._connector.get_positions_count()
         if current_positions >= self._config.MAX_OPEN_POSITIONS:
@@ -589,16 +612,25 @@ class RiskManager:
             "current_day": str(self._current_day),
             "daily_closed_pnl": self._daily_closed_pnl,
             "daily_trades_count": self._daily_trades_count,
+            # --- v2 fields ---
+            "last_loss_time_per_symbol": self._last_loss_time_per_symbol,
+            "consecutive_losses": self._consecutive_losses,
+            "halt_until": self._halt_until,
             "last_updated": datetime.now().isoformat(),
         }
 
         try:
             # สร้างโฟลเดอร์ถ้ายังไม่มี
             os.makedirs(os.path.dirname(self._state_file), exist_ok=True)
-            
-            with open(self._state_file, 'w', encoding='utf-8') as f:
+
+            # Atomic write: tmp file + os.replace → ป้องกันไฟล์พังถ้า crash ระหว่างเขียน
+            tmp_path = self._state_file + ".tmp"
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(state_data, f, indent=2, ensure_ascii=False)
-                
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._state_file)
+
         except Exception as e:
             print(f"⚠️ [Risk Manager] บันทึกสถานะล้มเหลว: {e}")
 
@@ -624,6 +656,11 @@ class RiskManager:
             self._daily_start_balance = data.get("daily_start_balance", 0.0)
             self._daily_closed_pnl = data.get("daily_closed_pnl", 0.0)
             self._daily_trades_count = data.get("daily_trades_count", 0)
+
+            # --- v2 fields (fallback ถ้าเป็นไฟล์เก่า) ---
+            self._last_loss_time_per_symbol = data.get("last_loss_time_per_symbol", {}) or {}
+            self._consecutive_losses = int(data.get("consecutive_losses", 0) or 0)
+            self._halt_until = data.get("halt_until") or None
             
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))
@@ -636,24 +673,114 @@ class RiskManager:
             print(f"⚠️ [Risk Manager] โหลดสถานะล้มเหลว: {e}")
             return False
 
-    def update_daily_pnl(self, trade_pnl: float):
+    def update_daily_pnl(self, trade_pnl: float, symbol: Optional[str] = None):
         """
         อัพเดท P/L ที่ปิดไปแล้ววันนี้ (เรียกหลังจาก Position ปิด)
-        
+
         Args:
             trade_pnl: กำไร/ขาดทุนของเทรดที่ปิด (USD)
+            symbol: คู่เงิน (ใช้ track cooldown)
         """
         self._daily_closed_pnl += trade_pnl
         self._daily_trades_count += 1
-        
+
         # อัพเดท High Water Mark ถ้า Balance สูงขึ้น
         current_balance = self._connector.get_balance()
         if current_balance > self._highest_balance:
             self._highest_balance = current_balance
-            
+
+        # === Cooldown / Revenge-Trading Tracking ===
+        self._record_trade_outcome(symbol, trade_pnl)
+
         self._save_state()
-        
-        print(f"📊 [Risk Manager] อัพเดท Daily P/L: ${self._daily_closed_pnl:,.2f} (เทรดที่ {self._daily_trades_count} วันนี้)")
+
+        print(f"📊 [Risk Manager] อัพเดท Daily P/L: ${self._daily_closed_pnl:,.2f} "
+              f"(เทรดที่ {self._daily_trades_count} วันนี้, แพ้ติด={self._consecutive_losses})")
+
+    # =========================================================================
+    # 🧊 Cooldown / Anti-Revenge-Trading
+    # =========================================================================
+
+    def _record_trade_outcome(self, symbol: Optional[str], pnl: float):
+        """
+        บันทึกผลเทรดเพื่อคำนวณ cooldown
+
+        Logic:
+        - ชนะ (pnl > 0): reset consecutive_losses
+        - แพ้ (pnl <= 0): เพิ่ม consecutive_losses, บันทึก last_loss_time_per_symbol
+        - แพ้ติด N ครั้ง → pause global halt_until
+        - แพ้ติด M ครั้ง → DAILY_HALT
+        """
+        now_iso = datetime.now().isoformat()
+
+        if pnl > 0:
+            self._consecutive_losses = 0
+            return
+
+        # pnl <= 0
+        self._consecutive_losses += 1
+        if symbol:
+            self._last_loss_time_per_symbol[symbol] = now_iso
+
+        halt_cnt = getattr(self._config, "CONSECUTIVE_LOSS_HALT_COUNT", 3)
+        pause_cnt = getattr(self._config, "CONSECUTIVE_LOSS_PAUSE_COUNT", 2)
+        pause_min = getattr(self._config, "CONSECUTIVE_LOSS_PAUSE_MIN", 60)
+
+        if self._consecutive_losses >= halt_cnt:
+            print(f"🛑 [Risk Manager] แพ้ติดกัน {self._consecutive_losses} ครั้ง → DAILY HALT")
+            self._state = BotState.DAILY_HALT
+            self._halt_until = None  # จะรอจนวันเปลี่ยน
+        elif self._consecutive_losses >= pause_cnt:
+            pause_until = datetime.now() + timedelta(minutes=pause_min)
+            self._halt_until = pause_until.isoformat()
+            print(f"⏸️ [Risk Manager] แพ้ติด {self._consecutive_losses} → pause {pause_min}min "
+                  f"ถึง {pause_until.strftime('%H:%M:%S')}")
+
+    def is_symbol_in_cooldown(self, symbol: str) -> Tuple[bool, str]:
+        """
+        ตรวจว่า symbol ยังอยู่ใน cooldown หลังโดน SL ล่าสุดหรือไม่
+
+        Returns:
+            (is_in_cooldown, reason_str)
+        """
+        last_iso = self._last_loss_time_per_symbol.get(symbol)
+        if not last_iso:
+            return (False, "")
+
+        try:
+            last_loss = datetime.fromisoformat(last_iso)
+        except Exception:
+            return (False, "")
+
+        cd_min = getattr(self._config, "COOLDOWN_AFTER_LOSS_MIN", 30)
+        elapsed = (datetime.now() - last_loss).total_seconds() / 60.0
+        if elapsed < cd_min:
+            remaining = cd_min - elapsed
+            return (True, f"Cooldown {symbol}: เหลือ {remaining:.1f} นาที")
+        return (False, "")
+
+    def is_global_halted(self) -> Tuple[bool, str]:
+        """ตรวจ global halt_until (จาก consecutive losses pause)"""
+        if not self._halt_until:
+            return (False, "")
+        try:
+            until = datetime.fromisoformat(self._halt_until)
+        except Exception:
+            self._halt_until = None
+            return (False, "")
+
+        if datetime.now() < until:
+            remaining = (until - datetime.now()).total_seconds() / 60.0
+            return (True, f"Global pause: เหลือ {remaining:.1f} นาที")
+
+        # หมดเวลา pause แล้ว → clear
+        self._halt_until = None
+        self._save_state()
+        return (False, "")
+
+    def save(self):
+        """เรียกภายนอกเพื่อ flush state ลง disk (ใช้ตอน shutdown)"""
+        self._save_state()
 
     # =========================================================================
     # 🧪 ทดสอบ
