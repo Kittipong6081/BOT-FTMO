@@ -84,6 +84,7 @@ class FTMOTradingBot:
                 verbose=1
             )
         except Exception as e:
+            print(f"❌ [Bot] ไม่สามารถโหลด AI Agent ได้: {e}")
             pass
         
         # === ตัวแปรสถิติ ===
