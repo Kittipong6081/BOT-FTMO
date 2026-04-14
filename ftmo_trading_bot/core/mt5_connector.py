@@ -126,11 +126,15 @@ class MT5Connector:
         return True
 
     def disconnect(self) -> None:
-        """ตัดการเชื่อมต่อจาก MT5 Terminal อย่างปลอดภัย"""
+        """ตัดการเชื่อมต่อจาก MT5 Terminal อย่างปลอดภัย พร้อมล้าง Symbol Cache"""
         if MT5_AVAILABLE and self._connected:
             mt5.shutdown()
             print("🔌 [MT5] ตัดการเชื่อมต่อเรียบร้อย")
         self._connected = False
+
+        # ล้าง Symbol Cache — โบรกเกอร์อาจเปลี่ยน spec หลัง reconnect
+        # (เช่น contract size, pip size, lot step) ถ้าไม่ล้างจะใช้ข้อมูลเก่าผิด
+        self._symbol_cache.clear()
 
     def is_connected(self) -> bool:
         """
@@ -326,11 +330,17 @@ class MT5Connector:
         """
         if not MT5_AVAILABLE:
             # โหมดจำลอง — spread เป็นค่าราคาจริง (ask - bid)
+            # ครอบคลุมทุก symbol ใน SymbolConfig (9 คู่)
             mock_prices = {
                 "EURUSD": {"bid": 1.09500, "ask": 1.09510, "spread": 0.00010},
                 "GBPUSD": {"bid": 1.26800, "ask": 1.26815, "spread": 0.00015},
                 "USDJPY": {"bid": 149.500, "ask": 149.510, "spread": 0.010},
                 "AUDUSD": {"bid": 0.66200, "ask": 0.66215, "spread": 0.00015},
+                "USDCAD": {"bid": 1.36500, "ask": 1.36520, "spread": 0.00020},
+                "USDCHF": {"bid": 0.88300, "ask": 0.88320, "spread": 0.00020},
+                "NZDUSD": {"bid": 0.60500, "ask": 0.60520, "spread": 0.00020},
+                "EURJPY": {"bid": 163.700, "ask": 163.725, "spread": 0.025},
+                "GBPJPY": {"bid": 189.600, "ask": 189.630, "spread": 0.030},
             }
             return mock_prices.get(symbol, {"bid": 1.0, "ask": 1.00010, "spread": 0.00010})
 
@@ -367,18 +377,22 @@ class MT5Connector:
             return self._symbol_cache[symbol]
 
         if not MT5_AVAILABLE:
-            # ข้อมูลจำลองสำหรับคู่เงินหลัก
-            mock_info = {
-                "EURUSD": {"point": 0.00001, "digits": 5, "lot_min": 0.01, "lot_max": 100.0,
-                          "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01},
-                "GBPUSD": {"point": 0.00001, "digits": 5, "lot_min": 0.01, "lot_max": 100.0,
-                          "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01},
-                "USDJPY": {"point": 0.001, "digits": 3, "lot_min": 0.01, "lot_max": 100.0,
-                          "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01},
-                "AUDUSD": {"point": 0.00001, "digits": 5, "lot_min": 0.01, "lot_max": 100.0,
-                          "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01},
+            # ข้อมูลจำลองครอบคลุมทุก Symbol ใน SymbolConfig (9 คู่)
+            # 5-digit สำหรับ Major pairs, 3-digit สำหรับ JPY pairs
+            common_5d = {
+                "point": 0.00001, "digits": 5, "lot_min": 0.01, "lot_max": 100.0,
+                "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01,
             }
-            info = mock_info.get(symbol, mock_info["EURUSD"])
+            common_3d = {
+                "point": 0.001, "digits": 3, "lot_min": 0.01, "lot_max": 100.0,
+                "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01,
+            }
+            mock_info = {
+                "EURUSD": common_5d, "GBPUSD": common_5d, "AUDUSD": common_5d,
+                "USDCAD": common_5d, "USDCHF": common_5d, "NZDUSD": common_5d,
+                "USDJPY": common_3d, "EURJPY": common_3d, "GBPJPY": common_3d,
+            }
+            info = mock_info.get(symbol, common_5d)
             self._symbol_cache[symbol] = info
             return info
 
@@ -759,15 +773,19 @@ class MT5Connector:
         """
         np.random.seed(42)
         
-        # ราคาเริ่มต้นตาม Symbol
+        # ราคาเริ่มต้นตาม Symbol (ครอบคลุมทุกคู่ใน config)
         base_prices = {
-            "EURUSD": 1.0950, "GBPUSD": 1.2680,
-            "USDJPY": 149.50, "AUDUSD": 0.6620,
+            "EURUSD": 1.0950, "GBPUSD": 1.2680, "AUDUSD": 0.6620,
+            "USDCAD": 1.3650, "USDCHF": 0.8830, "NZDUSD": 0.6050,
+            "USDJPY": 149.50, "EURJPY": 163.70, "GBPJPY": 189.60,
         }
         base_price = base_prices.get(symbol, 1.0)
-        
+
+        # Volatility ต่อแท่งเทียน — JPY pairs ผันผวนกว่า Major pairs (ในหน่วย ราคา)
+        volatility = 0.0005 if base_price < 50 else 0.05
+
         # สร้าง Random Walk
-        returns = np.random.normal(0, 0.0005, count)  # ผลตอบแทนรายแท่ง
+        returns = np.random.normal(0, volatility / base_price, count)  # ผลตอบแทนรายแท่ง
         prices = base_price * np.cumprod(1 + returns)
         
         # คำนวณ OHLCV

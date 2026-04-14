@@ -200,41 +200,71 @@ class PositionSizer:
         account_currency: str
     ) -> float:
         """
-        คำนวณมูลค่า 1 Pip ต่อ 1 Lot Standard
-        
+        คำนวณมูลค่า 1 Pip ต่อ 1 Lot Standard (คืนเป็น Account Currency เช่น USD)
+
         กรณีต่างๆ:
-        - xxxUSD (เช่น EURUSD): Pip Value = Contract × Pip Size = $10
-        - USDxxx (เช่น USDJPY): Pip Value = Contract × Pip Size / Current Price
-        - xxxyyy (Cross): ต้องแปลงผ่าน USD
-        
+        - xxxUSD (EURUSD, GBPUSD): Pip Value = Contract × Pip Size = $10
+        - USDxxx (USDJPY, USDCHF): Pip Value = (Contract × Pip Size) / USDxxx rate
+        - xxxJPY Cross (EURJPY, GBPJPY):
+            raw = Contract × Pip Size (ในหน่วย JPY)
+            USD value = raw / (USDJPY rate)   ← ต้องใช้ USDJPY rate ไม่ใช่ EURJPY
+
         Args:
             symbol: คู่เงิน
             pip_size: ขนาด 1 pip
             contract_size: ขนาดสัญญา
             account_currency: สกุลเงินของบัญชี
-            
+
         Returns:
-            float: มูลค่า 1 pip ต่อ 1 lot (USD)
+            float: มูลค่า 1 pip ต่อ 1 lot (ในสกุลบัญชี)
         """
-        # หาสกุลเงินหลัง (Quote Currency)
-        quote_currency = symbol[3:6] if len(symbol) >= 6 else "USD"
-        
-        # กรณี Quote Currency เป็น USD (เช่น EURUSD, GBPUSD)
-        if quote_currency.upper() == "USD":
-            return contract_size * pip_size  # = 100,000 × 0.0001 = $10
-        
-        # กรณี Quote Currency ไม่ใช่ USD (เช่น USDJPY, EURJPY)
-        # ต้องแปลง: Pip Value = (Contract × Pip Size) / Quote/USD Rate
-        price = self._connector.get_current_price(symbol)
-        if price and price["bid"] > 0:
-            raw_pip_value = contract_size * pip_size
-            # แปลงเป็น USD โดยใช้ราคาปัจจุบัน
-            pip_value_usd = raw_pip_value / price["bid"]
-            return pip_value_usd
-        
-        # Fallback: ใช้ค่าประมาณ
-        print(f"⚠️ [Position Sizer] ใช้ค่า Pip Value ประมาณสำหรับ {symbol}")
-        return contract_size * pip_size  # ค่าประมาณ
+        if len(symbol) < 6:
+            return contract_size * pip_size
+
+        base_currency = symbol[0:3].upper()
+        quote_currency = symbol[3:6].upper()
+        acc_ccy = (account_currency or "USD").upper()
+
+        raw_pip_value = contract_size * pip_size  # ใน Quote Currency
+
+        # === Case 1: Quote = Account Currency (เช่น EURUSD เมื่อ account=USD) ===
+        if quote_currency == acc_ccy:
+            return raw_pip_value  # = $10 สำหรับ Standard Lot
+
+        # === Case 2: Base = Account Currency (เช่น USDJPY, USDCHF เมื่อ account=USD) ===
+        if base_currency == acc_ccy:
+            # Pip Value (USD) = raw / symbol_price
+            price = self._connector.get_current_price(symbol)
+            if price and price.get("bid", 0) > 0:
+                return raw_pip_value / price["bid"]
+            return raw_pip_value  # fallback
+
+        # === Case 3: Cross Pair (เช่น EURJPY, GBPJPY เมื่อ account=USD) ===
+        # raw_pip_value อยู่ใน quote_currency (JPY) → ต้องแปลงเป็น USD
+        # ใช้ rate ของ {QuoteCurrency}{AccountCurrency} หรือผกผัน
+        conversion_symbol_direct = f"{quote_currency}{acc_ccy}"    # JPYUSD (มักไม่มี)
+        conversion_symbol_inverse = f"{acc_ccy}{quote_currency}"   # USDJPY (มี)
+
+        # ลอง direct ก่อน (QUOTE/ACCOUNT)
+        price_direct = self._connector.get_current_price(conversion_symbol_direct)
+        if price_direct and price_direct.get("bid", 0) > 0:
+            # Pip Value (Account) = raw × direct_rate
+            return raw_pip_value * price_direct["bid"]
+
+        # Fallback: ใช้ inverse (ACCOUNT/QUOTE เช่น USDJPY)
+        price_inverse = self._connector.get_current_price(conversion_symbol_inverse)
+        if price_inverse and price_inverse.get("bid", 0) > 0:
+            # Pip Value (Account) = raw / inverse_rate
+            return raw_pip_value / price_inverse["bid"]
+
+        # Fallback สุดท้าย: ใช้ราคาของ symbol เอง (เก่า, อาจคลาดเคลื่อน)
+        price_self = self._connector.get_current_price(symbol)
+        if price_self and price_self.get("bid", 0) > 0:
+            print(f"⚠️ [Position Sizer] {symbol}: ไม่พบ conversion rate — ใช้ราคา self (อาจคลาดเคลื่อน)")
+            return raw_pip_value / price_self["bid"]
+
+        print(f"⚠️ [Position Sizer] {symbol}: คำนวณ Pip Value ไม่ได้ — ใช้ค่าประมาณ")
+        return raw_pip_value
 
     def _round_down_lot(self, lot_size: float, lot_step: float) -> float:
         """

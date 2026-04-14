@@ -9,22 +9,98 @@ FTMO Trading Bot — Discord Notifier (ระบบแจ้งเตือน�
 
 import requests
 import json
+import time
+import threading
+from collections import deque
 from datetime import datetime
 from config.settings import bot_config
 
 
 class DiscordNotifier:
+    """
+    ระบบส่งการแจ้งเตือนผ่าน Discord Webhook พร้อม Rate Limiting
+    Discord จำกัดที่ ~30 requests/minute ต่อ webhook — เราจำกัดที่ 20/min เพื่อความปลอดภัย
+    """
+
+    # Discord webhook rate limit (ใช้ sliding window)
+    MAX_REQUESTS_PER_MINUTE: int = 20
+    WINDOW_SECONDS: float = 60.0
+    # เว้นขั้นต่ำระหว่าง request (วินาที) เพื่อไม่ให้ spam
+    MIN_INTERVAL_SECONDS: float = 1.0
+
     def __init__(self):
         self.config = bot_config.notifications
         self.webhook_url = self.config.discord_webhook_url
         self.enabled = self.config.enable_notifications
 
+        # Rate limiting state
+        self._request_timestamps: deque = deque()
+        self._last_request_time: float = 0.0
+        self._rate_limit_lock = threading.Lock()
+        self._dropped_count: int = 0  # counter สำหรับ messages ที่ถูก drop
+
+    def _check_rate_limit(self) -> bool:
+        """
+        ตรวจสอบ rate limit — คืน True ถ้าส่งได้, False ถ้าต้อง drop message
+
+        ใช้ sliding window 60 วินาที + minimum interval
+        """
+        with self._rate_limit_lock:
+            now = time.monotonic()
+
+            # ล้าง timestamp เก่าที่ออกจาก window แล้ว
+            while self._request_timestamps and (now - self._request_timestamps[0]) > self.WINDOW_SECONDS:
+                self._request_timestamps.popleft()
+
+            # ตรวจ min interval (กัน burst)
+            if (now - self._last_request_time) < self.MIN_INTERVAL_SECONDS:
+                self._dropped_count += 1
+                return False
+
+            # ตรวจ max req/minute
+            if len(self._request_timestamps) >= self.MAX_REQUESTS_PER_MINUTE:
+                self._dropped_count += 1
+                return False
+
+            # อนุญาต — บันทึก timestamp
+            self._request_timestamps.append(now)
+            self._last_request_time = now
+            return True
+
     def _send_payload(self, payload: dict):
         if not self.enabled or not self.webhook_url:
             return
+
+        # ตรวจ rate limit ก่อนส่ง
+        if not self._check_rate_limit():
+            # Log dropped message (ทุกๆ 10 ครั้งเพื่อไม่ spam)
+            if self._dropped_count % 10 == 1:
+                print(f"⏸️  [Notifier] Rate limited — drop Discord message "
+                      f"(dropped {self._dropped_count} total)")
+            return
+
         try:
             headers = {"Content-Type": "application/json"}
-            response = requests.post(self.webhook_url, data=json.dumps(payload), headers=headers, timeout=5)
+            response = requests.post(
+                self.webhook_url,
+                data=json.dumps(payload),
+                headers=headers,
+                timeout=5,
+            )
+            # Discord อาจตอบ 429 พร้อม Retry-After ถ้าโดน rate limit จริง
+            if response.status_code == 429:
+                try:
+                    retry_after = float(response.headers.get("Retry-After", 1))
+                except Exception:
+                    retry_after = 1.0
+                # เลื่อน window ออกไปตาม Retry-After เพื่อหลีกเลี่ยงการยิงต่อ
+                with self._rate_limit_lock:
+                    penalty_until = time.monotonic() + retry_after
+                    # Push ghost timestamps เพื่อ block การส่งจนกว่า penalty_until
+                    while len(self._request_timestamps) < self.MAX_REQUESTS_PER_MINUTE:
+                        self._request_timestamps.append(penalty_until)
+                print(f"⚠️ [Notifier] Discord 429 — backing off {retry_after:.1f}s")
+                return
             response.raise_for_status()
         except Exception as e:
             print(f"⚠️ [Notifier] ไม่สามารถส่งแจ้งเตือน Discord ได้: {e}")

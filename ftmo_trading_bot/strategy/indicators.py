@@ -260,21 +260,25 @@ class TechnicalIndicators:
         self,
         df: pd.DataFrame,
         atr_min_pips: float = 5.0,
-        atr_max_pips: float = 50.0
+        atr_max_pips: float = 50.0,
+        pip_size: Optional[float] = None,
     ) -> pd.DataFrame:
         """
         กรองสภาวะตลาดด้วย ATR — เทรดเฉพาะเมื่อ Volatility อยู่ในช่วงที่เหมาะสม
-        
+
         กฎ:
         - ATR ต่ำเกินไป (< 5 pips): ตลาดเงียบ → ไม่เทรด
         - ATR สูงเกินไป (> 50 pips): ตลาดผันผวนมาก → ไม่เทรด (เสี่ยงเกินไป)
         - ATR อยู่ในช่วง: เทรดได้
-        
+
         Args:
             df: DataFrame ที่ต้องมี ATR
             atr_min_pips: ATR ขั้นต่ำ (pips)
             atr_max_pips: ATR สูงสุด (pips)
-            
+            pip_size: ขนาด 1 pip (None = autodetect จากระดับราคา)
+                      - Major pairs (EURUSD, GBPUSD): 0.0001
+                      - JPY pairs (USDJPY, EURJPY): 0.01
+
         Returns:
             pd.DataFrame: DataFrame ที่เพิ่มคอลัมน์ 'volatility_ok'
         """
@@ -282,13 +286,26 @@ class TechnicalIndicators:
         if 'atr' not in df.columns:
             df = self.calculate_atr(df)
 
-        # แปลง ATR เป็น pips (สำหรับคู่เงินที่มี 5 ทศนิยม: 1 pip = 0.0001)
-        # สังเกต: ค่า pips ขึ้นกับ Symbol จริงๆ แต่ตรงนี้ใช้ค่าประมาณ
-        atr_pips = df['atr'] * 10000  # แปลงจากราคาเป็น pips (สำหรับ 5-digit pairs)
-        
+        # === Autodetect pip_size ถ้าไม่ได้ระบุ ===
+        # JPY pairs มีราคาประมาณ 100-200 (e.g. USDJPY ~150)
+        # Major pairs มีราคา ~0.5-2.0 (e.g. EURUSD ~1.08)
+        if pip_size is None:
+            # ใช้ราคาเฉลี่ยของ close ล่าสุดในการจำแนก
+            try:
+                ref_price = float(df['close'].iloc[-1])
+                pip_size = 0.01 if ref_price > 20 else 0.0001
+            except Exception:
+                pip_size = 0.0001  # ค่าเริ่มต้นสำหรับ Major pairs
+
+        # แปลง ATR (ราคา) → pips
+        # EURUSD: ATR=0.0010 / 0.0001 = 10 pips
+        # USDJPY: ATR=0.10   / 0.01   = 10 pips
+        pip_multiplier = 1.0 / pip_size
+        atr_pips = df['atr'] * pip_multiplier
+
         df['atr_pips'] = atr_pips
         df['volatility_ok'] = (atr_pips >= atr_min_pips) & (atr_pips <= atr_max_pips)
-        
+
         return df
 
     # =========================================================================

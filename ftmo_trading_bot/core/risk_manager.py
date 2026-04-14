@@ -24,6 +24,7 @@ from enum import Enum
 
 from config.settings import bot_config
 from core.mt5_connector import MT5Connector
+from core.time_manager import TimeManager
 
 
 class BotState(Enum):
@@ -70,7 +71,7 @@ class RiskManager:
         self._daily_start_equity: float = 0.0       # Equity ตอนเริ่มวัน (รีเซ็ตทุกวัน)
         self._daily_start_balance: float = 0.0      # Balance ตอนเริ่มวัน
         self._highest_balance: float = 0.0          # Balance สูงสุดที่เคยถึง (High Water Mark)
-        self._current_day: date = date.today()      # วันปัจจุบัน (ตรวจสอบวันเปลี่ยน)
+        self._current_day: date = TimeManager.get_server_time().date()  # วันปัจจุบันตามเวลาโบรกเกอร์
         
         # === สถิติรายวัน ===
         self._daily_closed_pnl: float = 0.0         # P/L ที่ปิดไปแล้ววันนี้
@@ -112,8 +113,9 @@ class RiskManager:
         loaded = self._load_state()
         
         if loaded:
-            # ตรวจสอบว่าวันเปลี่ยนหรือยัง
-            if self._current_day != date.today():
+            # ตรวจสอบว่าวันเปลี่ยนหรือยัง (ใช้เวลาโบรกเกอร์ ไม่ใช่เวลาท้องถิ่น)
+            broker_today = TimeManager.get_server_time().date()
+            if self._current_day != broker_today:
                 self._on_new_day(current_balance, current_equity)
             else:
                 print(f"📂 [Risk Manager] โหลดสถานะเดิม: สถานะ={self._state.value}")
@@ -133,7 +135,7 @@ class RiskManager:
             self._highest_balance = current_balance
             self._daily_start_equity = current_equity
             self._daily_start_balance = current_balance
-            self._current_day = date.today()
+            self._current_day = TimeManager.get_server_time().date()
             self._state = BotState.ACTIVE
             
             print(f"🆕 [Risk Manager] เริ่มต้นใหม่:")
@@ -156,12 +158,13 @@ class RiskManager:
             current_balance: Balance ปัจจุบัน
             current_equity: Equity ปัจจุบัน
         """
-        print(f"\n🌅 [Risk Manager] === วันใหม่เริ่มต้น: {date.today()} ===")
-        
+        broker_today = TimeManager.get_server_time().date()
+        print(f"\n🌅 [Risk Manager] === วันใหม่เริ่มต้น: {broker_today} (Broker Time) ===")
+
         # FTMO ใช้ค่ามากกว่าระหว่าง Balance กับ Equity ตอนเริ่มวัน
         self._daily_start_equity = max(current_balance, current_equity)
         self._daily_start_balance = current_balance
-        self._current_day = date.today()
+        self._current_day = broker_today
         self._daily_closed_pnl = 0.0
         self._daily_trades_count = 0
         
@@ -207,8 +210,8 @@ class RiskManager:
         current_balance = account["balance"]
         current_equity = account["equity"]
 
-        # === ตรวจสอบที่ 1: วันเปลี่ยนหรือยัง? ===
-        if self._current_day != date.today():
+        # === ตรวจสอบที่ 1: วันเปลี่ยนหรือยัง? (ใช้เวลาโบรกเกอร์) ===
+        if self._current_day != TimeManager.get_server_time().date():
             self._on_new_day(current_balance, current_equity)
             self._save_state()
             
@@ -318,7 +321,7 @@ class RiskManager:
             print("\n" + "=" * 70)
             print("🚨🚨🚨 DAILY LOSS HARD STOP TRIGGERED 🚨🚨🚨")
             print("=" * 70)
-            print(f"   📅 วันที่: {date.today()}")
+            print(f"   📅 วันที่: {TimeManager.get_server_time().date()}")
             print(f"   💀 Daily Loss ปัจจุบัน: {daily_loss_pct:.2%}")
             print(f"   🔴 ขีดจำกัด: {daily_limit:.0%}")
             print(f"   📊 Daily Start Equity: ${self._daily_start_equity:,.2f}")
@@ -539,7 +542,7 @@ class RiskManager:
             "daily_limit": self._config.DAILY_LOSS_HARD_STOP_PCT,
             "open_positions": self._connector.get_positions_count(),
             "max_positions": self._config.MAX_OPEN_POSITIONS,
-            "current_date": str(date.today()),
+            "current_date": str(TimeManager.get_server_time().date()),
         }
 
     def _print_risk_status(self, balance: float, equity: float):
@@ -549,7 +552,7 @@ class RiskManager:
         remaining = self.get_remaining_daily_budget()
         
         print(f"\n{'=' * 60}")
-        print(f"🛡️ FTMO Risk Dashboard — {date.today()}")
+        print(f"🛡️ FTMO Risk Dashboard — {TimeManager.get_server_time().date()}")
         print(f"{'=' * 60}")
         print(f"   📊 สถานะ Bot:          {self._state.value}")
         print(f"   💰 Initial Balance:     ${self._initial_balance:,.2f}")
@@ -623,7 +626,7 @@ class RiskManager:
             self._daily_trades_count = data.get("daily_trades_count", 0)
             
             # แปลงวันที่
-            day_str = data.get("current_day", str(date.today()))
+            day_str = data.get("current_day", str(TimeManager.get_server_time().date()))
             self._current_day = date.fromisoformat(day_str)
             
             print(f"📂 [Risk Manager] โหลดสถานะจากไฟล์สำเร็จ (อัพเดทล่าสุด: {data.get('last_updated', 'N/A')})")

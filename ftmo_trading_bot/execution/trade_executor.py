@@ -114,6 +114,20 @@ class TradeExecutor:
     # Magic Number สำหรับระบุว่าเป็นคำสั่งจาก Bot
     MAGIC_NUMBER = 123456
 
+    # === Correlation Groups (กันเทรดทิศทางเดียวกันในคู่ที่ correlated สูง) ===
+    # ถ้าเปิด BUY EURUSD ก็ไม่ควรเปิด BUY GBPUSD พร้อมกัน (Correlation > 0.85)
+    # กลุ่มเดียวกัน = เคลื่อนไหวไปทางเดียวกันเป็นส่วนใหญ่
+    CORRELATION_GROUPS = {
+        "USD_WEAK": {"EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"},  # USD ลง = กลุ่มนี้ขึ้น
+        "USD_STRONG": {"USDJPY", "USDCAD", "USDCHF"},           # USD ขึ้น = กลุ่มนี้ขึ้น
+        "JPY_CROSS": {"USDJPY", "EURJPY", "GBPJPY"},            # JPY อ่อน = กลุ่มนี้ขึ้น
+        "EUR_PAIRS": {"EURUSD", "EURJPY"},                       # EUR strength
+        "GBP_PAIRS": {"GBPUSD", "GBPJPY"},                       # GBP strength
+    }
+
+    # จำนวน Position ต่อกลุ่ม correlation ที่ยอมรับได้
+    MAX_CORRELATED_POSITIONS: int = 2
+
     def __init__(
         self,
         connector: MT5Connector,
@@ -181,6 +195,16 @@ class TradeExecutor:
         print(f"⚡ [Executor] ดำเนินการ {signal.signal_type.value} {symbol}")
         print(f"   Confluence: {signal.confluence_score:.0f}/100 | RR: 1:{signal.rr_ratio:.1f}")
         print(f"{'━' * 60}")
+
+        # === ด่านที่ 1.5: ตรวจ Duplicate + Correlation ===
+        # กัน Over-exposure ต่อ Symbol เดียวกัน หรือกลุ่มที่เคลื่อนไหวไปทางเดียวกัน
+        allowed_corr, corr_reason = self._check_correlation_risk(
+            symbol, signal.signal_type.value
+        )
+        if not allowed_corr:
+            print(f"🚫 [Executor] Correlation Risk: {corr_reason}")
+            self._total_rejected += 1
+            return None
 
         # === ด่านที่ 2: คำนวณ Lot Size ===
         lot_result = self._position_sizer.calculate_lot_size(
@@ -298,6 +322,60 @@ class TradeExecutor:
         return executed
 
     # =========================================================================
+    # 🔗 ตรวจสอบ Correlation Risk (กัน Over-exposure)
+    # =========================================================================
+
+    def _check_correlation_risk(self, symbol: str, trade_type: str) -> tuple:
+        """
+        ตรวจสอบว่าการเปิดเทรดใหม่จะทำให้ exposure สูงเกินไปหรือไม่
+
+        กฎ:
+        1. ห้ามเปิด Position ใหม่ในคู่เงินเดียวกัน (Duplicate Symbol)
+        2. ห้ามมี Position เกิน MAX_CORRELATED_POSITIONS ในกลุ่มเดียวกัน ทิศทางเดียวกัน
+
+        Args:
+            symbol: คู่เงินที่จะเปิด
+            trade_type: "BUY" หรือ "SELL"
+
+        Returns:
+            Tuple[bool, str]: (ผ่าน/ไม่ผ่าน, เหตุผล)
+        """
+        # === 1. Duplicate Symbol Check ===
+        for trade in self._active_trades.values():
+            if trade.symbol == symbol and trade.is_open:
+                return (False, f"มีเทรด {symbol} ({trade.trade_type}) เปิดอยู่แล้ว (Ticket {trade.ticket})")
+
+        # === 2. Correlation Group Check ===
+        # นับเทรด active ในแต่ละกลุ่ม correlation (แยกตาม direction)
+        symbol_upper = symbol.upper()
+        tt_upper = trade_type.upper()
+
+        for group_name, group_symbols in self.CORRELATION_GROUPS.items():
+            if symbol_upper not in group_symbols:
+                continue
+
+            # นับเทรดที่เปิดอยู่ในกลุ่มนี้ + ทิศทางเดียวกัน
+            # ⚠️ ต้องคำนึงว่า "ทิศทางเดียวกัน" ใน correlation หมายถึง
+            # ทิศที่ทำให้ได้กำไร/ขาดทุนเหมือนกัน ไม่ใช่ BUY/SELL ตัวอักษรเดียวกัน
+            # เช่น BUY EURUSD กับ SELL USDCHF → ทั้งคู่กำไรเมื่อ USD อ่อน
+            # เพื่อความง่าย เราเช็คเฉพาะทิศทางเดียวกันในกลุ่มที่ “เคลื่อนไหวพร้อมกัน”
+            same_direction_count = 0
+            for trade in self._active_trades.values():
+                if not trade.is_open:
+                    continue
+                if trade.symbol.upper() in group_symbols and trade.trade_type.upper() == tt_upper:
+                    same_direction_count += 1
+
+            if same_direction_count >= self.MAX_CORRELATED_POSITIONS:
+                return (
+                    False,
+                    f"กลุ่ม {group_name} มีเทรด {tt_upper} เปิดแล้ว {same_direction_count} ตัว "
+                    f"(จำกัด {self.MAX_CORRELATED_POSITIONS})"
+                )
+
+        return (True, "ผ่านการตรวจ Correlation Risk")
+
+    # =========================================================================
     # 🔄 ส่งคำสั่งพร้อม Retry
     # =========================================================================
 
@@ -387,11 +465,28 @@ class TradeExecutor:
             trade.close_time = datetime.now()
             trade.close_reason = reason
 
-            # คำนวณ P/L (ประมาณ)
+            # คำนวณ P/L (ประมาณ) — ใช้ contract_size จริงของโบรกเกอร์ (ไม่ hardcode 100000)
+            # และแปลงเป็นสกุลเงินของบัญชี (USD) สำหรับคู่ที่ Quote != USD
+            sym_info = self._connector.get_symbol_info(trade.symbol)
+            contract_size = sym_info.get("trade_contract_size", 100000) if sym_info else 100000
+
             if trade.trade_type == "BUY":
-                trade.profit = (trade.close_price - trade.entry_price) * trade.lot_size * 100000
+                price_diff = trade.close_price - trade.entry_price
             else:
-                trade.profit = (trade.entry_price - trade.close_price) * trade.lot_size * 100000
+                price_diff = trade.entry_price - trade.close_price
+
+            # สำหรับคู่ xxxUSD (EURUSD, GBPUSD): profit = diff × lot × contract_size
+            # สำหรับคู่ USDxxx หรือ cross (USDJPY, EURJPY): ต้องหารด้วยราคาปิดเพื่อแปลงเป็น USD
+            quote_ccy = trade.symbol[3:6].upper() if len(trade.symbol) >= 6 else "USD"
+            raw_profit = price_diff * trade.lot_size * contract_size
+
+            if quote_ccy == "USD":
+                trade.profit = raw_profit
+            elif trade.close_price > 0:
+                # แปลงจาก Quote Currency → USD
+                trade.profit = raw_profit / trade.close_price
+            else:
+                trade.profit = raw_profit  # fallback
 
             # ย้ายจาก Active → Closed
             self._closed_trades.append(trade)

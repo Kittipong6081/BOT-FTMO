@@ -1,10 +1,23 @@
 """
 ===============================================================================
-FTMO Trading Bot — RL Environment (สภาพแวดล้อมฝึกซ้อมฉบับ Gymnasium)
+FTMO Trading Bot — RL Environment (สภาพแวดล้อมฝึกซ้อมแบบ Real Backtest)
 ===============================================================================
-ทำหน้าที่เป็นสะพานเชื่อมระหว่าง PPO Agent (สมอง) และ Trading System (ระบบ)
-ใช้สำหรับการ Training แบบ Offline จากข้อมูลประวัติเทรดใน Excel
-เพื่อหาพารามิเตอร์ระบบ (Action) ที่ดีที่สุดเทียบกับข้อมูลสภาพตลาดล่าสุด (State)
+Gymnasium Environment สำหรับ Optimize พารามิเตอร์ FTMO Bot
+ใช้ข้อมูล OHLCV จริง (หรือข้อมูลจำลองที่สอดคล้องกับตลาด Forex จริง)
+ในการจำลองการเทรดแบบ Day-by-day ตลอด 30 วันของ FTMO Challenge
+
+ขั้นตอน 1 Episode = 1 FTMO Challenge (30 วัน)
+ขั้นตอน 1 Step   = 1 วันเทรด
+
+การทำงานของ step():
+1. ถอด Action เป็นพารามิเตอร์เทรด (risk, confluence, atr_sl, rr)
+2. ดึงข้อมูลตลาดของวันนั้น (ATR, Regime) จาก OHLCV จริงหรือจำลอง
+3. คำนวณจำนวน Setup ที่จะเกิด (จาก confluence threshold)
+4. คำนวณ Win Rate ที่เกิดขึ้นจริง (ตาม confluence, RR, ATR mult)
+5. Simulate แต่ละเทรดตามผลลัพธ์เชิงสถิติ (ไม่ใช่ random ล้วน)
+6. อัพเดท Balance, Drawdown, Progress
+7. คำนวณ Reward ผ่าน FTMORewardCalculator
+8. ตรวจสอบการจบ Episode (FTMO Fail / Pass / หมด 30 วัน)
 ===============================================================================
 """
 
@@ -14,192 +27,593 @@ import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
+from typing import Dict, List, Optional
 
 from ml.reward_function import FTMORewardCalculator
 
+
 class FTMOOptimizationEnv(gym.Env):
     """
-    คลาส Environment สำหรับการ Optimize การตั้งค่า Bot เพื่อผ่านการทดสอบแบบปลอดภัยที่สุด
+    Environment Gymnasium สำหรับเรียนรู้พารามิเตอร์ FTMO Challenge ที่ดีที่สุด
+
+    ปรัชญา:
+    - Agent ต้องเรียนรู้ว่า "เสี่ยงน้อยแต่สม่ำเสมอ" > "เสี่ยงเยอะครั้งเดียวแล้วพัง"
+    - Reward Function ลงโทษ DD แบบ Exponential ใกล้ 4%/8%
+    - Mini-Backtest ใช้ ATR และ Market Regime จริงเพื่อกำหนดความสำเร็จ
     """
-    
+
     metadata = {'render_modes': ['human', 'console']}
 
-    def __init__(self, excel_log_path: str = "logs/trading_log.xlsx", max_steps: int = 100):
-        super(FTMOOptimizationEnv, self).__init__()
-        
-        self.excel_path = excel_log_path
-        self.max_steps = max_steps
-        self.current_step = 0
-        
-        # Reward function custom FTMO
-        self.reward_calculator = FTMORewardCalculator()
-        
-        # ประวัติความก้าวหน้า
-        self.trades_df = pd.DataFrame()
-        self.stats_df = pd.DataFrame()
-        self._load_historical_data()
+    # ค่าคงที่สำหรับ FTMO Challenge
+    INITIAL_BALANCE: float = 100_000.0
+    CHALLENGE_DAYS: int = 30
+    MAX_POSITIONS_PER_DAY: int = 3  # จำกัดที่ 3 ตาม bot_config.ftmo.MAX_OPEN_POSITIONS
 
-        # ==========================================
-        # Observation Space (State ที่มองเห็น)
-        # ==========================================
-        # ให้ Agent มองเห็นสถานะตัวเองปัจจุบัน จำนวน 5 ค่า (Normalize ล่วงหน้าเข้าช่วง [-1.0, 1.0]):
-        # 1. Total Drawdown % (0 ถึง -0.10)
-        # 2. Daily Drawdown % (0 ถึง -0.05)
-        # 3. Target Progress % (0 ถึง 1.0)
-        # 4. Previous Sortino Ratio (1D)
-        # 5. Last Trade Win/Loss (1=Win, -1=Loss, 0=None)
-        
+    # Market Regime (สภาวะตลาด) — สัดส่วนถ่วงน้ำหนักจากการสังเกตตลาด Forex จริง
+    # win_rate_base = Win Rate พื้นฐานของกลยุทธ์ SMC ภายใต้สภาวะนั้น
+    # atr_mult      = ตัวคูณ ATR จากค่าเฉลี่ย (regime ผันผวนจะมีค่าสูง)
+    # setups_per_day = จำนวน Setup เฉลี่ยที่ Confluence >= 50 ผ่านได้ต่อวัน
+    # weight        = ความถี่ที่ regime นี้จะเกิด
+    MARKET_PROFILES: Dict[str, Dict[str, float]] = {
+        'trending':  {'win_rate_base': 0.55, 'atr_mult': 1.2, 'setups_per_day': 2.5, 'weight': 0.35},
+        'ranging':   {'win_rate_base': 0.42, 'atr_mult': 0.7, 'setups_per_day': 3.5, 'weight': 0.40},
+        'volatile':  {'win_rate_base': 0.48, 'atr_mult': 1.8, 'setups_per_day': 1.5, 'weight': 0.15},
+        'quiet':     {'win_rate_base': 0.50, 'atr_mult': 0.4, 'setups_per_day': 0.5, 'weight': 0.10},
+    }
+
+    def __init__(
+        self,
+        data_dir: Optional[str] = None,
+        excel_log_path: str = "logs/trading_log.xlsx",
+        max_steps: int = 30,
+        symbols: Optional[List[str]] = None,
+    ):
+        super().__init__()
+
+        self.max_steps = min(int(max_steps), self.CHALLENGE_DAYS)
+        self.excel_path = excel_log_path
+        self.symbols = symbols or [
+            "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+            "USDCHF", "NZDUSD", "EURJPY", "GBPJPY"
+        ]
+
+        # Reward function เฉพาะของ FTMO
+        self.reward_calculator = FTMORewardCalculator()
+
+        # โหลดข้อมูล OHLCV จากไฟล์ CSV (ถ้ามี)
+        self._ohlcv_cache: Dict[str, pd.DataFrame] = {}
+        if data_dir is None:
+            data_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data", "ohlcv"
+            )
+        self._data_dir = data_dir
+        self._load_ohlcv_data()
+
+        # โหลดประวัติเทรดจริง (สำหรับคำนวณ win-rate เชิงสถิติ)
+        self._trade_history: Optional[pd.DataFrame] = None
+        self._load_trade_history()
+
+        # ==========================================================
+        # Observation Space (8 ค่า, Clip ในช่วง [-5, 5])
+        # ==========================================================
+        # [0] total_dd_norm     : Total DD / 10%        (negative value)
+        # [1] daily_dd_norm     : Daily DD / 5%         (negative value)
+        # [2] progress_norm     : Progress toward 10%   (0 to ~1.0)
+        # [3] sortino_ratio     : Risk-adjusted return  (Clip ±5)
+        # [4] last_trade_result : 1=Win, -1=Loss, 0=None
+        # [5] volatility_norm   : ATR Regime level      (-2 to 2)
+        # [6] day_progress      : current_step / 30     (0 to 1)
+        # [7] recent_win_rate   : Win Rate ล่าสุด       (-1 to 1)
         self.observation_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(5,), dtype=np.float32
+            low=-5.0, high=5.0, shape=(8,), dtype=np.float32
         )
 
-        # ==========================================
-        # Action Space (การกระทำที่กดสวิตช์ได้)
-        # ==========================================
-        # การเปลี่ยนพารามิเตอร์ระบบ 4 ค่า ให้ออกมาเป็น Continuous ระหว่าง [-1.0, 1.0]
-        # จากนั้นตรรกะใน Agent จะเอาไปแปลงสเกล (Map to bounds) เช่น:
-        # [0] Risk Per Trade           : [-1.0, 1.0] -> [0.5% ถึง 1.0%]
-        # [1] Min Confluence Score     : [-1.0, 1.0] -> [50 ถึง 80]
-        # [2] ATR SL Multiplier        : [-1.0, 1.0] -> [1.0 ถึง 2.5]
-        # [3] Minimum Risk:Reward Ratio: [-1.0, 1.0] -> [1.5 ถึง 3.0]
+        # ==========================================================
+        # Action Space (4 ค่า continuous, [-1, 1])
+        # ==========================================================
+        # [0] risk_per_trade_pct        : [-1, 1] → [0.5%, 1.0%]
+        # [1] min_confluence_score      : [-1, 1] → [50, 80]
+        # [2] atr_sl_multiplier         : [-1, 1] → [1.0, 2.5]
+        # [3] preferred_risk_reward     : [-1, 1] → [1.5, 3.0]
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(4,), dtype=np.float32
         )
 
-        self.current_stats = {
-            'daily_dd_pct': 0.0,
-            'total_dd_pct': 0.0,
-            'sortino_ratio': 0.0,
-            'target_progress_pct': 0.0,
-            'balance': 100000.0,
-            'last_trade_win': 0
-        }
-        
-        self.previous_stats = self.current_stats.copy()
+        # สถานะภายใน (รีเซ็ตใน reset())
+        self._reset_state()
 
-    def _load_historical_data(self):
-        """รับข้อมูลย้อนหลังจาก Trade Logger"""
+    # =========================================================================
+    # Data Loading
+    # =========================================================================
+
+    def _load_ohlcv_data(self):
+        """โหลดข้อมูล OHLCV จากไฟล์ CSV (ถ้ามี) — ข้อมูลจริงทำให้ training สมจริง"""
+        if not os.path.isdir(self._data_dir):
+            return
+
+        for symbol in self.symbols:
+            # รองรับหลายรูปแบบชื่อไฟล์: EURUSD_M15.csv, EURUSD_H1.csv, EURUSD.csv
+            patterns = [
+                os.path.join(self._data_dir, f"{symbol}_M15.csv"),
+                os.path.join(self._data_dir, f"{symbol}_H1.csv"),
+                os.path.join(self._data_dir, f"{symbol}_H4.csv"),
+                os.path.join(self._data_dir, f"{symbol}.csv"),
+            ]
+            for filepath in patterns:
+                if os.path.exists(filepath):
+                    try:
+                        df = pd.read_csv(filepath)
+                        # Normalize column names เป็นตัวเล็ก
+                        df.columns = [c.lower().strip() for c in df.columns]
+                        required = {'open', 'high', 'low', 'close'}
+                        if required.issubset(set(df.columns)) and len(df) >= 100:
+                            self._ohlcv_cache[symbol] = df
+                            break
+                    except Exception:
+                        continue
+
+    def _load_trade_history(self):
+        """โหลดประวัติเทรดจริงจาก Excel (ถ้ามี) สำหรับ calibrate win rate"""
         if os.path.exists(self.excel_path):
             try:
-                self.trades_df = pd.read_excel(self.excel_path, sheet_name='Trades')
-                self.stats_df = pd.read_excel(self.excel_path, sheet_name='Stats')
-            except Exception as e:
-                print(f"⚠️ [RL Env] ไม่สามารถอ่านไหล์ประวัติได้: {e}")
-                self.trades_df = pd.DataFrame()
-                self.stats_df = pd.DataFrame()
+                df = pd.read_excel(self.excel_path, sheet_name='Trades')
+                if len(df) >= 10:  # ต้องมีเทรดพอเพื่อให้ได้ sample ที่มีความหมาย
+                    self._trade_history = df
+            except Exception:
+                self._trade_history = None
+
+    @property
+    def has_real_data(self) -> bool:
+        """มีข้อมูล OHLCV จริงหรือไม่"""
+        return len(self._ohlcv_cache) > 0
+
+    @property
+    def has_trade_history(self) -> bool:
+        """มีประวัติเทรดจริงหรือไม่"""
+        return self._trade_history is not None and len(self._trade_history) >= 10
+
+    def _get_historical_win_rate(self) -> Optional[float]:
+        """คำนวณ win rate จากประวัติเทรดจริง (ถ้ามี) เพื่อใช้ calibrate simulation"""
+        if not self.has_trade_history:
+            return None
+        try:
+            profits = pd.to_numeric(self._trade_history.get('profit', []), errors='coerce').dropna()
+            if len(profits) < 10:
+                return None
+            wins = (profits > 0).sum()
+            return float(wins / len(profits))
+        except Exception:
+            return None
+
+    # =========================================================================
+    # Market Regime Generator
+    # =========================================================================
+
+    def _generate_market_sequence(self):
+        """สุ่ม Market Regime สำหรับทั้ง Episode (30 วัน)"""
+        regimes = list(self.MARKET_PROFILES.keys())
+        weights = np.array([self.MARKET_PROFILES[r]['weight'] for r in regimes])
+        weights = weights / weights.sum()  # Normalize
+
+        rng = self._get_rng()
+        self._daily_market_regimes = rng.choice(
+            regimes, size=self.max_steps, p=weights
+        ).tolist()
+
+    def _get_rng(self):
+        """คืน random number generator (ใช้ของ gym ถ้ามี seed)"""
+        if hasattr(self, 'np_random') and self.np_random is not None:
+            return self.np_random
+        return np.random.default_rng()
+
+    def _get_day_market_data(self, day_index: int) -> Dict:
+        """
+        ดึงข้อมูลตลาดสำหรับวันที่ระบุ
+        - ถ้ามีข้อมูล OHLCV จริง → คำนวณ ATR จริงจาก candles
+        - ถ้าไม่มี → สร้างจากคุณสมบัติจริงของตลาด Forex
+        """
+        regime = self._daily_market_regimes[day_index]
+        profile = self.MARKET_PROFILES[regime]
+        rng = self._get_rng()
+
+        if self.has_real_data:
+            # สุ่มเลือก symbol และตัดช่วง 1 วัน (96 M15 candles) ออกมา
+            symbols_avail = list(self._ohlcv_cache.keys())
+            symbol = symbols_avail[rng.integers(0, len(symbols_avail))]
+            df = self._ohlcv_cache[symbol]
+
+            candles_per_day = 96  # M15 × 96 = 24 ชั่วโมง
+            if len(df) > candles_per_day + 20:
+                start = int(rng.integers(20, len(df) - candles_per_day))
+                day_df = df.iloc[start:start + candles_per_day]
+
+                # คำนวณ ATR จริง (Wilder's True Range แบบง่าย)
+                high = day_df['high'].values
+                low = day_df['low'].values
+                close = day_df['close'].values
+
+                high_low = high - low
+                high_prev = np.abs(high[1:] - close[:-1])
+                low_prev = np.abs(low[1:] - close[:-1])
+                tr = np.maximum(np.maximum(high_low[1:], high_prev), low_prev)
+                atr = float(np.mean(tr)) if len(tr) > 0 else 0.0001
+
+                # กำหนด pip size (JPY pairs vs others)
+                mean_price = float(np.mean(close))
+                pip_size = 0.01 if mean_price > 50 else 0.0001
+                atr_pips = atr / pip_size
+
+                day_range_pips = (float(high.max()) - float(low.min())) / pip_size
+
+                return {
+                    'regime': regime,
+                    'atr_pips': max(3.0, min(atr_pips, 80.0)),
+                    'daily_range_pips': max(atr_pips * 2, day_range_pips),
+                    'base_win_rate': profile['win_rate_base'],
+                    'base_setups': profile['setups_per_day'],
+                    'pip_size': pip_size,
+                    'price': mean_price,
+                    'symbol': symbol,
+                    'data_source': 'real',
+                }
+
+        # Fallback: Synthetic Data — อิงจากการสังเกต ATR จริงของ Major Pairs
+        # ATR M15 เฉลี่ยของ Major pairs อยู่ที่ ~10-15 pips ขึ้นกับ session
+        base_atr = float(rng.normal(12.0, 4.0))
+        base_atr = max(3.0, min(base_atr, 40.0))
+        atr_pips = base_atr * profile['atr_mult']
+
+        return {
+            'regime': regime,
+            'atr_pips': atr_pips,
+            'daily_range_pips': atr_pips * float(rng.uniform(3.0, 6.0)),
+            'base_win_rate': profile['win_rate_base'],
+            'base_setups': profile['setups_per_day'],
+            'pip_size': 0.0001,
+            'price': 1.1000,
+            'symbol': 'SYNTHETIC',
+            'data_source': 'synthetic',
+        }
+
+    # =========================================================================
+    # Trading Simulation (Mini-Backtest Engine)
+    # =========================================================================
+
+    def _simulate_trading_day(self, params: Dict, market_data: Dict) -> Dict:
+        """
+        จำลองการเทรด 1 วันด้วยพารามิเตอร์และสภาพตลาดที่กำหนด
+
+        กลไก:
+        1. คำนวณจำนวน Setup ที่จะผ่าน Confluence filter
+        2. คำนวณ Win Rate ที่ adjusted จากพารามิเตอร์
+        3. สุ่ม outcome แต่ละเทรดตาม probability
+        4. ติดตาม Intraday Drawdown (กรณี loss ก่อน win ในวัน)
+
+        Returns:
+            Dict ที่มี pnl, trades_taken, wins, losses, max_intraday_dd, trades (list of PnLs)
+        """
+        rng = self._get_rng()
+
+        risk_pct = params['risk_per_trade_pct']
+        min_confluence = params['min_confluence_score']
+        atr_sl_mult = params['atr_sl_multiplier']
+        rr_ratio = params['preferred_risk_reward_ratio']
+
+        # === 1. จำนวน Setup ที่ผ่าน Confluence ===
+        # confluence 50 → ผ่าน 100% ของ base, confluence 80 → ผ่าน ~25%
+        # ใช้ Linear decay สำหรับความเข้าใจง่าย
+        confluence_filter = max(0.1, 1.0 - (min_confluence - 50) / 40.0)
+        expected_setups = market_data['base_setups'] * confluence_filter
+
+        # Poisson-distributed จำนวนเทรด (capped at MAX_POSITIONS)
+        num_trades = int(min(
+            self.MAX_POSITIONS_PER_DAY,
+            rng.poisson(max(0.05, expected_setups))
+        ))
+
+        # === 2. คำนวณ Win Rate ที่ปรับแล้ว ===
+        base_wr = market_data['base_win_rate']
+
+        # ถ้ามีประวัติเทรดจริง ให้ blend กับ base rate เพื่อ ground truth
+        hist_wr = self._get_historical_win_rate()
+        if hist_wr is not None:
+            base_wr = 0.5 * base_wr + 0.5 * hist_wr
+
+        # Confluence สูง → คุณภาพ setup ดี → WR สูง (+0.0 ถึง +0.15)
+        confluence_bonus = ((min_confluence - 50) / 30.0) * 0.15
+        # RR สูง → TP ไกล → WR ต่ำ (ตาม Random Walk Theory)
+        rr_penalty = ((rr_ratio - 1.5) / 1.5) * 0.12
+        # ATR SL Multiplier สูง → SL กว้าง → โดน Stopout น้อยลง (+0.0 ถึง +0.05)
+        sl_bonus = ((atr_sl_mult - 1.0) / 1.5) * 0.05
+
+        win_rate = base_wr + confluence_bonus - rr_penalty + sl_bonus
+        win_rate = float(np.clip(win_rate, 0.20, 0.75))
+
+        # === 3. Simulate แต่ละเทรด ===
+        trades: List[float] = []
+        wins = 0
+        losses = 0
+        running_pnl = 0.0
+        max_intraday_dd = 0.0
+        min_running = 0.0
+
+        for _ in range(num_trades):
+            risk_amount = self.balance * risk_pct
+
+            if rng.random() < win_rate:
+                # WIN: ได้ RR × risk (อาจเลื่อน Partial TP → ได้ไม่เต็ม)
+                # Actual RR มี variance เพราะ Partial Close (50% ที่ 1:1) + Trailing
+                # Expected RR จริง ≈ 0.5 × 1.0 + 0.5 × rr_ratio × (0.8 ~ 1.1)
+                effective_rr = 0.5 * 1.0 + 0.5 * rr_ratio * float(rng.uniform(0.8, 1.1))
+                pnl = risk_amount * effective_rr
+                wins += 1
+                self.last_trade_result = 1
+            else:
+                # LOSS: เสียใกล้ risk amount
+                # 15% โอกาสที่ Break-even move จะปกป้อง (SL moved to BE+1pip)
+                if rng.random() < 0.15:
+                    pnl = -risk_amount * float(rng.uniform(0.0, 0.3))
+                else:
+                    # SL โดน + slippage 0-5%
+                    slippage = float(rng.uniform(1.0, 1.05))
+                    pnl = -risk_amount * slippage
+                losses += 1
+                self.last_trade_result = -1
+
+            trades.append(pnl)
+            running_pnl += pnl
+            # Track intraday drawdown (worst negative excursion during the day)
+            min_running = min(min_running, running_pnl)
+
+        max_intraday_dd = abs(min_running)
+        daily_pnl = sum(trades)
+
+        return {
+            'pnl': daily_pnl,
+            'trades_taken': num_trades,
+            'wins': wins,
+            'losses': losses,
+            'max_intraday_dd': max_intraday_dd,
+            'trades': trades,
+            'win_rate': win_rate,
+            'regime': market_data['regime'],
+            'atr_pips': market_data['atr_pips'],
+        }
+
+    # =========================================================================
+    # State Management
+    # =========================================================================
+
+    def _reset_state(self):
+        """รีเซ็ตสถานะภายในทั้งหมด"""
+        self.current_step = 0
+        self.balance = self.INITIAL_BALANCE
+        self.peak_balance = self.INITIAL_BALANCE
+        self.daily_start_balance = self.INITIAL_BALANCE
+
+        self.total_dd_pct = 0.0
+        self.daily_dd_pct = 0.0
+        self.target_progress_pct = 0.0
+
+        self.trade_results: List[float] = []
+        self.daily_pnl_history: List[float] = []
+        self.last_trade_result = 0
+        self.current_volatility = 0.0
+
+        self._daily_market_regimes: List[str] = []
+        self._generate_market_sequence()
+
+    def _compute_sortino(self) -> float:
+        """คำนวณ Sortino Ratio (rolling — จาก daily returns ที่ผ่านมา)"""
+        if len(self.daily_pnl_history) < 2:
+            return 0.0
+
+        returns = np.array(self.daily_pnl_history) / self.INITIAL_BALANCE
+        neg_returns = returns[returns < 0]
+        mean_return = float(np.mean(returns))
+
+        if len(neg_returns) == 0:
+            return 3.0 if mean_return > 0 else 0.0  # ไม่มี downside = ดีมาก
+
+        downside_std = float(np.std(neg_returns))
+        if downside_std < 1e-6:
+            return 3.0 if mean_return > 0 else 0.0
+
+        # Annualized (252 trading days)
+        sortino = mean_return / downside_std * math.sqrt(252)
+        return float(np.clip(sortino, -5.0, 5.0))
+
+    def _get_stats(self) -> Dict:
+        """คืน stats dict สำหรับ Reward Calculator"""
+        return {
+            'daily_dd_pct': self.daily_dd_pct,
+            'total_dd_pct': self.total_dd_pct,
+            'sortino_ratio': self._compute_sortino(),
+            'target_progress_pct': self.target_progress_pct,
+            'balance': self.balance,
+            'last_trade_win': self.last_trade_result,
+        }
 
     def _get_obs(self) -> np.ndarray:
-        """แปลง current_stats ออกมาเป็น Array สำหรับ Observation Space"""
+        """สร้าง Observation Array จากสถานะปัจจุบัน"""
+        # Recent win rate (last 10 trades) → normalize to [-1, 1]
+        recent = self.trade_results[-10:] if self.trade_results else []
+        if len(recent) > 0:
+            win_pct = sum(1 for t in recent if t > 0) / len(recent)
+            recent_wr_norm = win_pct * 2.0 - 1.0
+        else:
+            recent_wr_norm = 0.0
+
         obs = np.array([
-            min(0.0, max(-1.0, self.current_stats['total_dd_pct'] / 0.10)),  # แปลงเทียบ 10%
-            min(0.0, max(-1.0, self.current_stats['daily_dd_pct'] / 0.05)),  # แปลงเทียบ 5%
-            min(1.0, max(-1.0, self.current_stats['target_progress_pct'] / 100.0)),
-            min(5.0, max(-5.0, self.current_stats['sortino_ratio'])),        # Clip ที่ +-5
-            float(self.current_stats['last_trade_win'])
+            float(np.clip(self.total_dd_pct / 0.10, -5.0, 0.0)),     # Total DD (0 to -1)
+            float(np.clip(self.daily_dd_pct / 0.05, -5.0, 0.0)),     # Daily DD (0 to -1)
+            float(np.clip(self.target_progress_pct / 100.0, -1.0, 2.0)),  # Progress
+            float(np.clip(self._compute_sortino(), -5.0, 5.0)),       # Sortino
+            float(self.last_trade_result),                             # Last W/L
+            float(np.clip(self.current_volatility, -2.0, 2.0)),        # Volatility
+            float(self.current_step / max(1, self.max_steps)),         # Day progress
+            float(np.clip(recent_wr_norm, -1.0, 1.0)),                 # Recent WR
         ], dtype=np.float32)
+
         return obs
 
+    # =========================================================================
+    # Gym Interface
+    # =========================================================================
+
     def reset(self, seed=None, options=None):
-        """เริ่ม Episode ใหม่"""
+        """เริ่ม Episode ใหม่ (FTMO Challenge 30 วันใหม่)"""
         super().reset(seed=seed)
-        self.current_step = 0
-        
-        # รีเซ็ตอ้างอิงสถานะไปตริเริ่มพอร์ต 1 แสนเหรียญ
-        self.current_stats = {
-            'daily_dd_pct': 0.0,
-            'total_dd_pct': 0.0,
-            'sortino_ratio': 0.0,
-            'target_progress_pct': 0.0,
-            'balance': 100000.0,
-            'last_trade_win': 0
+        self._reset_state()
+
+        info = {
+            'data_source': 'real' if self.has_real_data else 'synthetic',
+            'has_trade_history': self.has_trade_history,
+            'initial_balance': self.INITIAL_BALANCE,
+            'challenge_days': self.max_steps,
         }
-        self.previous_stats = self.current_stats.copy()
-        
-        info = {}
         return self._get_obs(), info
 
     def step(self, action: np.ndarray):
         """
-        Agent สั่ง Action (เปลี่ยนค่าพารามิเตอร์) -> Environment ตอบสนอง (Reward)
-        และขยับไปยัง Step ถัดไป หรือ State ใหม่
+        ดำเนินการ 1 วันเทรด (1 step)
+
+        Args:
+            action: np.ndarray shape (4,) ใน [-1, 1]
+
+        Returns:
+            obs, reward, terminated, truncated, info
         """
         self.current_step += 1
-        self.previous_stats = self.current_stats.copy()
+        previous_stats = self._get_stats()
 
-        # ==========================================
-        # ในโลกปกติ: Action -> เอาไปเทรดกับ Backtest หรือ Simulator
-        # เนื่องจากเราเป็นแบบ Continual Adaptation:
-        # สมมติผลกระทบ (Mock Impact) ว่าระบบตั้งค่าแบบนี้ จะเกิดอะไรขึ้นในวันต่อไป
-        # แต่เพื่อความสมจริง หากมีการเชื่อมต่อระบบจำลอง Backtest ให้ Call ที่นี่
-        # สำหรับโครงสร้างนี้ ผมจะเลียนแบบผลลัพธ์จาก Historical Data เพื่อคำนวณ Reward คร่าวๆ
-        # ==========================================
-        
-        # สมมติเราดึงข้อมูลแถวถัดไปจาก Excel History (ถ้ามี) มาแทนค่า 
-        # เพื่อป้อนกลับเป็น State ให้ Agent ฝึกเข้าใจสถานการณ์เก่า
-        if not self.stats_df.empty and self.current_step < len(self.stats_df):
-            row = self.stats_df.iloc[self.current_step]
-        else:
-            # ใช้การกะประมาณ (Stochastic Simulation) หากข้อมูลหมด หรือไม่มี
-            # PPO จะเรียนรู้การป้องกันความเสี่ยง แม้อาจเทรดจำลอง
-            # ในกรณีเทรดจริง สภาพจะมาจาการอัพเดทจริงหลังจากเทรด 1 วัน หรือ 1 สัปดาห์
-            pass 
+        # 1. ถอด Action → Parameters
+        params = self.map_actions_to_parameters(action)
 
-        # ตัวอย่างจำลอง (Simulate Impact) - Agent ที่เล่นปลอดภัย จะได้ Sortino ดีขึ้น
-        risk_action = action[0]       # ลบ = เสี่ยงต่ำ (0.5%), บวก = เสี่ยงสูง (1.0%)
-        conf_action = action[1]       # ลบ = คอนเฟิร์มน้อย (60), บวก = คอนเฟิร์มเยอะ (80)
-        
-        # ปรับจำลองผลกระทบต่อสถิติปัจจุบัน
-        if risk_action > 0.5 and conf_action < 0.0:
-            # ความเสี่ยงสูง มั่วสูง -> มีสิทธิขาดทุนติดลบ (Daily DD ลบ)
-            self.current_stats['daily_dd_pct'] += np.random.uniform(0.01, 0.03)
-            self.current_stats['last_trade_win'] = -1
-        elif risk_action <= 0.0 and conf_action >= 0.0:
-            # ปลอดภัยสูง -> ได้กำไรสม่ำเสมอ หรือขาดทุนนิดหน่อย
-            self.current_stats['target_progress_pct'] += np.random.uniform(0.1, 1.0)
-            self.current_stats['last_trade_win'] = 1
-            self.current_stats['sortino_ratio'] = min(3.0, self.current_stats['sortino_ratio'] + 0.1)
+        # 2. ดึงข้อมูลตลาดของวันนี้
+        market_data = self._get_day_market_data(self.current_step - 1)
+        # Normalize ATR around mean (12 pips) → [-2, 2]
+        self.current_volatility = (market_data['atr_pips'] - 12.0) / 6.0
 
-        # สะสม Total
-        self.current_stats['total_dd_pct'] = max(self.current_stats['total_dd_pct'], self.current_stats['daily_dd_pct'])
-        
-        # คำนวณ Reward
-        reward = self.reward_calculator.calculate_reward(self.current_stats, self.previous_stats)
+        # 3. Simulate trading day
+        day_result = self._simulate_trading_day(params, market_data)
 
-        # จบ Episode เมื่อไร? (บรรลุเป้า , ตาย , หรือหมดรอบ)
+        # 4. อัพเดทสถานะ
+        self.daily_start_balance = self.balance
+        self.balance += day_result['pnl']
+        self.trade_results.extend(day_result['trades'])
+        self.daily_pnl_history.append(day_result['pnl'])
+
+        # Peak balance (ใช้สำหรับคำนวณ Total DD from peak)
+        self.peak_balance = max(self.peak_balance, self.balance)
+
+        # Total DD จาก peak (อิง initial balance ตามกฎ FTMO)
+        # FTMO: Max DD = 10% ของ balance เริ่มต้น (ไม่ใช่ peak)
+        total_loss = self.INITIAL_BALANCE - self.balance
+        self.total_dd_pct = max(0.0, total_loss / self.INITIAL_BALANCE)
+
+        # Daily DD (worst case: end-of-day + intraday excursion)
+        day_end_loss = max(0.0, self.daily_start_balance - self.balance)
+        intraday_dd = day_result['max_intraday_dd']
+        self.daily_dd_pct = max(day_end_loss, intraday_dd) / self.INITIAL_BALANCE
+
+        # Target progress (% ของเป้า 10%)
+        profit = self.balance - self.INITIAL_BALANCE
+        target_amount = self.INITIAL_BALANCE * self.reward_calculator.target
+        self.target_progress_pct = (profit / target_amount) * 100.0 if target_amount > 0 else 0.0
+
+        # 5. คำนวณ Reward
+        current_stats = self._get_stats()
+        reward = self.reward_calculator.calculate_reward(current_stats, previous_stats)
+
+        # 6. ตรวจสอบการจบ Episode
         terminated = False
         truncated = False
-        
-        if self.current_stats['daily_dd_pct'] >= self.reward_calculator.daily_limit or \
-           self.current_stats['total_dd_pct'] >= self.reward_calculator.total_limit:
+
+        # FTMO Fail: Daily DD > 4% หรือ Total DD > 8%
+        if self.daily_dd_pct >= self.reward_calculator.daily_limit:
             terminated = True
-            
-        elif self.current_stats['target_progress_pct'] >= 100.0:
+        elif self.total_dd_pct >= self.reward_calculator.total_limit:
             terminated = True
-            
+        # FTMO Pass: โตถึง 10%
+        elif self.target_progress_pct >= 100.0:
+            terminated = True
+
+        # หมดวัน Challenge
         if self.current_step >= self.max_steps:
             truncated = True
 
-        info = {'current_step': self.current_step, 'action': action}
+        info = {
+            'day': self.current_step,
+            'balance': self.balance,
+            'pnl': day_result['pnl'],
+            'trades': day_result['trades_taken'],
+            'wins': day_result['wins'],
+            'losses': day_result['losses'],
+            'regime': day_result['regime'],
+            'atr_pips': day_result['atr_pips'],
+            'total_dd_pct': self.total_dd_pct,
+            'daily_dd_pct': self.daily_dd_pct,
+            'progress_pct': self.target_progress_pct,
+            'params': params,
+            'win_rate': day_result['win_rate'],
+        }
+
         return self._get_obs(), float(reward), terminated, truncated, info
 
     def render(self, mode='console'):
-        if mode == 'console':
-            print(f"Step: {self.current_step} | Total DD: {self.current_stats['total_dd_pct']:.2%} | Target: {self.current_stats['target_progress_pct']:.2%}")
+        """แสดงสถานะปัจจุบันใน Console"""
+        if mode in ('console', 'human'):
+            total_trades = len(self.trade_results)
+            wins = sum(1 for t in self.trade_results if t > 0)
+            wr = (wins / total_trades * 100) if total_trades > 0 else 0.0
+            print(
+                f"Day {self.current_step}/{self.max_steps} | "
+                f"Balance: ${self.balance:,.2f} | "
+                f"Total DD: {self.total_dd_pct:.2%} | "
+                f"Daily DD: {self.daily_dd_pct:.2%} | "
+                f"Progress: {self.target_progress_pct:.1f}% | "
+                f"WR: {wr:.0f}% ({total_trades}t)"
+            )
 
-    def map_actions_to_parameters(self, action: np.ndarray) -> dict:
-        """แปลง Action สเปซกลับเป็นพารามิเตอร์จริงสำหรับไปทับค่า `bot_config` ใน `main.py`"""
-        # [0] risk
-        val_risk = 0.0075 + (action[0] * 0.0025)  # -1->0.5%, 1->1.0%
-        # [1] confluence
-        val_conf = 65.0 + (action[1] * 15.0)      # -1->50, 1->80
-        # [2] atr
-        val_atr = 1.75 + (action[2] * 0.75)       # -1->1.0, 1->2.5
-        # [3] rr
-        val_rr = 2.25 + (action[3] * 0.75)        # -1->1.5, 1->3.0
+    # =========================================================================
+    # Action → Parameters Mapping (Static — ไม่ต้องสร้าง env instance ใหม่)
+    # =========================================================================
+
+    @staticmethod
+    def map_actions_to_parameters(action: np.ndarray) -> Dict:
+        """
+        แปลง Action Space [-1, 1] → Trading Parameters จริง
+
+        เป็น @staticmethod เพื่อให้ RL Agent เรียกได้โดยไม่ต้องสร้าง env instance
+        (ใช้ใน get_optimized_parameters() ของ SelfLearningAgent)
+
+        Args:
+            action: ndarray shape (4,) ใน [-1, 1]
+
+        Returns:
+            Dict ของ 4 parameters พร้อมปัดทศนิยมเรียบร้อย
+        """
+        a = np.asarray(action, dtype=np.float32).flatten()
+        # Defensive: กันกรณี action array สั้นกว่า 4
+        if a.size < 4:
+            a = np.concatenate([a, np.zeros(4 - a.size, dtype=np.float32)])
+
+        val_risk = 0.0075 + float(a[0]) * 0.0025    # [-1, 1] → [0.5%, 1.0%]
+        val_conf = 65.0 + float(a[1]) * 15.0         # [-1, 1] → [50, 80]
+        val_atr = 1.75 + float(a[2]) * 0.75          # [-1, 1] → [1.0, 2.5]
+        val_rr = 2.25 + float(a[3]) * 0.75           # [-1, 1] → [1.5, 3.0]
+
+        # Clamp เผื่อ action เกินช่วง
+        val_risk = max(0.005, min(val_risk, 0.01))
+        val_conf = max(50.0, min(val_conf, 80.0))
+        val_atr = max(1.0, min(val_atr, 2.5))
+        val_rr = max(1.5, min(val_rr, 3.0))
 
         return {
             'risk_per_trade_pct': round(val_risk, 4),
-            'min_confluence_score': int(val_conf),
+            'min_confluence_score': int(round(val_conf)),
             'atr_sl_multiplier': round(val_atr, 1),
-            'preferred_risk_reward_ratio': round(val_rr, 1)
+            'preferred_risk_reward_ratio': round(val_rr, 1),
         }

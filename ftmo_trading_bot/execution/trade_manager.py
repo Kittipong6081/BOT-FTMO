@@ -425,14 +425,18 @@ class TradeManager:
             int: จำนวนเทรดที่ปิด
         """
         from core.time_manager import TimeManager
-        server_time_now = TimeManager.get_server_time()
-        current_time = server_time_now.time()
-        current_weekday = server_time_now.weekday()
+        import pytz
+        server_time_now = TimeManager.get_server_time()   # EET (Europe/Bucharest)
+        # แปลงเป็น UTC เพื่อเทียบกับค่า Config (ซึ่งเป็น UTC)
+        utc_time_now = server_time_now.astimezone(pytz.UTC)
+        current_time_utc = utc_time_now.time()
+        current_weekday_utc = utc_time_now.weekday()
         sessions = bot_config.sessions
         closed_count = 0
 
-        # === ความปลอดภัยระดับสูดสุด: ตรวจสอบ Friday Force Close ตามกฎ FTMO ===
-        # ถ้าเป็นวันศุกร์และเกินเวลา 20:45 Server Time (EET) ให้บังคับปิดทุกออเดอร์ทันที 
+        # === ความปลอดภัยระดับสูงสุด: Friday Force Close (ใช้เวลา Server EET ตามกฎ FTMO) ===
+        # friday_force_close ใน config (20:45) ตีความเป็น EET server time โดยเฉพาะ
+        # (FTMO rollover อ้างอิง EET ของโบรกเกอร์)
         if TimeManager.is_friday_close_time(server_time_now):
             print("🚨 [Trade Manager] ⚠️ FRIDAY FORCE CLOSE ⚠️ — ปิดทุก Position ทันทีเพื่อรักษากฎ FTMO!")
             for ticket in list(self._executor.active_trades.keys()):
@@ -440,27 +444,28 @@ class TradeManager:
                     closed_count += 1
             return closed_count
 
-        # === ตรวจวันศุกร์ (แจ้งเตือน) — ปิดทุกเทรดก่อน cutoff เดิม ===
+        # === ตรวจวันศุกร์ (แจ้งเตือน) — ปิดทุกเทรดก่อน cutoff (UTC-based) ===
         from datetime import time as dt_time
-        friday_warning = dt_time(
+        friday_warning_utc = dt_time(
             sessions.friday_cutoff.hour,
             max(0, sessions.friday_cutoff.minute - 15)
         )
-
-        if current_weekday == 4 and current_time >= friday_warning and current_time < sessions.friday_force_close:
-            print("⏰ [Trade Manager] ใกล้หมดวันศุกร์ช่วงเย็น — พยายามเคลียร์ Position...")
+        # friday_force_close ใน sessions เป็น EET — ไม่นำมา compare กับ UTC time
+        # ใช้ is_friday_close_time (ด้านบน) เป็น guard หลักของ EET แล้ว
+        if current_weekday_utc == 4 and current_time_utc >= friday_warning_utc:
+            print("⏰ [Trade Manager] ใกล้หมดวันศุกร์ (UTC) — พยายามเคลียร์ Position...")
             for ticket in list(self._executor.active_trades.keys()):
                 if self._executor.close_trade(ticket, reason="Friday Session Close"):
                     closed_count += 1
             return closed_count
 
-        # === ตรวจ NY Session End — ปิดเทรดที่กำไร ===
-        ny_warning = dt_time(
+        # === ตรวจ NY Session End (UTC-based) — ปิดเทรดที่กำไร ===
+        ny_warning_utc = dt_time(
             sessions.newyork_end.hour,
             max(0, sessions.newyork_end.minute - 15)
         )
 
-        if current_time >= ny_warning:
+        if current_time_utc >= ny_warning_utc:
             for ticket, trade in list(self._executor.active_trades.items()):
                 price_info = self._connector.get_current_price(trade.symbol)
                 if price_info:
