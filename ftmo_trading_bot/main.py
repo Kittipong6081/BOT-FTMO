@@ -217,6 +217,131 @@ class FTMOTradingBot:
     # 🧠 RL Agent — Live Observation & Daily Re-tune
     # =========================================================================
 
+    def _compute_live_regime(self) -> dict:
+        """
+        ดึง EURUSD H1 100 แท่งล่าสุดจาก MT5 แล้วจำแนก regime + ATR z-score
+        ใช้เป็น proxy ตลาดรวม (EURUSD liquidity สูงสุด, สะท้อน macro regime ได้ดี)
+
+        Returns:
+            dict: {regime_trend_norm, atr_zscore, volatility_norm, regime_consistency}
+        """
+        default = {
+            "regime_trend_norm": 0.0,
+            "atr_zscore": 0.0,
+            "volatility_norm": 0.0,
+            "regime_consistency": 0.0,
+        }
+        try:
+            df = self._connector.get_ohlcv("EURUSD", "H1", count=100)
+            if df is None or len(df) < 50:
+                return default
+
+            high = df["high"].values
+            low = df["low"].values
+            close = df["close"].values
+            n = len(close)
+
+            # True Range → ATR (Wilder's simple)
+            hl = high[1:] - low[1:]
+            hc = np.abs(high[1:] - close[:-1])
+            lc = np.abs(low[1:] - close[:-1])
+            tr = np.maximum(np.maximum(hl, hc), lc)
+
+            atr_recent = float(np.mean(tr[-14:]))
+            atr_baseline = float(np.mean(tr))
+            atr_std = float(np.std(tr)) or 1e-8
+            atr_zscore = (atr_recent - atr_baseline) / atr_std
+
+            # Volatility norm — normalize เหมือนใน env: (atr_pips - 12) / 6
+            pip_size = 0.01 if float(np.mean(close)) > 50 else 0.0001
+            atr_pips = atr_recent / pip_size
+            volatility_norm = (atr_pips - 12.0) / 6.0
+
+            # Trend slope: linear regression ของ close 50 แท่งล่าสุด หน่วย ATR/bar
+            window = min(50, n)
+            y = close[-window:]
+            x = np.arange(window, dtype=np.float64)
+            slope = float(np.polyfit(x, y, 1)[0])  # price units per bar
+            slope_per_atr = slope / max(atr_recent, 1e-8)
+
+            # จำแนก regime (match กับ MARKET_PROFILES ใน env)
+            if abs(slope_per_atr) > 0.15:
+                regime = "trending"
+            elif atr_zscore > 1.0:
+                regime = "volatile"
+            elif atr_zscore < -0.8:
+                regime = "quiet"
+            else:
+                regime = "ranging"
+
+            regime_map = {"trending": 1.0, "ranging": -1.0, "volatile": 0.0, "quiet": 0.0}
+            regime_trend_norm = regime_map.get(regime, 0.0)
+
+            # Regime consistency: สัดส่วน 5 สัญญาณย่อย (slope 20 / 40 / 60 / 80 / 100 แท่ง)
+            # ที่ให้ทิศทางเดียวกัน — proxy สำหรับ regime_consistency ใน env
+            consistent = 0
+            total = 0
+            for w in (20, 40, 60, 80, min(100, n)):
+                if w > n:
+                    continue
+                yy = close[-w:]
+                xx = np.arange(w, dtype=np.float64)
+                s = float(np.polyfit(xx, yy, 1)[0])
+                total += 1
+                if np.sign(s) == np.sign(slope) and abs(s) > 0:
+                    consistent += 1
+            regime_consistency = (consistent / total) if total > 0 else 0.0
+
+            return {
+                "regime_trend_norm": regime_trend_norm,
+                "atr_zscore": float(np.clip(atr_zscore, -3.0, 3.0)),
+                "volatility_norm": float(np.clip(volatility_norm, -2.0, 2.0)),
+                "regime_consistency": float(np.clip(regime_consistency, 0.0, 1.0)),
+            }
+        except Exception as e:
+            print(f"⚠️ [RL] compute_live_regime ล้มเหลว: {e}")
+            return default
+
+    def _get_challenge_day(self, today: date) -> int:
+        """
+        นับวันที่ของ FTMO challenge (business days ตั้งแต่เริ่ม)
+        เก็บ start_date ในไฟล์ persistent — สร้างอัตโนมัติรอบแรก
+
+        Returns:
+            int: วันที่ของ challenge (1..30+) — 1 = วันแรก
+        """
+        state_path = os.path.join(bot_config.paths.model_dir, "challenge_state.json")
+        start_date = None
+        try:
+            if os.path.exists(state_path):
+                import json
+                with open(state_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                start_date = date.fromisoformat(data.get("start_date", ""))
+        except Exception:
+            start_date = None
+
+        if start_date is None:
+            start_date = today
+            try:
+                import json
+                with open(state_path, "w", encoding="utf-8") as f:
+                    json.dump({"start_date": start_date.isoformat()}, f)
+                print(f"📅 [RL] เริ่ม FTMO Challenge วันที่ {start_date.isoformat()} (Day 1)")
+            except Exception:
+                pass
+
+        # นับ business days (Mon-Fri) ระหว่าง start_date → today, inclusive
+        delta = (today - start_date).days
+        if delta < 0:
+            return 1
+        business = 0
+        for i in range(delta + 1):
+            d = start_date.fromordinal(start_date.toordinal() + i)
+            if d.weekday() < 5:
+                business += 1
+        return max(1, business)
+
     def _build_live_observation(self) -> np.ndarray:
         """
         สร้าง observation 13 dims จากสถานะจริงของบอท เพื่อส่งให้ PPO agent
@@ -261,22 +386,26 @@ class FTMOTradingBot:
         except Exception:
             pass
 
-        # Day-of-week (server time)
+        # Day-of-week + challenge day (server time)
         try:
             server_dt = TimeManager.get_server_time()
             dow = server_dt.weekday()  # 0=Mon … 6=Sun
+            today = server_dt.date()
         except Exception:
             dow = 0
+            today = datetime.now().date()
         day_of_week_norm = (dow % 5) / 4.0
 
-        # Volatility / regime / ATR z-score — placeholder 0 (ต้องต่อ live market data ภายหลัง)
-        current_volatility = 0.0
-        regime_trend_norm = 0.0
-        atr_zscore = 0.0
-        regime_consistency = 0.0
+        # Live regime จาก EURUSD H1
+        regime_info = self._compute_live_regime()
+        current_volatility = regime_info["volatility_norm"]
+        regime_trend_norm = regime_info["regime_trend_norm"]
+        atr_zscore = regime_info["atr_zscore"]
+        regime_consistency = regime_info["regime_consistency"]
 
-        # day_progress: ไม่รู้ว่าวันที่เท่าไรของ challenge → ใช้ dow/30 เป็น proxy คร่าวๆ
-        day_progress = float(dow) / 30.0
+        # day_progress: challenge day / 30 (นับ business days ตั้งแต่เริ่ม)
+        challenge_day = self._get_challenge_day(today)
+        day_progress = float(challenge_day) / 30.0
 
         cum_pnl_norm = (balance / initial) - 1.0 if initial > 0 else 0.0
 

@@ -120,7 +120,7 @@ class SymbolConfig:
         "GBPUSD",   # British Pound / US Dollar
         "USDJPY",   # US Dollar / Japanese Yen
         "AUDUSD",   # Australian Dollar / US Dollar
-	"USDCAD",   # US Dollar / Canadian Dollar
+	    "USDCAD",   # US Dollar / Canadian Dollar
         "USDCHF",   # US Dollar / Swiss Franc
         "NZDUSD",   # New Zealand Dollar / US Dollar
         "EURJPY",   # Euro / Japanese Yen
