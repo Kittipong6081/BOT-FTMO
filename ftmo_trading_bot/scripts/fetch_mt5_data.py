@@ -17,7 +17,7 @@ Prerequisites:
 import argparse
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -40,15 +40,28 @@ TIMEFRAMES = {
 }
 
 
-def fetch_symbol(symbol: str, timeframe_key: str, start: datetime, end: datetime) -> pd.DataFrame:
-    """ดึง OHLCV ของ 1 symbol — return DataFrame หรือ empty"""
+def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
+    """ดึง OHLCV ของ 1 symbol โดยใช้ copy_rates_from_pos (ไม่พึ่ง datetime range)"""
     tf = TIMEFRAMES[timeframe_key]
 
     if not mt5.symbol_select(symbol, True):
         print(f"  ⚠️  {symbol}: select failed ({mt5.last_error()})")
         return pd.DataFrame()
 
-    rates = mt5.copy_rates_range(symbol, tf, start, end)
+    # คำนวณจำนวนแท่งโดยประมาณ (M15 = 96 bars/day, 5 trading days/week)
+    bars_per_day = {"M15": 96, "H1": 24, "H4": 6}[timeframe_key]
+    count = years * 365 * bars_per_day
+    count = min(count, 200_000)  # MT5 cap
+
+    # ใช้ copy_rates_from_pos: เริ่มจากแท่งล่าสุด (pos=0) ย้อนกลับไป count แท่ง
+    # วิธีนี้ stable กว่า copy_rates_range เพราะไม่มี timezone issue
+    rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+    if rates is None or len(rates) == 0:
+        # Fallback: ลอง copy_rates_range แบบ tz-aware (UTC)
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=years * 365)
+        rates = mt5.copy_rates_range(symbol, tf, start, end)
+
     if rates is None or len(rates) == 0:
         print(f"  ⚠️  {symbol}: no data ({mt5.last_error()})")
         return pd.DataFrame()
@@ -79,16 +92,14 @@ def main():
         print("   ตรวจสอบว่า MT5 terminal เปิดอยู่และ login แล้ว")
         sys.exit(1)
 
-    end = datetime.now()
-    start = end - timedelta(days=args.years * 365)
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
     print(f"📥 ดึงข้อมูล {args.timeframe} ของ {len(symbols)} symbols "
-          f"ตั้งแต่ {start.date()} ถึง {end.date()}")
+          f"ย้อนหลัง ~{args.years} ปี")
 
     success = 0
     for sym in symbols:
-        df = fetch_symbol(sym, args.timeframe, start, end)
+        df = fetch_symbol(sym, args.timeframe, args.years)
         if df.empty:
             continue
         out_path = os.path.join(args.out_dir, f"{sym}_{args.timeframe}.csv")
