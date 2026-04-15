@@ -51,20 +51,35 @@ class SelfLearningAgent:
         # เตรียมตัวแปรโมเดล
         self.model = None
 
-    def initialize_model(self):
-        """โหลดโมเดลเก่ามาเรียนรู้ต่อ (Transfer Learning / Continual Learning) หากมี, ไม่งั้นสร้างใหม่"""
+    def initialize_model(self, strict: bool = False):
+        """
+        โหลดโมเดลเก่ามาเรียนรู้ต่อ (Transfer Learning / Continual Learning) หากมี, ไม่งั้นสร้างใหม่
+
+        Args:
+            strict: ถ้า True จะ raise RuntimeError เมื่อโหลดโมเดลที่เทรนแล้วไม่ได้
+                    (ใช้ตอน live trading — ไม่ยอมรับ untrained random policy)
+        """
         if os.path.exists(self.model_path):
             try:
                 if self.verbose:
-                    print("🧠 [RL Agent] พบกล้ามเนื้อเนื้อสมองเดิม... กำลังโหลด PPO Model เพื่อเรียนรู้ต่อ")
+                    print("🧠 [RL Agent] พบสมองเดิม... กำลังโหลด PPO Model")
                 self.model = PPO.load(self.model_path, env=self.vec_env)
+                return
             except Exception as e:
-                # Observation space ของโมเดลเก่าอาจไม่ตรงกับ env ใหม่ (เช่น 5 vs 8 dims)
-                # กรณีนี้ต้องเริ่มใหม่
+                if strict:
+                    raise RuntimeError(
+                        f"[RL Agent] โหลดโมเดลที่เทรนแล้วล้มเหลว: {e} — "
+                        f"ปฏิเสธการใช้ random policy ในโหมด live"
+                    )
                 if self.verbose:
-                    print(f"⚠️ [RL Agent] โหลดโมเดลเก่าล้มเหลว ({e}) — สร้างใหม่")
+                    print(f"⚠️ [RL Agent] โหลดโมเดลเก่าล้มเหลว ({e}) — สร้างใหม่ (untrained)")
                 self._create_new_model()
         else:
+            if strict:
+                raise RuntimeError(
+                    f"[RL Agent] ไม่พบโมเดลที่ {self.model_path} — "
+                    f"ต้องเทรน PPO ก่อน (python scripts/train_ppo.py)"
+                )
             if self.verbose:
                 print("🧠 [RL Agent] ไม่มีสมองเดิม... สร้าง PPO Model ใหม่ทั้งหมด")
             self._create_new_model()

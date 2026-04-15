@@ -17,7 +17,9 @@ import os
 import sys
 import signal
 import time as time_module
-from datetime import datetime, date
+from datetime import datetime, date, time as dt_time
+
+import numpy as np
 import argparse
 
 from config.settings import bot_config
@@ -78,15 +80,19 @@ class FTMOTradingBot:
         
         # === AI Agent (Phase 5) ===
         self._rl_agent = None
+        self._last_rl_tune_date: date = None  # วันที่ re-tune ครั้งล่าสุด (server date)
+        self._rl_params_applied: dict = {}    # params ล่าสุดที่ apply แล้ว
         try:
             self._rl_agent = SelfLearningAgent(
                 excel_path=bot_config.paths.trade_log_file,
                 model_dir=bot_config.paths.model_dir,
                 verbose=1
             )
+            # Strict load — ถ้าไม่มี trained model ใน live mode ให้ fail fast
+            self._rl_agent.initialize_model(strict=True)
         except Exception as e:
             print(f"❌ [Bot] ไม่สามารถโหลด AI Agent ได้: {e}")
-            pass
+            self._rl_agent = None
         
         # === ตัวแปรสถิติ ===
         self._loop_count = 0
@@ -133,31 +139,14 @@ class FTMOTradingBot:
         """
         print("🔄 [Bot] กำลังเริ่มต้นระบบ...\n")
 
-        # ขั้นตอนที่ 0: ปรับพารามิเตอร์ด้วย AI (RL Agent)
+        # ขั้นตอนที่ 0: ปรับพารามิเตอร์ด้วย AI (RL Agent) — startup initial tune
+        # Note: จะ re-tune ทุกวันหลังตลาดปิด ผ่าน _maybe_daily_rl_tune() ใน main loop
         if self._rl_agent:
             print("━" * 40)
-            print("🧠 ขั้นตอนที่ 0: AI Self-Learning & Optimization")
+            print("🧠 ขั้นตอนที่ 0: AI Self-Learning & Optimization (Startup)")
             print("━" * 40)
-            try:
-                optimized_params = self._rl_agent.get_optimized_parameters()
-                
-                # Apply parameters (override config)
-                bot_config.ftmo.DEFAULT_RISK_PER_TRADE_PCT = optimized_params['risk_per_trade_pct']
-                bot_config.ftmo.PREFERRED_RISK_REWARD_RATIO = optimized_params['preferred_risk_reward_ratio']
-                bot_config.indicators.atr_sl_multiplier = optimized_params['atr_sl_multiplier']
-                
-                # Update Strategy Min Score explicitly
-                if hasattr(self._strategy, 'MIN_CONFLUENCE_SCORE'):
-                    self._strategy.MIN_CONFLUENCE_SCORE = optimized_params['min_confluence_score']
-                    
-                print(f"✅ [RL] AI ปรับตั้งตัวแปรสำหรับวันนี้:")
-                print(f"   Risk: {optimized_params['risk_per_trade_pct']*100:.2f}% | "
-                      f"Confluence: {optimized_params['min_confluence_score']} | "
-                      f"RR: 1:{optimized_params['preferred_risk_reward_ratio']} | "
-                      f"ATR: {optimized_params['atr_sl_multiplier']}x")
-                self._notifier.send_ai_tuning(optimized_params)
-            except Exception as e:
-                print(f"⚠️ [RL] AI ประเมินล้มเหลว ใช้ค่าดั้งเดิม: {e}")
+            # Startup tune ใช้ blank obs (วันแรก challenge) หรือ live state ถ้ามี balance เก่า
+            self._apply_rl_optimization(reason="startup")
 
         # ขั้นตอนที่ 1: เชื่อมต่อ MT5
         print("━" * 40)
@@ -223,6 +212,146 @@ class FTMOTradingBot:
         print("\n✅ [Bot] เริ่มต้นระบบสำเร็จ — พร้อมทำงาน!\n")
         self._notifier.send_startup()
         return True
+
+    # =========================================================================
+    # 🧠 RL Agent — Live Observation & Daily Re-tune
+    # =========================================================================
+
+    def _build_live_observation(self) -> np.ndarray:
+        """
+        สร้าง observation 13 dims จากสถานะจริงของบอท เพื่อส่งให้ PPO agent
+        ต้อง match กับ FTMOOptimizationEnv._get_obs() ลำดับและ scale
+
+        Returns:
+            np.ndarray shape (13,) dtype float32
+        """
+        try:
+            risk = self._risk_manager.get_risk_status()
+            total_dd = float(risk.get("overall_drawdown_pct", 0.0))   # เช่น 0.035
+            daily_dd = float(risk.get("daily_loss_pct", 0.0))
+            balance = float(risk.get("current_balance", self._risk_manager.initial_balance))
+            initial = float(self._risk_manager.initial_balance) or 100_000.0
+        except Exception:
+            total_dd, daily_dd, balance, initial = 0.0, 0.0, 100_000.0, 100_000.0
+
+        # Progress (% ของเป้า 10%)
+        profit = balance - initial
+        target_amount = initial * 0.10
+        progress = (profit / target_amount) * 100.0 if target_amount > 0 else 0.0
+
+        # Sortino + recent trades จาก analyzer
+        sortino = 0.0
+        recent_wr_norm = 0.0
+        last_trade_result = 0
+        try:
+            risk_stats = self._analyzer.get_risk_stats() or {}
+            sortino = float(risk_stats.get("sortino_ratio", 0.0) or 0.0)
+            if not np.isfinite(sortino):
+                sortino = 0.0
+
+            trades = getattr(self._analyzer, "_trades", None) or []
+            if trades:
+                last = trades[-1]
+                last_pnl = float(getattr(last, "profit", 0.0) or 0.0)
+                last_trade_result = 1 if last_pnl > 0 else (-1 if last_pnl < 0 else 0)
+                recent = trades[-10:]
+                if recent:
+                    wins = sum(1 for t in recent if float(getattr(t, "profit", 0.0) or 0.0) > 0)
+                    recent_wr_norm = (wins / len(recent)) * 2.0 - 1.0
+        except Exception:
+            pass
+
+        # Day-of-week (server time)
+        try:
+            server_dt = TimeManager.get_server_time()
+            dow = server_dt.weekday()  # 0=Mon … 6=Sun
+        except Exception:
+            dow = 0
+        day_of_week_norm = (dow % 5) / 4.0
+
+        # Volatility / regime / ATR z-score — placeholder 0 (ต้องต่อ live market data ภายหลัง)
+        current_volatility = 0.0
+        regime_trend_norm = 0.0
+        atr_zscore = 0.0
+        regime_consistency = 0.0
+
+        # day_progress: ไม่รู้ว่าวันที่เท่าไรของ challenge → ใช้ dow/30 เป็น proxy คร่าวๆ
+        day_progress = float(dow) / 30.0
+
+        cum_pnl_norm = (balance / initial) - 1.0 if initial > 0 else 0.0
+
+        obs = np.array([
+            float(np.clip(-total_dd / 0.10, -5.0, 0.0)),     # total_dd เป็นบวก → ใส่ลบ
+            float(np.clip(-daily_dd / 0.05, -5.0, 0.0)),
+            float(np.clip(progress / 100.0, -1.0, 2.0)),
+            float(np.clip(sortino, -5.0, 5.0)),
+            float(last_trade_result),
+            float(np.clip(current_volatility, -2.0, 2.0)),
+            float(np.clip(day_progress, 0.0, 1.0)),
+            float(np.clip(recent_wr_norm, -1.0, 1.0)),
+            float(regime_trend_norm),
+            float(np.clip(atr_zscore, -3.0, 3.0)),
+            float(day_of_week_norm),
+            float(regime_consistency),
+            float(np.clip(cum_pnl_norm, -0.15, 0.15)),
+        ], dtype=np.float32)
+        return obs
+
+    def _apply_rl_optimization(self, reason: str = "daily"):
+        """
+        เรียก agent ด้วย live observation แล้ว apply ค่าพารามิเตอร์ใหม่เข้าระบบ
+
+        Args:
+            reason: "startup" | "daily" | "manual" สำหรับ log/notify
+        """
+        if not self._rl_agent:
+            return
+        try:
+            obs = self._build_live_observation()
+            params = self._rl_agent.get_optimized_parameters(current_observation=obs)
+
+            bot_config.ftmo.DEFAULT_RISK_PER_TRADE_PCT = params['risk_per_trade_pct']
+            bot_config.ftmo.PREFERRED_RISK_REWARD_RATIO = params['preferred_risk_reward_ratio']
+            bot_config.indicators.atr_sl_multiplier = params['atr_sl_multiplier']
+            if hasattr(self._strategy, 'MIN_CONFLUENCE_SCORE'):
+                self._strategy.MIN_CONFLUENCE_SCORE = params['min_confluence_score']
+
+            self._rl_params_applied = params
+            print(f"✅ [RL:{reason}] Risk: {params['risk_per_trade_pct']*100:.2f}% | "
+                  f"Confluence: {params['min_confluence_score']} | "
+                  f"RR: 1:{params['preferred_risk_reward_ratio']} | "
+                  f"ATR: {params['atr_sl_multiplier']}x")
+            try:
+                self._notifier.send_ai_tuning(params)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"⚠️ [RL:{reason}] ประเมินล้มเหลว ใช้ค่าเดิม: {e}")
+
+    def _maybe_daily_rl_tune(self, current_server_time: datetime):
+        """
+        Trigger re-tune วันละ 1 ครั้ง หลังตลาด Forex ปิดของวัน (NY close ≈ 23:00 EET)
+
+        Logic:
+        - ถ้ายังไม่เคย tune วันนี้ (server date) AND เวลาผ่าน 23:00 EET แล้ว → tune
+        - วันเสาร์/อาทิตย์ข้าม (market ปิด ไม่ต้อง tune)
+        """
+        if not self._rl_agent:
+            return
+        # ข้าม weekend (เสาร์=5, อาทิตย์=6) — ไม่มี close ของวันนั้น
+        if current_server_time.weekday() >= 5:
+            return
+
+        today_server: date = current_server_time.date()
+        if self._last_rl_tune_date == today_server:
+            return  # tuned แล้ววันนี้
+
+        # NY close ~22:00 UTC = 23:00 EET (EEST = 00:00 next day)
+        # ใช้ 23:00 server time เป็น trigger หลัก
+        if current_server_time.time() >= dt_time(23, 0):
+            print(f"🧠 [RL] Daily Re-tune — Market close ({current_server_time.strftime('%Y-%m-%d %H:%M EET')})")
+            self._apply_rl_optimization(reason="daily")
+            self._last_rl_tune_date = today_server
 
     def _print_config_summary(self):
         """แสดงสรุปการตั้งค่าทั้งหมด"""
@@ -293,7 +422,10 @@ class FTMOTradingBot:
 
                 # === ขั้นตอนที่ 1.5: ตรวจสอบระดับการจัดการเวลาเซิร์ฟเวอร์แบบเข้มงวด (FTMO Compliance) ===
                 current_server_time = TimeManager.get_server_time()
-                
+
+                # === ขั้นตอนที่ 1.6: Daily RL Re-tune (หลังตลาดปิด ~23:00 EET, วันจันทร์-ศุกร์) ===
+                self._maybe_daily_rl_tune(current_server_time)
+
                 # หากเลยเวลา Friday 20:45 ระบบจะบังคับตัวเองไม่ให้เทรดอีกต่อไปจนกว่าจะสัปดาห์หน้า
                 if TimeManager.is_friday_close_time(current_server_time):
                     if self._loop_count % 60 == 0:
