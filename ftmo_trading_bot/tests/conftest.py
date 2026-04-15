@@ -38,6 +38,11 @@ def mock_mt5_connector():
         "currency_base": "EUR",
     }
     conn.get_current_price.return_value = {"bid": 1.10000, "ask": 1.10010}
+    conn.get_equity.return_value = 100_000.0
+    conn.get_balance.return_value = 100_000.0
+    conn.get_positions_count.return_value = 0
+    conn.get_positions.return_value = []
+    conn.close_all_positions.return_value = (0, 0)
     return conn
 
 
