@@ -438,9 +438,13 @@ def run_phase1_test():
 
     risk_mgr = RiskManager(connector)
     assert risk_mgr.initialize() and risk_mgr.is_trading_allowed
-    allowed, _ = risk_mgr.can_open_trade("EURUSD", 750, 15, 2.0)
-    assert allowed
-    rejected, _ = risk_mgr.can_open_trade("EURUSD", 750, 15, 1.0)
+    # Scale test inputs ตาม balance จริง (เดิม hardcode 750 สมมติ $100k)
+    # ใช้ 0.75% ของ balance → ผ่าน MAX_RISK_PER_TRADE_PCT (1%) และอยู่ใน daily budget (4%)
+    test_balance = account["balance"]
+    test_risk = round(test_balance * 0.0075, 2)
+    allowed, reason = risk_mgr.can_open_trade("EURUSD", test_risk, 15, 2.0)
+    assert allowed, f"Expected allowed=True, got: {reason}"
+    rejected, _ = risk_mgr.can_open_trade("EURUSD", test_risk, 15, 1.0)  # RR ต่ำ → ต้อง reject
     assert not rejected
     print(f"✅ Test 3: Risk Manager — ACTIVE, Budget: ${risk_mgr.get_remaining_daily_budget():,.2f}")
 
