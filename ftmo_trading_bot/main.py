@@ -432,6 +432,13 @@ def run_phase1_test():
     assert account is not None and account["balance"] > 0
     print(f"✅ Test 1: MT5 Connection — Balance: ${account['balance']:,.2f}")
 
+    # ปิด position ค้างจาก test run ก่อนหน้า (ให้ state สะอาด)
+    open_positions = connector.get_open_positions()
+    if open_positions:
+        print(f"🧹 [Test Setup] พบ {len(open_positions)} position ค้าง — ปิดทั้งหมดก่อนเริ่ม test")
+        for pos in open_positions:
+            connector.close_position(pos.get("ticket"))
+
     df = connector.get_ohlcv("EURUSD", "M15", 100)
     assert df is not None and len(df) == 100
     print(f"✅ Test 2: OHLCV Data — {len(df)} แท่ง")
