@@ -116,6 +116,33 @@ def main():
         print("   ตรวจสอบว่า MT5 terminal เปิดอยู่และ login แล้ว")
         sys.exit(1)
 
+    # === Diagnostic info ===
+    term = mt5.terminal_info()
+    acc = mt5.account_info()
+    ver = mt5.version()
+    print(f"🔎 MT5 version: {ver}")
+    if term:
+        print(f"   Terminal connected: {term.connected}, trade_allowed: {term.trade_allowed}")
+        print(f"   Path: {term.path}")
+    if acc:
+        print(f"   Account: #{acc.login} | {acc.server} | balance={acc.balance}")
+    else:
+        print("   ⚠️  ไม่มี account — ยังไม่ได้ login เข้า broker!")
+
+    # ทดสอบ minimal call บน symbol แรก
+    test_sym = "EURUSD"
+    mt5.symbol_select(test_sym, True)
+    test_bars = mt5.copy_rates_from_pos(test_sym, mt5.TIMEFRAME_M15, 0, 10)
+    if test_bars is None or len(test_bars) == 0:
+        print(f"\n❌ Sanity check fail: ขอ {test_sym} 10 แท่งล่าสุดก็ไม่ได้")
+        print(f"   last_error = {mt5.last_error()}")
+        print(f"   → ปัญหา: MT5 terminal อาจยังไม่ได้ login broker สำเร็จ")
+        print(f"   → เปิด MT5 GUI, ตรวจว่า log in แล้ว + เห็น chart EURUSD ขยับ")
+        mt5.shutdown()
+        sys.exit(1)
+    else:
+        print(f"   ✅ Sanity OK: ได้ {len(test_bars)} bars ของ {test_sym}\n")
+
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
     print(f"📥 ดึงข้อมูล {args.timeframe} ของ {len(symbols)} symbols "
