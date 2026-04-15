@@ -679,21 +679,21 @@ class FTMOOptimizationEnv(gym.Env):
         if a.size < 4:
             a = np.concatenate([a, np.zeros(4 - a.size, dtype=np.float32)])
 
-        # === Tightened bounds (v2) เพื่อลด over-trading & ระเบิดพอร์ต ===
-        # risk: [0.3%, 0.7%] (เดิม 0.5%-1.0%) → ลด exposure
-        # confluence: [65, 85] (เดิม 50-80) → บังคับให้เลือกเฉพาะ setup ชัด
-        # atr_sl_mult: [1.2, 2.5] (เดิม 1.0-2.5) → กัน SL แคบไป
-        # rr: [2.0, 4.0] (เดิม 1.5-3.0) → บังคับ edge เชิงสถิติ
-        val_risk = 0.005 + float(a[0]) * 0.002       # [-1, 1] → [0.3%, 0.7%]
+        # === Bounds v3 — ขยายช่องให้ agent แตะเป้า 10% ได้จริง ===
+        # risk: [0.3%, 1.0%] → คืน upside ให้ reach target
+        # confluence: [65, 85] คงเดิม
+        # atr_sl_mult: [1.2, 2.5] คงเดิม
+        # rr: [1.5, 4.0] → คืน lower-RR ให้ WR สูง setup ใช้ได้
+        val_risk = 0.0065 + float(a[0]) * 0.0035     # [-1, 1] → [0.3%, 1.0%]
         val_conf = 75.0 + float(a[1]) * 10.0         # [-1, 1] → [65, 85]
         val_atr = 1.85 + float(a[2]) * 0.65          # [-1, 1] → [1.2, 2.5]
-        val_rr = 3.0 + float(a[3]) * 1.0             # [-1, 1] → [2.0, 4.0]
+        val_rr = 2.75 + float(a[3]) * 1.25           # [-1, 1] → [1.5, 4.0]
 
         # Clamp เผื่อ action เกินช่วง
-        val_risk = max(0.003, min(val_risk, 0.007))
+        val_risk = max(0.003, min(val_risk, 0.010))
         val_conf = max(65.0, min(val_conf, 85.0))
         val_atr = max(1.2, min(val_atr, 2.5))
-        val_rr = max(2.0, min(val_rr, 4.0))
+        val_rr = max(1.5, min(val_rr, 4.0))
 
         return {
             'risk_per_trade_pct': round(val_risk, 4),

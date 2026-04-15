@@ -122,14 +122,15 @@ def main():
         model = PPO(
             "MlpPolicy",
             vec_env,
-            learning_rate=3e-4,
+            learning_rate=1e-4,  # ลดจาก 3e-4 — ป้องกัน policy diverge (std ระเบิด)
             n_steps=2048,
             batch_size=64,
             n_epochs=10,
             gamma=0.995,         # FTMO เป็น long-horizon
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,       # encourage exploration เพราะ reward sparse
+            clip_range_vf=0.2,   # clip value loss — กัน value function ระเบิด
+            ent_coef=0.0,        # ปิด entropy bonus — บังคับให้ policy converge
             verbose=1,
             tensorboard_log=tb_log_dir,
         )

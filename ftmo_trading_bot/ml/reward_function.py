@@ -69,7 +69,7 @@ class FTMORewardCalculator:
         
         # ถ้าระบบผิดพลาดจนทำผิดกฎ (Fail) -> ลงโทษขั้นสูงสุด
         if daily_dd >= self.daily_limit or total_dd >= self.total_limit:
-            return -100.0  # การฆ่าตัวตาย = พัง
+            return -10.0  # การฆ่าตัวตาย = พัง (scaled 10×)
 
         # ทวีคูณ Penalty ถ้ายิ่งใกล้ Limit ของ Daily
         daily_danger_ratio = daily_dd / self.daily_limit
@@ -101,7 +101,7 @@ class FTMORewardCalculator:
         if delta_progress > 0:
             # Cap profit reward per step ป้องกัน reward-hack จาก "ชนะเล็กๆ หลายครั้ง"
             # (L3: 100 micro-wins × 0.01% เดิมได้ 500 เต็มๆ; ตอนนี้ cap ที่ 8/step)
-            reward += min((delta_progress * 100) * 0.5, 8.0)
+            reward += min((delta_progress * 100) * 0.8, 15.0)
         elif delta_progress < 0:
             # กำไรหด ลงโทษเบาๆ เพราะเดี๋ยวไปเจอ DD penalty อยู่แล้ว
             reward -= abs(delta_progress * 100) * 0.2
@@ -154,4 +154,5 @@ class FTMORewardCalculator:
             # gap ≥ 0.5% และ excursion เคยถึง 1.5% ของ daily start equity
             reward -= min(swing_gap * 200, 12.0)  # cap -12
 
-        return float(reward)
+        # Scale down 10× เพื่อลด value_loss และป้องกัน policy diverge
+        return float(reward) / 10.0
