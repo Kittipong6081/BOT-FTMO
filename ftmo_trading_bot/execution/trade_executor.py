@@ -309,21 +309,30 @@ class TradeExecutor:
             self._total_rejected += 1
             return None
 
-        # === Entry price fallback ===
+        # === Entry price fallback (3-tier + retry) ===
         # บาง broker/filling-mode คืน result.price = 0 ทำให้ Discord/Log โชว์ 0
-        # → ดึงจาก position จริงใน MT5 หรือจากราคาตลาด ณ ขณะนี้
+        # → Tier 1: order_result.price | Tier 2: MT5 position (retry 3x, 150ms) | Tier 3: market price
         resolved_entry = order_result.get("price") or 0
+        fallback_tier = 1
         if not resolved_entry:
             ticket_no = order_result.get("ticket")
-            for pos in self._connector.get_open_positions():
-                if pos.get("ticket") == ticket_no:
-                    resolved_entry = pos.get("price_open") or pos.get("price") or 0
+            # Tier 2: position อาจยังไม่ sync ทันที — retry สูงสุด 3 ครั้ง × 150ms
+            for attempt in range(3):
+                for pos in self._connector.get_open_positions():
+                    if pos.get("ticket") == ticket_no:
+                        resolved_entry = pos.get("price_open") or pos.get("price") or 0
+                        break
+                if resolved_entry:
+                    fallback_tier = 2
                     break
+                time_module.sleep(0.15)
+            # Tier 3: ตกมาที่ market price (ยอมรับ slippage เล็กน้อย)
             if not resolved_entry:
                 px = self._connector.get_current_price(symbol)
                 if px:
                     resolved_entry = px["ask"] if signal.signal_type.value == "BUY" else px["bid"]
-            print(f"⚠️ [Executor] MT5 คืน price=0 → ใช้ fallback entry={resolved_entry}")
+                    fallback_tier = 3
+            print(f"⚠️ [Executor] MT5 คืน price=0 → ใช้ fallback tier-{fallback_tier} entry={resolved_entry}")
 
         # === Capture ML features ณ เวลาเปิดเทรด ===
         now = datetime.now()

@@ -35,6 +35,7 @@ import numpy as np
 import pytz
 
 from config.settings import bot_config
+from config.news_events import is_near_high_impact_news
 from core.mt5_connector import MT5Connector
 from core.time_manager import TimeManager
 from strategy.indicators import TechnicalIndicators
@@ -181,6 +182,20 @@ class SMCStrategy:
 
         # === ขั้นตอนที่ 1: ตรวจสอบ Trading Session ===
         if not self._is_trading_session():
+            return no_signal
+
+        # === ขั้นตอนที่ 1.5: ตรวจสอบ High-Impact News ===
+        now_utc = TimeManager.get_server_time().astimezone(pytz.UTC)
+        window_before = getattr(bot_config.sessions, "no_trade_before_news_minutes", 30)
+        window_after = getattr(bot_config.sessions, "no_trade_after_news_minutes", 30)
+        is_news, news_reason = is_near_high_impact_news(
+            symbol, now_utc,
+            window_minutes_before=window_before,
+            window_minutes_after=window_after,
+        )
+        if is_news:
+            if bot_config.debug_mode:
+                print(f"📰 [SMC] {symbol} — {news_reason}")
             return no_signal
 
         # === ขั้นตอนที่ 2: ตรวจสอบ Spread ===

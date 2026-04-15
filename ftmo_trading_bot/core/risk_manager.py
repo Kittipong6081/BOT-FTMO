@@ -711,7 +711,7 @@ class RiskManager:
         - แพ้ติด N ครั้ง → pause global halt_until
         - แพ้ติด M ครั้ง → DAILY_HALT
         """
-        now_iso = datetime.now().isoformat()
+        now_iso = TimeManager.get_server_time().isoformat()
 
         if pnl > 0:
             self._consecutive_losses = 0
@@ -731,7 +731,7 @@ class RiskManager:
             self._state = BotState.DAILY_HALT
             self._halt_until = None  # จะรอจนวันเปลี่ยน
         elif self._consecutive_losses >= pause_cnt:
-            pause_until = datetime.now() + timedelta(minutes=pause_min)
+            pause_until = TimeManager.get_server_time() + timedelta(minutes=pause_min)
             self._halt_until = pause_until.isoformat()
             print(f"⏸️ [Risk Manager] แพ้ติด {self._consecutive_losses} → pause {pause_min}min "
                   f"ถึง {pause_until.strftime('%H:%M:%S')}")
@@ -753,7 +753,11 @@ class RiskManager:
             return (False, "")
 
         cd_min = getattr(self._config, "COOLDOWN_AFTER_LOSS_MIN", 30)
-        elapsed = (datetime.now() - last_loss).total_seconds() / 60.0
+        now = TimeManager.get_server_time()
+        # Legacy state (pre-fix) เก็บเป็น naive → ถือว่าเป็น server time
+        if last_loss.tzinfo is None:
+            last_loss = last_loss.replace(tzinfo=now.tzinfo)
+        elapsed = (now - last_loss).total_seconds() / 60.0
         if elapsed < cd_min:
             remaining = cd_min - elapsed
             return (True, f"Cooldown {symbol}: เหลือ {remaining:.1f} นาที")
@@ -769,8 +773,11 @@ class RiskManager:
             self._halt_until = None
             return (False, "")
 
-        if datetime.now() < until:
-            remaining = (until - datetime.now()).total_seconds() / 60.0
+        now = TimeManager.get_server_time()
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=now.tzinfo)
+        if now < until:
+            remaining = (until - now).total_seconds() / 60.0
             return (True, f"Global pause: เหลือ {remaining:.1f} นาที")
 
         # หมดเวลา pause แล้ว → clear

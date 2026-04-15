@@ -709,11 +709,16 @@ class MT5Connector:
         result = []
         for deal in deals:
             if deal.entry == 1:  # เฉพาะ Deal ที่เป็นการปิด Position (entry out)
+                # ⚠️ สำคัญ: position = position ticket ที่ถูกปิด (join กับ ExecutedTrade.ticket)
+                # ห้าม fallback ไป deal.order (order ID ≠ position ID → match ผิด → PnL=$0)
+                pos_id = getattr(deal, "position_id", None) or getattr(deal, "position", None)
+                if not pos_id:
+                    print(f"⚠️ [MT5] Deal {deal.ticket} ไม่มี position_id/position → ข้าม")
+                    continue
                 result.append({
                     "ticket": deal.ticket,
                     "order": deal.order,
-                    # ⚠️ สำคัญ: position = position ticket ที่ถูกปิด (join กับ ExecutedTrade.ticket)
-                    "position": getattr(deal, "position_id", None) or getattr(deal, "position", None) or deal.order,
+                    "position": pos_id,
                     "time": datetime.fromtimestamp(deal.time),
                     "symbol": deal.symbol,
                     "type": "BUY" if deal.type == 0 else "SELL",

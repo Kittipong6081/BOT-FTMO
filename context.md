@@ -71,3 +71,74 @@ Bug hunt and fixes applied after full code review:
 
 ### 📦 Dependencies
 No new pip packages added; all existing `requirements.txt` deps already cover the additions (collections/threading are stdlib).
+
+---
+
+## 🛠️ Post-Review Patches v2 (2026-04-14)
+
+รอบที่สองหลังเจอปัญหาจริงจาก live log: over-trading 45 เทรด/วัน, PnL=$0 ใน bot_state, Discord entry_price=0, ไม่มี cooldown, state persistence หลุด, ML ยังเทรนจาก mock. แก้ทั้งหมด 6 ปัญหา + hardening 5 จุดเพิ่ม
+
+### 🔴 CRITICAL (Trading Safety)
+
+1. **MT5 deal matching bug (P/L = $0 ทุกที่)** — `TradeExecutor.sync_with_mt5` เคย match deals ด้วย `deal.order/deal.ticket` → หา deal ที่ปิดไม่เจอ → profit = 0. แก้โดย `MT5Connector.get_trade_history` เพิ่ม field `position` (จาก `deal.position_id` / `deal.position`) และ sync_with_mt5 match ด้วย `h["position"] == ticket` + ขยาย lookback 7 วัน + warning ถ้าไม่เจอ deal. เป็น root cause ของทั้ง state PnL=$0 และ Discord PnL=$0
+
+2. **State persistence atomic write** — `RiskManager._save_state` ใช้ tmp file + `os.fsync` + `os.replace` กันไฟล์พังถ้า crash ระหว่างเขียน. เพิ่ม public `save()` method. `main.shutdown()` เรียก `_risk_manager.save()` ก่อน disconnect. state file ตอนนี้เป็น source of truth ที่เชื่อถือได้
+
+3. **Cooldown / Anti-Revenge Trading** — state machine เต็มตัวใน RiskManager:
+   - `_last_loss_time_per_symbol: Dict[str, iso_str]` — cooldown 30 นาที/คู่เงินหลังโดน SL
+   - `_consecutive_losses: int` + `_halt_until: iso_str`
+   - 2 แพ้ติด → pause ทั้งระบบ 60 นาที; 3 แพ้ติด → DAILY HALT
+   - ทุก field persist ใน state JSON (กัน restart = reset cooldown)
+   - Integrated ใน `can_open_trade()` ผ่าน `is_symbol_in_cooldown()` + `is_global_halted()` (auto-clears expired)
+
+### 🟠 HIGH (Anti-Overtrading)
+
+4. **Guardrails ใหม่ใน `config.ftmo`**:
+   - `MAX_TRADES_PER_DAY: 5` (ก่อนหน้าไม่มี cap → 45 trades/วัน)
+   - `MAX_CORRELATED_POSITIONS: 1` (ลดจาก 2)
+   - `MIN_CONFLUENCE_SCORE: 70.0` (ขึ้นจาก 60 — **config-driven**, SMCStrategy อ่านจาก `bot_config.ftmo.MIN_CONFLUENCE_SCORE` ปรับ runtime ได้)
+   - `COOLDOWN_AFTER_LOSS_MIN: 30`, `CONSECUTIVE_LOSS_PAUSE_COUNT: 2`, `CONSECUTIVE_LOSS_HALT_COUNT: 3`
+
+5. **Discord webhook hardening** (`DiscordNotifier`):
+   - `_fmt_price()` — 0/None → "N/A" + trim 5-decimal zeros (ไม่โชว์ "0.00000")
+   - `_fmt_num()` — safe null/exception handling
+   - `send_trade_open`: เพิ่ม Confluence, Session, RR fields + ⚠️ ถ้า entry = N/A
+   - `send_trade_close`: เพิ่ม PnL% ใน R-multiples, SL/TP/Close/Time-in-Trade, Reason
+   - Entry fallback 3-tier ใน `trade_executor.send_market_order`: `result.price` → `get_open_positions.price_open` → `current market price`
+
+### 🟡 MEDIUM (ML Pipeline Overhaul)
+
+6. **Trade Schema v2** (`analytics/trade_logger.py`): ขยายจาก 19 → **31 columns** เพิ่ม ML features: `Session`, `DayOfWeek`, `HourOfDay`, `Spread@Entry`, `Slippage`, `HTF Bias`, `Volatility Regime`, `ConsecLoss Before`, `DD@Entry %`, `MAE`, `MFE`, `Time-in-Trade (s)`, `Exit Path`. File consolidated เป็น **`logs/ftmo_trades.xlsx`** (ไฟล์เดียว ไม่ split รายเดือนอีก)
+
+7. **MAE/MFE per-tick tracking** (`TradeManager._manage_single_position`): คำนวณ Max Adverse / Favorable Excursion เป็น pips ทุก tick → store บน `ExecutedTrade.mae` / `.mfe` → logger บันทึกตอนปิดเทรด. ใช้ **cached `pip_size` ใน `TrailingState`** (แทนเรียก `get_symbol_info()` ทุก tick — ลด I/O)
+
+8. **Entry context capture** (`TradeExecutor._capture_entry_context`): helper ดึง session bucket (LONDON / LONDON_NY_OVERLAP / NEW_YORK / ASIAN / OFF_HOURS), spread_pts, slippage, dd_pct, htf_bias, volatility_regime ตอนเปิดเทรด → feed เข้า Trade Schema v2
+
+9. **PerformanceAnalyzer restore on restart** (`analytics/performance.py`):
+   - `set_initial_balance(initial, peak)` — seed curve ด้วย balance จริงจาก broker + insert peak เพื่อรักษา Max DD history
+   - `load_from_excel()` — replay เทรดที่ปิดแล้วจาก `ftmo_trades.xlsx` map ตาม header name (v1/v2 compatible, ข้ามแถว Close Time ว่าง)
+   - `main.initialize()` เรียก `set_initial_balance` → `load_from_excel` หลัง `risk_manager.initialize` → equity curve / Sharpe / Sortino ต่อเนื่องข้าม restart
+
+10. **RL Environment v2** (`ml/rl_environment.py`):
+    - Action bounds แคบลงเพื่อบังคับ Agent เลือกคุณภาพ: risk `[0.3%, 0.7%]` (เดิม 0.5-1%), confluence `[65, 85]` (เดิม 50-80), atr_sl_mult `[1.2, 2.5]`, rr `[2.0, 4.0]` (เดิม 1.5-3)
+    - `_get_stats()` ส่ง `trades_today` เข้า reward calculator
+    - `FTMORewardCalculator` เพิ่ม **Over-trading penalty**: ถ้า `trades_today > 5` → penalty `excess × 2.0` (cap -20)
+    - `SelfLearningAgent.excel_path` default → `"logs/ftmo_trades.xlsx"`
+    - **Old `models/ppo_ftmo_agent.zip` rename เป็น `.v1bak`** — action bounds เปลี่ยน → บังคับ retrain รอบหน้า
+
+### 🔵 LOW (Hardening)
+
+11. **ExecutedTrade dataclass v2** — เพิ่ม 13 fields: `session`, `day_of_week`, `hour_of_day`, `spread_at_entry`, `slippage`, `htf_bias`, `volatility_regime`, `consec_loss_before`, `dd_at_entry_pct`, `mae`, `mfe`, `time_in_trade`, `exit_path`. `to_dict()` expose ครบ
+12. **`update_daily_pnl(pnl, symbol=None)`** signature เพิ่ม symbol → `_record_trade_outcome()` track ชนะ/แพ้ per-symbol เพื่อเข้า cooldown logic
+13. **`record_external_close()` finalize**: trade.time_in_trade = `(close_time - open_time).total_seconds()`, trade.exit_path = reason
+
+### 🔑 Key Invariants (v2)
+
+- **MT5 deal matching** ต้องใช้ `deal.position` (หรือ `deal.position_id`) **ห้ามใช้** `deal.order` / `deal.ticket` — เป็น id คนละชนิด
+- **ftmo_trades.xlsx** ไฟล์เดียวเท่านั้น (consolidated ML dataset) — ห้ามแตกรายเดือน
+- **ML ต้องใช้ข้อมูลจริงเท่านั้น** — ห้าม synthetic/mock เมื่อมีไฟล์นี้อยู่
+- **RL model v1 → v2 incompatible** — ถ้าเจอ `ppo_ftmo_agent.zip` ที่ train บน bounds เก่า ต้อง rename เป็น `.v1bak` บังคับ retrain
+- **State file เป็น source of truth** — ใช้ atomic write, persist cooldown + peak + consecutive_losses ครบ
+
+### 📦 Dependencies (v2)
+ยังไม่เพิ่ม pip package ใหม่ — `openpyxl` ที่มีอยู่แล้วรองรับ `load_from_excel`
