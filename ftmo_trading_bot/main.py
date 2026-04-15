@@ -935,7 +935,7 @@ def run_phase5_test():
     from ml.rl_environment import FTMOOptimizationEnv
     env = FTMOOptimizationEnv(excel_log_path="./test_logs/mock.xlsx")
     obs, info = env.reset()
-    assert obs.shape == (5,), "Observation space should be size 5"
+    assert obs.shape == (8,), f"Observation space should be size 8 (v2), got {obs.shape}"
     print("✅ Environment reset สำเร็จ: ", obs)
     
     # Test action map
