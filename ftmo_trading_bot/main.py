@@ -735,15 +735,19 @@ def run_phase3_test():
     print("🧪 Test 15: Trade Manager — Trailing State")
     print("━" * 50)
 
-    # เปิดเทรดใหม่เพื่อทดสอบ Trade Manager
+    # เปิดเทรดใหม่เพื่อทดสอบ Trade Manager (SL/TP คำนวณจากราคาตลาดจริง)
+    px2 = connector.get_current_price("GBPUSD")
+    mkt2 = px2["bid"] if px2 else 1.26500
+    sl_d2 = 0.00180
+    tp_d2 = 0.00360
     mock_signal_2 = TradeSignal(
         signal_type=SignalType.SELL,
         symbol="GBPUSD",
-        entry_price=1.26500,
-        sl_price=1.26680,
-        tp_price=1.26140,
-        sl_distance=0.00180,
-        tp_distance=0.00360,
+        entry_price=mkt2,
+        sl_price=round(mkt2 + sl_d2, 5),
+        tp_price=round(mkt2 - tp_d2, 5),
+        sl_distance=sl_d2,
+        tp_distance=tp_d2,
         rr_ratio=2.0,
         confluence_score=70.0,
         atr_value=0.00150,
