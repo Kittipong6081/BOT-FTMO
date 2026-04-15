@@ -40,9 +40,33 @@ TIMEFRAMES = {
 }
 
 
+def resolve_symbol(base: str) -> str:
+    """หา symbol จริงใน broker (อาจมี suffix เช่น EURUSD.raw, EURUSDm, EURUSD.a)"""
+    # ลอง exact match ก่อน
+    info = mt5.symbol_info(base)
+    if info is not None:
+        return base
+
+    # ค้นหาจาก symbols_get ทั้งหมด
+    all_symbols = mt5.symbols_get()
+    if all_symbols is None:
+        return base
+
+    candidates = [s.name for s in all_symbols if s.name.upper().startswith(base.upper())]
+    # จัดลำดับตามความยาว (สั้นที่สุดก่อน = มักเป็น main symbol)
+    candidates.sort(key=len)
+    return candidates[0] if candidates else base
+
+
 def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
     """ดึง OHLCV ของ 1 symbol โดยใช้ copy_rates_from_pos (ไม่พึ่ง datetime range)"""
     tf = TIMEFRAMES[timeframe_key]
+
+    # Resolve symbol ที่มี suffix (broker-specific)
+    resolved = resolve_symbol(symbol)
+    if resolved != symbol:
+        print(f"  🔍 {symbol} → ใช้ชื่อจริงในโบรก: {resolved}")
+    symbol = resolved
 
     if not mt5.symbol_select(symbol, True):
         print(f"  ⚠️  {symbol}: select failed ({mt5.last_error()})")
