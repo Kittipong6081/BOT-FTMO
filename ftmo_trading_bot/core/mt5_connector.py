@@ -298,10 +298,18 @@ class MT5Connector:
 
         # ดึงข้อมูลราคาจาก MT5
         rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
-        
+
         if rates is None or len(rates) == 0:
             error = mt5.last_error()
             print(f"❌ [MT5] ดึงข้อมูลราคา {symbol} ล้มเหลว: {error}")
+            return None
+
+        # Warmup guard: indicator ส่วนใหญ่ต้องการ ≥ 50 แท่งถึงจะ stable
+        # (ATR 14 / EMA 50 / RSI 14). น้อยกว่านี้ signal จะเป็น NaN หรือ noise
+        MIN_BARS = 50
+        if len(rates) < MIN_BARS:
+            print(f"⚠️ [MT5] {symbol} {timeframe_str}: ได้แค่ {len(rates)} แท่ง "
+                  f"(ต้องการ ≥ {MIN_BARS}) — signal จะไม่ stable, skip")
             return None
 
         # แปลงเป็น DataFrame
@@ -418,6 +426,8 @@ class MT5Connector:
             "lot_step": info.volume_step,                 # ขั้นบันได Lot
             "trade_contract_size": info.trade_contract_size,  # ขนาดสัญญา (เช่น 100,000)
             "volume_min": info.volume_min,                # Volume ขั้นต่ำ
+            "trade_stops_level": getattr(info, "trade_stops_level", 0),  # SL/TP ขั้นต่ำ (points)
+            "spread": getattr(info, "spread", 0),         # Current spread (points)
         }
         
         # เก็บใน Cache
@@ -490,6 +500,23 @@ class MT5Connector:
     # 💼 ส่งคำสั่งเทรด
     # =========================================================================
 
+    @staticmethod
+    def _get_deviation_points(symbol: str) -> int:
+        """
+        Deviation (max slippage) เป็น points ต่อ symbol
+        Reason: JPY pairs / metals / indices มี pip size ต่างจาก majors → ค่าเดียวใช้ไม่พอ
+        """
+        s = symbol.upper()
+        if "JPY" in s:
+            return 100          # JPY: 1 pip = 10 points (0.01) → 10 pips buffer
+        if "XAU" in s or "GOLD" in s:
+            return 50           # Gold: 1 point = $0.01 → $0.50 buffer
+        if "XAG" in s or "SILVER" in s:
+            return 50
+        if any(idx in s for idx in ("US30", "NAS100", "SPX500", "DE40", "UK100", "JP225")):
+            return 100          # Indices: volatile, need wider tolerance
+        return 30               # FX majors: ~3 pips at 5-digit broker
+
     def send_market_order(
         self,
         symbol: str,
@@ -547,7 +574,8 @@ class MT5Connector:
             print(f"❌ [MT5] ประเภทคำสั่งไม่ถูกต้อง: {order_type}")
             return None
 
-        # สร้างโครงสร้างคำสั่ง
+        # สร้างโครงสร้างคำสั่ง (deviation ปรับตาม symbol)
+        deviation = self._get_deviation_points(symbol)
         request = {
             "action": mt5.TRADE_ACTION_DEAL,     # Market Order
             "symbol": symbol,
@@ -556,37 +584,61 @@ class MT5Connector:
             "price": price,
             "sl": sl,
             "tp": tp,
-            "deviation": 20,                     # Slippage สูงสุด 2 pips
+            "deviation": deviation,
             "magic": magic,
             "comment": comment,
-            "type_time": mt5.ORDER_TIME_GTC,      # Good Till Cancel
-            "type_filling": mt5.ORDER_FILLING_IOC, # Immediate or Cancel
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        # ส่งคำสั่ง
-        print(f"📤 [MT5] กำลังส่งคำสั่ง {order_type} {symbol}...")
+        print(f"📤 [MT5] กำลังส่งคำสั่ง {order_type} {symbol} (deviation={deviation})...")
         print(f"   💲 ราคา: {price} | Volume: {volume} | SL: {sl} | TP: {tp}")
-        
-        result = mt5.order_send(request)
-        
-        if result is None:
-            error = mt5.last_error()
-            print(f"❌ [MT5] ส่งคำสั่งล้มเหลว: {error}")
-            return None
 
-        # ตรวจสอบผลลัพธ์
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
+        # Retry loop: REQUOTE / PRICE_CHANGED → refresh price + resend (สูงสุด 3 ครั้ง)
+        MAX_ATTEMPTS = 3
+        RETRY_CODES = {
+            mt5.TRADE_RETCODE_REQUOTE,
+            mt5.TRADE_RETCODE_PRICE_CHANGED,
+            mt5.TRADE_RETCODE_PRICE_OFF,
+        }
+        result = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            result = mt5.order_send(request)
+
+            if result is None:
+                error = mt5.last_error()
+                print(f"❌ [MT5] ส่งคำสั่งล้มเหลว (ครั้งที่ {attempt}): {error}")
+                return None
+
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                print(f"✅ [MT5] คำสั่งสำเร็จ (ครั้งที่ {attempt})! Ticket: {result.order} @ {result.price}")
+                # Slippage tracking: compare expected vs executed
+                slip = abs(result.price - price)
+                if slip > 0:
+                    print(f"   📏 Slippage: {slip:.5f} (expected={price}, got={result.price})")
+                return {
+                    "ticket": result.order,
+                    "price": result.price,
+                    "volume": result.volume,
+                    "comment": result.comment,
+                    "retcode": result.retcode,
+                    "requested_price": price,
+                    "slippage": slip,
+                }
+
+            if result.retcode in RETRY_CODES and attempt < MAX_ATTEMPTS:
+                print(f"🔁 [MT5] Requote/PriceChanged (retcode={result.retcode}) — refresh แล้วลองใหม่")
+                fresh = self.get_current_price(symbol)
+                if fresh is None:
+                    return None
+                request["price"] = fresh["ask"] if order_type.upper() == "BUY" else fresh["bid"]
+                continue
+
+            # Non-retryable หรือหมด attempts
             print(f"❌ [MT5] คำสั่งถูกปฏิเสธ: retcode={result.retcode}, comment={result.comment}")
             return None
 
-        print(f"✅ [MT5] คำสั่งสำเร็จ! Ticket: {result.order}")
-        return {
-            "ticket": result.order,
-            "price": result.price,
-            "volume": result.volume,
-            "comment": result.comment,
-            "retcode": result.retcode,
-        }
+        return None
 
     def close_position(self, ticket: int) -> bool:
         """

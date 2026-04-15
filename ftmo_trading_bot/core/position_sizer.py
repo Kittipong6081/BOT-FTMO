@@ -335,6 +335,26 @@ class PositionSizer:
             rr_ratio = self._config.MIN_RISK_REWARD_RATIO
             print(f"   📏 ปรับ TP เป็น {tp_distance:.5f} (RR: 1:{rr_ratio:.1f})")
 
+        # ปัดราคาตาม Digits + บังคับ spread buffer ไม่ให้ SL/TP ชน bid/ask
+        symbol_info = self._connector.get_symbol_info(symbol)
+        digits = symbol_info["digits"] if symbol_info else 5
+        point = symbol_info.get("point", 10 ** -digits) if symbol_info else 10 ** -digits
+        stops_level_points = symbol_info.get("trade_stops_level", 0) if symbol_info else 0
+        spread_points = symbol_info.get("spread", 0) if symbol_info else 0
+
+        # ระยะ SL ขั้นต่ำ = max(stops_level ของโบรก, 1.5 × spread, 3 points)
+        min_sl_distance = max(
+            stops_level_points * point,
+            1.5 * spread_points * point,
+            3 * point,
+        )
+        if sl_distance < min_sl_distance:
+            print(f"⚠️ [Position Sizer] SL distance {sl_distance:.5f} < ขั้นต่ำ {min_sl_distance:.5f} "
+                  f"(spread={spread_points}pts, stops_level={stops_level_points}pts) → ขยาย SL")
+            sl_distance = min_sl_distance
+            # ขยาย TP ตามสัดส่วน RR เดิม
+            tp_distance = sl_distance * rr_ratio
+
         # คำนวณราคา SL/TP ตามทิศทาง
         if order_type.upper() == "BUY":
             sl_price = entry_price - sl_distance
@@ -346,10 +366,6 @@ class PositionSizer:
             print(f"❌ [Position Sizer] ประเภทคำสั่งไม่ถูกต้อง: {order_type}")
             return None
 
-        # ปัดราคาตาม Digits ของ Symbol
-        symbol_info = self._connector.get_symbol_info(symbol)
-        digits = symbol_info["digits"] if symbol_info else 5
-        
         sl_price = round(sl_price, digits)
         tp_price = round(tp_price, digits)
 

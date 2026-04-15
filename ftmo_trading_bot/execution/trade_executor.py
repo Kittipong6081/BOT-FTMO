@@ -334,6 +334,16 @@ class TradeExecutor:
                     fallback_tier = 3
             print(f"⚠️ [Executor] MT5 คืน price=0 → ใช้ fallback tier-{fallback_tier} entry={resolved_entry}")
 
+            # Log slippage ให้ชัดเจน (tier-3 = เราไม่รู้ราคา fill จริง → ถือเป็น untracked slippage)
+            if fallback_tier == 3:
+                print(f"🚨 [Executor] TIER-3 FALLBACK: ราคา entry ไม่ confirmed จาก MT5 → "
+                      f"actual slippage ไม่สามารถวัดได้. ใช้ market price เป็น proxy เท่านั้น")
+            else:
+                expected_entry = order_result.get("requested_price") or 0
+                if expected_entry and resolved_entry:
+                    slip = abs(resolved_entry - expected_entry)
+                    print(f"📏 [Executor] Tier-{fallback_tier} slippage: {slip:.5f}")
+
         # === Capture ML features ณ เวลาเปิดเทรด ===
         now = datetime.now()
         entry_ctx = self._capture_entry_context(signal, resolved_entry, symbol_info, price_info)

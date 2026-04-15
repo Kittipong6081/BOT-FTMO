@@ -52,6 +52,7 @@ class OrderBlock:
     mitigated: bool = False     # ถูก Mitigate (ทดสอบ) แล้วหรือยัง
     mitigated_index: int = -1   # ตำแหน่งที่ถูก Mitigate
     strength_score: float = 0.0 # คะแนนความแข็งแกร่ง (0-100)
+    confirmed_index: int = -1   # ตำแหน่งแท่ง impulse ที่ยืนยัน OB (> index — anti-repaint)
     
     @property
     def zone_mid(self) -> float:
@@ -171,9 +172,13 @@ class OrderBlockDetector:
                             body_size=body_size[j],
                             impulse_size=body_size[i],
                         )
+                        # Anti-repaint: mark "confirmed at impulse bar i" ไม่ใช่แท่งต้นกำเนิด j
+                        # เหตุผล: ใน live เรารู้ว่า j เป็น OB ก็ต่อเมื่อ i ปิดแล้ว
+                        # ถ้าเขียนที่ j → backtest reader ที่อ่าน df.iloc[j] จะ "เห็น" OB ก่อนเวลา
+                        ob.confirmed_index = i
                         self._bullish_obs.append(ob)
-                        ob_bullish_high[j] = highs[j]
-                        ob_bullish_low[j] = lows[j]
+                        ob_bullish_high[i] = highs[j]
+                        ob_bullish_low[i] = lows[j]
                         break  # ใช้แท่งแรกที่เจอ
             
             # === ตรวจจับ Bearish Order Block ===
@@ -200,9 +205,11 @@ class OrderBlockDetector:
                             body_size=body_size[j],
                             impulse_size=body_size[i],
                         )
+                        # Anti-repaint: เขียนค่าที่แท่ง confirmation (i) ไม่ใช่แท่ง origin (j)
+                        ob.confirmed_index = i
                         self._bearish_obs.append(ob)
-                        ob_bearish_high[j] = highs[j]
-                        ob_bearish_low[j] = lows[j]
+                        ob_bearish_high[i] = highs[j]
+                        ob_bearish_low[i] = lows[j]
                         break
 
         # เพิ่มคอลัมน์เข้า DataFrame

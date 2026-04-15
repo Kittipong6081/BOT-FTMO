@@ -426,6 +426,17 @@ class FTMOOptimizationEnv(gym.Env):
 
     def _get_stats(self) -> Dict:
         """คืน stats dict สำหรับ Reward Calculator"""
+        # นับ trading days (วันที่มี pnl ≠ 0 = เทรดจริง)
+        trading_days = sum(1 for p in self.daily_pnl_history if p != 0.0)
+
+        # นับ consecutive losses จาก recent trades (≤5 ตัวหลังสุด)
+        consecutive_losses = 0
+        for t in reversed(self.trade_results[-5:]):
+            if t < 0:
+                consecutive_losses += 1
+            else:
+                break
+
         return {
             'daily_dd_pct': self.daily_dd_pct,
             'total_dd_pct': self.total_dd_pct,
@@ -434,6 +445,9 @@ class FTMOOptimizationEnv(gym.Env):
             'balance': self.balance,
             'last_trade_win': self.last_trade_result,
             'trades_today': getattr(self, 'trades_today', 0),
+            'trading_days': trading_days,
+            'consecutive_losses': consecutive_losses,
+            'is_final_step': self.current_step >= self.max_steps,
         }
 
     def _get_obs(self) -> np.ndarray:
@@ -516,9 +530,12 @@ class FTMOOptimizationEnv(gym.Env):
         self.total_dd_pct = max(0.0, total_loss / self.INITIAL_BALANCE)
 
         # Daily DD (worst case: end-of-day + intraday excursion)
+        # ใช้ daily_start_balance เป็น denominator ให้ตรงกับ RiskManager live
+        # (FTMO วัด daily loss เทียบกับ equity ต้นวัน ไม่ใช่ initial balance)
         day_end_loss = max(0.0, self.daily_start_balance - self.balance)
         intraday_dd = day_result['max_intraday_dd']
-        self.daily_dd_pct = max(day_end_loss, intraday_dd) / self.INITIAL_BALANCE
+        daily_denom = max(self.daily_start_balance, 1.0)
+        self.daily_dd_pct = max(day_end_loss, intraday_dd) / daily_denom
 
         # Target progress (% ของเป้า 10%)
         profit = self.balance - self.INITIAL_BALANCE

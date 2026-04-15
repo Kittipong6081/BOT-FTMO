@@ -29,7 +29,7 @@ class TradeResult:
     entry_price: float
     close_price: float
     lot_size: float
-    risk_amount: float      # จำนวนเงินที่เสี่ยง (USD)
+    risk_amount: float      # จำนวนเงินที่เสี่ยง ()
     profit: float           # กำไร/ขาดทุน (USD)
     rr_achieved: float      # RR ที่ได้จริง (P/L ÷ Risk)
     open_time: datetime

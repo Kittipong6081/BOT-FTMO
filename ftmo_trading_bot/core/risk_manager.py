@@ -70,6 +70,7 @@ class RiskManager:
         self._initial_balance: float = 0.0          # Balance เริ่มต้น (เริ่มใช้ Bot)
         self._daily_start_equity: float = 0.0       # Equity ตอนเริ่มวัน (รีเซ็ตทุกวัน)
         self._daily_start_balance: float = 0.0      # Balance ตอนเริ่มวัน
+        self._peak_daily_equity: float = 0.0        # Equity สูงสุดภายในวัน (reset ทุกวัน)
         self._highest_balance: float = 0.0          # Balance สูงสุดที่เคยถึง (High Water Mark)
         self._current_day: date = TimeManager.get_server_time().date()  # วันปัจจุบันตามเวลาโบรกเกอร์
         
@@ -143,6 +144,7 @@ class RiskManager:
             self._highest_balance = current_balance
             self._daily_start_equity = current_equity
             self._daily_start_balance = current_balance
+            self._peak_daily_equity = current_equity
             self._current_day = TimeManager.get_server_time().date()
             self._state = BotState.ACTIVE
             
@@ -172,14 +174,22 @@ class RiskManager:
         # FTMO ใช้ค่ามากกว่าระหว่าง Balance กับ Equity ตอนเริ่มวัน
         self._daily_start_equity = max(current_balance, current_equity)
         self._daily_start_balance = current_balance
+        self._peak_daily_equity = current_equity
         self._current_day = broker_today
         self._daily_closed_pnl = 0.0
         self._daily_trades_count = 0
-        
+
+        # Reset cooldown / revenge-trading counters ข้ามวัน (รวม weekend rollover)
+        # Reason: ขาดทุน 3 ไม้วันศุกร์ไม่ควรทำให้เช้าวันจันทร์ halt ทันที
+        if self._consecutive_losses > 0:
+            print(f"🧊 [Risk Manager] Reset consecutive_losses ({self._consecutive_losses} → 0) ข้ามวันใหม่")
+        self._consecutive_losses = 0
+        self._halt_until = None
+
         # อัพเดท High Water Mark
         if current_balance > self._highest_balance:
             self._highest_balance = current_balance
-        
+
         # รีเซ็ตสถานะ (ยกเว้น MAX_DRAWDOWN_HALT)
         if self._state == BotState.DAILY_HALT:
             self._state = BotState.ACTIVE
@@ -222,6 +232,17 @@ class RiskManager:
         if self._current_day != TimeManager.get_server_time().date():
             self._on_new_day(current_balance, current_equity)
             self._save_state()
+
+        # === Track Intraday Peak Equity (สำหรับ warning + dashboard) ===
+        # ใช้เตือนการ give-back จากกำไรลอยกลางวัน — ไม่ใช่กฎ FTMO แต่เป็น internal safety
+        if current_equity > self._peak_daily_equity:
+            self._peak_daily_equity = current_equity
+        elif self._peak_daily_equity > 0:
+            give_back = self._peak_daily_equity - current_equity
+            give_back_pct = give_back / self._peak_daily_equity
+            if give_back_pct >= 0.02 and self._state == BotState.ACTIVE:
+                print(f"⚠️ [Risk Manager] Give-back จาก peak วันนี้: {give_back_pct:.2%} "
+                      f"(peak=${self._peak_daily_equity:,.2f} → now=${current_equity:,.2f})")
             
         # === ตรวจสอบที่ 2: Max Drawdown (ร้ายแรงที่สุด) ===
         max_dd_result = self._check_max_drawdown(current_equity)
@@ -609,6 +630,7 @@ class RiskManager:
             "highest_balance": self._highest_balance,
             "daily_start_equity": self._daily_start_equity,
             "daily_start_balance": self._daily_start_balance,
+            "peak_daily_equity": self._peak_daily_equity,
             "current_day": str(self._current_day),
             "daily_closed_pnl": self._daily_closed_pnl,
             "daily_trades_count": self._daily_trades_count,
@@ -654,6 +676,7 @@ class RiskManager:
             self._highest_balance = data.get("highest_balance", 0.0)
             self._daily_start_equity = data.get("daily_start_equity", 0.0)
             self._daily_start_balance = data.get("daily_start_balance", 0.0)
+            self._peak_daily_equity = data.get("peak_daily_equity", self._daily_start_equity)
             self._daily_closed_pnl = data.get("daily_closed_pnl", 0.0)
             self._daily_trades_count = data.get("daily_trades_count", 0)
 

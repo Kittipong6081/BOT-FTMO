@@ -56,6 +56,11 @@ class FTMORewardCalculator:
         prev_progress = previous_stats.get('target_progress_pct', 0.0)
         trades_today = current_stats.get('trades_today', 0)
 
+        # New stats สำหรับปิดช่องโหว่ L1/L4/L5 (fallback 0 ถ้า env ยังไม่ส่งมา)
+        trading_days = current_stats.get('trading_days', 0)         # วันที่เทรดอย่างน้อย 1 ไม้
+        is_final_step = current_stats.get('is_final_step', False)   # step สุดท้ายของ challenge
+        consecutive_losses = current_stats.get('consecutive_losses', 0)  # แพ้ติดกัน (recent)
+
         # ==========================================
         # 1. บทลงโทษ (Drawdown Penalty) - แบบ Exponential (ยิ่งใกล้ 4% หรือ 8% ยิ่งติดลบหนัก)
         # ==========================================
@@ -92,24 +97,48 @@ class FTMORewardCalculator:
         delta_progress = progress - prev_progress
         
         if delta_progress > 0:
-            # ถ้ากำไรเพิ่ม ให้ 10 คะแนน ต่อทุก 1% ของพอร์ตที่โตขึ้น
-            reward += (delta_progress * 100) * 0.5 
+            # Cap profit reward per step ป้องกัน reward-hack จาก "ชนะเล็กๆ หลายครั้ง"
+            # (L3: 100 micro-wins × 0.01% เดิมได้ 500 เต็มๆ; ตอนนี้ cap ที่ 8/step)
+            reward += min((delta_progress * 100) * 0.5, 8.0)
         elif delta_progress < 0:
             # กำไรหด ลงโทษเบาๆ เพราะเดี๋ยวไปเจอ DD penalty อยู่แล้ว
             reward -= abs(delta_progress * 100) * 0.2
 
-        # โบนัสก้อนใหญ่ถ้าเข้าถึงเป้า 10% สำเร็จ
+        # โบนัสถ้าถึงเป้า 10% — ลดจาก +50 → +30 เพื่อลดแรงจูงใจ gamble
         if progress >= 100.0:
-            reward += 50.0
+            reward += 30.0
 
         # ==========================================
-        # 4. Over-trading Penalty — ลงโทษถ้าเทรดเกิน MAX_TRADES_PER_DAY
+        # 4. Over-trading Penalty
         # ==========================================
-        # เป้าหมาย: บังคับ Agent ให้เลือก setup คุณภาพสูง (ลด 45/วัน → ≤5/วัน)
-        # Penalty เริ่มที่เทรดที่ 6 และโตแบบ linear × จำนวนเกิน
         MAX_DAILY_TRADES = 5
         if trades_today > MAX_DAILY_TRADES:
             excess = trades_today - MAX_DAILY_TRADES
-            reward -= min(excess * 2.0, 20.0)  # cap ที่ -20 กันเหวี่ยง
+            reward -= min(excess * 2.0, 20.0)
+
+        # ==========================================
+        # 5. Activity Floor (L1) — บังคับให้เทรดจริง ไม่ใช่ policy "do nothing"
+        # ==========================================
+        # FTMO บังคับ ≥10 trading days. ถ้าจบ challenge โดยเทรดน้อยกว่านี้ → ปรับหนัก
+        if is_final_step and trading_days < 10:
+            missing = 10 - trading_days
+            reward -= min(missing * 3.0, 30.0)  # ขาด 10 วัน = -30
+
+        # ==========================================
+        # 6. Consistency Multiplier (L4) — ให้ reward เชิงบวกลดลงถ้าเทรดน้อย
+        # ==========================================
+        # agent ที่เทรด 1-2 วันแล้วนั่ง idle จะได้ sortino/progress bonus ลดลง
+        # สูตร: มี effect เฉพาะส่วน reward ที่เป็นบวก
+        if reward > 0 and trading_days >= 0:
+            consistency = min(max(trading_days, 0), 15) / 15.0  # 0 → 0, ≥15 → 1.0
+            # blend: 60% × consistency + 40% flat → ไม่ punish หนักเกินไปตอนต้น episode
+            reward *= (0.4 + 0.6 * consistency)
+
+        # ==========================================
+        # 7. Consecutive-Loss Spiral Penalty (L4/L5)
+        # ==========================================
+        # แพ้ติดกัน ≥3 → ลดแรง revenge trading
+        if consecutive_losses >= 3:
+            reward -= min((consecutive_losses - 2) * 5.0, 25.0)
 
         return float(reward)
