@@ -217,31 +217,24 @@ class FTMOTradingBot:
     # 🧠 RL Agent — Live Observation & Daily Re-tune
     # =========================================================================
 
-    def _compute_live_regime(self) -> dict:
+    def _compute_symbol_regime(self, symbol: str) -> dict:
         """
-        ดึง EURUSD H1 100 แท่งล่าสุดจาก MT5 แล้วจำแนก regime + ATR z-score
-        ใช้เป็น proxy ตลาดรวม (EURUSD liquidity สูงสุด, สะท้อน macro regime ได้ดี)
+        คำนวณ regime signal ของ 1 symbol จาก H1 100 แท่งล่าสุด
 
         Returns:
-            dict: {regime_trend_norm, atr_zscore, volatility_norm, regime_consistency}
+            dict หรือ None ถ้าดึงข้อมูลไม่ได้
         """
-        default = {
-            "regime_trend_norm": 0.0,
-            "atr_zscore": 0.0,
-            "volatility_norm": 0.0,
-            "regime_consistency": 0.0,
-        }
         try:
-            df = self._connector.get_ohlcv("EURUSD", "H1", count=100)
+            df = self._connector.get_ohlcv(symbol, "H1", count=100)
             if df is None or len(df) < 50:
-                return default
+                return None
 
             high = df["high"].values
             low = df["low"].values
             close = df["close"].values
             n = len(close)
 
-            # True Range → ATR (Wilder's simple)
+            # True Range → ATR
             hl = high[1:] - low[1:]
             hc = np.abs(high[1:] - close[:-1])
             lc = np.abs(low[1:] - close[:-1])
@@ -252,19 +245,18 @@ class FTMOTradingBot:
             atr_std = float(np.std(tr)) or 1e-8
             atr_zscore = (atr_recent - atr_baseline) / atr_std
 
-            # Volatility norm — normalize เหมือนใน env: (atr_pips - 12) / 6
+            # ATR pips — JPY pairs ใช้ pip_size 0.01, คู่อื่น 0.0001
             pip_size = 0.01 if float(np.mean(close)) > 50 else 0.0001
             atr_pips = atr_recent / pip_size
-            volatility_norm = (atr_pips - 12.0) / 6.0
 
-            # Trend slope: linear regression ของ close 50 แท่งล่าสุด หน่วย ATR/bar
+            # Trend slope (normalized to ATR/bar — scale-invariant ข้าม symbols)
             window = min(50, n)
             y = close[-window:]
             x = np.arange(window, dtype=np.float64)
-            slope = float(np.polyfit(x, y, 1)[0])  # price units per bar
+            slope = float(np.polyfit(x, y, 1)[0])
             slope_per_atr = slope / max(atr_recent, 1e-8)
 
-            # จำแนก regime (match กับ MARKET_PROFILES ใน env)
+            # จำแนก regime
             if abs(slope_per_atr) > 0.15:
                 regime = "trending"
             elif atr_zscore > 1.0:
@@ -274,11 +266,7 @@ class FTMOTradingBot:
             else:
                 regime = "ranging"
 
-            regime_map = {"trending": 1.0, "ranging": -1.0, "volatile": 0.0, "quiet": 0.0}
-            regime_trend_norm = regime_map.get(regime, 0.0)
-
-            # Regime consistency: สัดส่วน 5 สัญญาณย่อย (slope 20 / 40 / 60 / 80 / 100 แท่ง)
-            # ที่ให้ทิศทางเดียวกัน — proxy สำหรับ regime_consistency ใน env
+            # Multi-window slope consistency
             consistent = 0
             total = 0
             for w in (20, 40, 60, 80, min(100, n)):
@@ -290,13 +278,80 @@ class FTMOTradingBot:
                 total += 1
                 if np.sign(s) == np.sign(slope) and abs(s) > 0:
                     consistent += 1
-            regime_consistency = (consistent / total) if total > 0 else 0.0
+            consistency = (consistent / total) if total > 0 else 0.0
 
             return {
-                "regime_trend_norm": regime_trend_norm,
+                "regime": regime,
+                "atr_zscore": atr_zscore,
+                "atr_pips": atr_pips,
+                "slope_sign": int(np.sign(slope_per_atr)),
+                "consistency": consistency,
+            }
+        except Exception:
+            return None
+
+    def _compute_live_regime(self) -> dict:
+        """
+        คำนวณ regime aggregate จาก **ทุก symbols ที่บอทเทรด** (bot_config.symbols.symbols)
+        สะท้อนสถานะ portfolio จริง ไม่ bias ไปทาง EURUSD อย่างเดียว
+
+        Aggregation:
+        - regime_trend_norm: majority vote (trending=+1, ranging=-1, อื่น=0)
+        - atr_zscore: mean ข้าม symbols (normalize แล้ว)
+        - volatility_norm: mean ของ atr_pips/pair_baseline — ใช้ baseline 12 สำหรับ non-JPY, 120 สำหรับ JPY
+        - regime_consistency: mean ของ per-symbol consistency
+
+        Returns:
+            dict: {regime_trend_norm, atr_zscore, volatility_norm, regime_consistency}
+        """
+        default = {
+            "regime_trend_norm": 0.0,
+            "atr_zscore": 0.0,
+            "volatility_norm": 0.0,
+            "regime_consistency": 0.0,
+        }
+        try:
+            symbols = bot_config.symbols.symbols
+            per_symbol = []
+            for sym in symbols:
+                info = self._compute_symbol_regime(sym)
+                if info is not None:
+                    per_symbol.append((sym, info))
+
+            if not per_symbol:
+                return default
+
+            # Regime vote: trending=+1, ranging=-1, อื่น=0
+            regime_votes = []
+            for _, info in per_symbol:
+                if info["regime"] == "trending":
+                    regime_votes.append(1.0)
+                elif info["regime"] == "ranging":
+                    regime_votes.append(-1.0)
+                else:
+                    regime_votes.append(0.0)
+            regime_trend_norm = float(np.mean(regime_votes))
+
+            # ATR z-score: mean (แต่ละ symbol z-score ของตัวเอง → scale เปรียบเทียบได้)
+            atr_zscore = float(np.mean([info["atr_zscore"] for _, info in per_symbol]))
+
+            # Volatility norm: normalize atr_pips ต่อ baseline ของ pair type
+            # Non-JPY baseline ~12 pips, JPY baseline ~80 pips (H1 ATR ปกติ)
+            vol_norms = []
+            for sym, info in per_symbol:
+                is_jpy = sym.endswith("JPY")
+                baseline = 80.0 if is_jpy else 12.0
+                scale = 40.0 if is_jpy else 6.0
+                vol_norms.append((info["atr_pips"] - baseline) / scale)
+            volatility_norm = float(np.mean(vol_norms))
+
+            consistency = float(np.mean([info["consistency"] for _, info in per_symbol]))
+
+            return {
+                "regime_trend_norm": float(np.clip(regime_trend_norm, -1.0, 1.0)),
                 "atr_zscore": float(np.clip(atr_zscore, -3.0, 3.0)),
                 "volatility_norm": float(np.clip(volatility_norm, -2.0, 2.0)),
-                "regime_consistency": float(np.clip(regime_consistency, 0.0, 1.0)),
+                "regime_consistency": float(np.clip(consistency, 0.0, 1.0)),
             }
         except Exception as e:
             print(f"⚠️ [RL] compute_live_regime ล้มเหลว: {e}")
