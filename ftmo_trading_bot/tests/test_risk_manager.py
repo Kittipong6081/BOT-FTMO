@@ -29,9 +29,12 @@ def test_peak_daily_equity_tracks_high_water(mock_mt5_connector):
     assert rm._peak_daily_equity >= 102_000.0
 
 
-def test_total_dd_breach_triggers_halt(mock_mt5_connector):
+def test_total_dd_breach_triggers_halt(mock_mt5_connector, tmp_path, monkeypatch):
+    """equity ตก -8.5% → MAX_DRAWDOWN_HALT (ใช้ tmp state file ป้องกัน leftover จาก test ก่อน)"""
     rm = RiskManager(mock_mt5_connector)
+    monkeypatch.setattr(rm, '_state_file', str(tmp_path / "risk_state.json"))
     rm.initialize()
+    assert rm._initial_balance == 100_000.0  # sanity
     _set_equity(mock_mt5_connector, 91_500.0)  # -8.5%
     state = rm.check_risk()
     assert state == BotState.MAX_DRAWDOWN_HALT
