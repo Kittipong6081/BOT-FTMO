@@ -60,6 +60,8 @@ class FTMORewardCalculator:
         trading_days = current_stats.get('trading_days', 0)         # วันที่เทรดอย่างน้อย 1 ไม้
         is_final_step = current_stats.get('is_final_step', False)   # step สุดท้ายของ challenge
         consecutive_losses = current_stats.get('consecutive_losses', 0)  # แพ้ติดกัน (recent)
+        intraday_excursion = current_stats.get('intraday_excursion_pct', 0.0)
+        day_end_loss = current_stats.get('day_end_loss_pct', 0.0)
 
         # ==========================================
         # 1. บทลงโทษ (Drawdown Penalty) - แบบ Exponential (ยิ่งใกล้ 4% หรือ 8% ยิ่งติดลบหนัก)
@@ -140,5 +142,16 @@ class FTMORewardCalculator:
         # แพ้ติดกัน ≥3 → ลดแรง revenge trading
         if consecutive_losses >= 3:
             reward -= min((consecutive_losses - 2) * 5.0, 25.0)
+
+        # ==========================================
+        # 8. Intraday Swing Penalty (L2-equivalent)
+        # ==========================================
+        # ปิดช่องโหว่ "เปิดไม้ลึกจนเกือบ breach แล้วโชคดีเด้งกลับ"
+        # ถ้า intraday_excursion > 1.5× day_end_loss → swing แต่ปิดได้ = lucky, ลงโทษ
+        # ป้องกันไม่ให้ agent เรียนรู้ว่า hold loser แล้วหวัง mean-revert คุ้ม
+        swing_gap = intraday_excursion - day_end_loss
+        if swing_gap > 0.005 and intraday_excursion > 0.015:
+            # gap ≥ 0.5% และ excursion เคยถึง 1.5% ของ daily start equity
+            reward -= min(swing_gap * 200, 12.0)  # cap -12
 
         return float(reward)

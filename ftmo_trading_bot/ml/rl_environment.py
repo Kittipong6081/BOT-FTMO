@@ -95,18 +95,25 @@ class FTMOOptimizationEnv(gym.Env):
         self._load_trade_history()
 
         # ==========================================================
-        # Observation Space (8 ค่า, Clip ในช่วง [-5, 5])
+        # Observation Space (13 ค่า, Clip ในช่วง [-5, 5])
         # ==========================================================
-        # [0] total_dd_norm     : Total DD / 10%        (negative value)
-        # [1] daily_dd_norm     : Daily DD / 5%         (negative value)
-        # [2] progress_norm     : Progress toward 10%   (0 to ~1.0)
-        # [3] sortino_ratio     : Risk-adjusted return  (Clip ±5)
-        # [4] last_trade_result : 1=Win, -1=Loss, 0=None
-        # [5] volatility_norm   : ATR Regime level      (-2 to 2)
-        # [6] day_progress      : current_step / 30     (0 to 1)
-        # [7] recent_win_rate   : Win Rate ล่าสุด       (-1 to 1)
+        # Portfolio metrics:
+        # [0] total_dd_norm        : Total DD / 10%             (negative value)
+        # [1] daily_dd_norm        : Daily DD / 5%              (negative value)
+        # [2] progress_norm        : Progress toward 10%        (0 to ~1.0)
+        # [3] sortino_ratio        : Risk-adjusted return       (Clip ±5)
+        # [4] last_trade_result    : 1=Win, -1=Loss, 0=None
+        # [5] volatility_norm      : ATR Regime level           (-2 to 2)
+        # [6] day_progress         : current_step / 30          (0 to 1)
+        # [7] recent_win_rate      : Win Rate ล่าสุด            (-1 to 1)
+        # Market awareness (เพิ่มใน V2 — ปิดข้อ "agent ตาบอด"):
+        # [8]  regime_trend_norm   : +1 trending, -1 ranging, 0 volatile/quiet
+        # [9]  atr_zscore          : (atr - rolling_mean) / std  (Clip ±3)
+        # [10] day_of_week_norm    : (step % 5) / 4              (0 = Mon, 1 = Fri)
+        # [11] regime_consistency  : เศษของ 5 วันล่าสุดที่ regime ตรงกัน (0 to 1)
+        # [12] cumulative_pnl_norm : (balance/INITIAL - 1)       (Clip ±0.15)
         self.observation_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(8,), dtype=np.float32
+            low=-5.0, high=5.0, shape=(13,), dtype=np.float32
         )
 
         # ==========================================================
@@ -312,6 +319,13 @@ class FTMOOptimizationEnv(gym.Env):
             rng.poisson(max(0.05, expected_setups))
         ))
 
+        # Friday late-session hint: ลด setups ลง 50% ใน "Friday" ของ episode
+        # (step % 5 == 4 → วันสุดท้ายของสัปดาห์เทรด)
+        # เหตุผล: live bot มี friday_cutoff 15:00 UTC + force_close 20:45 EET
+        # → ฝึก agent ให้คุ้นชินว่า Friday เทรดน้อย ป้องกัน weekend gap
+        if (self.current_step - 1) % 5 == 4:
+            num_trades = int(num_trades * 0.5)
+
         # === 2. คำนวณ Win Rate ที่ปรับแล้ว ===
         base_wr = market_data['base_win_rate']
 
@@ -402,6 +416,8 @@ class FTMOOptimizationEnv(gym.Env):
         self.current_volatility = 0.0
 
         self._daily_market_regimes: List[str] = []
+        self._regime_history: List[str] = []   # regime ที่เกิดจริงตามลำดับ
+        self._atr_history: List[float] = []    # ATR pips ของแต่ละวัน (สำหรับ z-score)
         self._generate_market_sequence()
 
     def _compute_sortino(self) -> float:
@@ -448,10 +464,12 @@ class FTMOOptimizationEnv(gym.Env):
             'trading_days': trading_days,
             'consecutive_losses': consecutive_losses,
             'is_final_step': self.current_step >= self.max_steps,
+            'intraday_excursion_pct': getattr(self, 'intraday_excursion_pct', 0.0),
+            'day_end_loss_pct': getattr(self, 'day_end_loss_pct', 0.0),
         }
 
     def _get_obs(self) -> np.ndarray:
-        """สร้าง Observation Array จากสถานะปัจจุบัน"""
+        """สร้าง Observation Array จากสถานะปัจจุบัน (13 dims)"""
         # Recent win rate (last 10 trades) → normalize to [-1, 1]
         recent = self.trade_results[-10:] if self.trade_results else []
         if len(recent) > 0:
@@ -460,15 +478,49 @@ class FTMOOptimizationEnv(gym.Env):
         else:
             recent_wr_norm = 0.0
 
+        # === Market awareness features (V2) ===
+        # [8] regime_trend_norm: encode market regime ปัจจุบัน
+        regime_map = {'trending': 1.0, 'ranging': -1.0, 'volatile': 0.0, 'quiet': 0.0}
+        last_regime = self._regime_history[-1] if self._regime_history else 'ranging'
+        regime_trend_norm = regime_map.get(last_regime, 0.0)
+
+        # [9] atr_zscore: deviation จาก rolling mean
+        if len(self._atr_history) >= 5:
+            atr_arr = np.array(self._atr_history[-20:])
+            mu = float(atr_arr.mean())
+            sd = float(atr_arr.std()) or 1.0
+            atr_zscore = (self._atr_history[-1] - mu) / sd
+        else:
+            atr_zscore = 0.0
+
+        # [10] day_of_week_norm: step 0=Mon → 4=Fri (เน้นพฤติกรรมก่อน weekend)
+        day_of_week_norm = (self.current_step % 5) / 4.0
+
+        # [11] regime_consistency: % ของ 5 วันล่าสุดที่ regime ตรงกับวันล่าสุด
+        if len(self._regime_history) >= 2:
+            recent_regimes = self._regime_history[-5:]
+            most_common = max(set(recent_regimes), key=recent_regimes.count)
+            regime_consistency = recent_regimes.count(most_common) / len(recent_regimes)
+        else:
+            regime_consistency = 0.0
+
+        # [12] cumulative_pnl_norm: equity curve direction (-15% to +15%)
+        cum_pnl_norm = (self.balance / self.INITIAL_BALANCE) - 1.0
+
         obs = np.array([
-            float(np.clip(self.total_dd_pct / 0.10, -5.0, 0.0)),     # Total DD (0 to -1)
-            float(np.clip(self.daily_dd_pct / 0.05, -5.0, 0.0)),     # Daily DD (0 to -1)
-            float(np.clip(self.target_progress_pct / 100.0, -1.0, 2.0)),  # Progress
-            float(np.clip(self._compute_sortino(), -5.0, 5.0)),       # Sortino
-            float(self.last_trade_result),                             # Last W/L
-            float(np.clip(self.current_volatility, -2.0, 2.0)),        # Volatility
-            float(self.current_step / max(1, self.max_steps)),         # Day progress
-            float(np.clip(recent_wr_norm, -1.0, 1.0)),                 # Recent WR
+            float(np.clip(self.total_dd_pct / 0.10, -5.0, 0.0)),
+            float(np.clip(self.daily_dd_pct / 0.05, -5.0, 0.0)),
+            float(np.clip(self.target_progress_pct / 100.0, -1.0, 2.0)),
+            float(np.clip(self._compute_sortino(), -5.0, 5.0)),
+            float(self.last_trade_result),
+            float(np.clip(self.current_volatility, -2.0, 2.0)),
+            float(self.current_step / max(1, self.max_steps)),
+            float(np.clip(recent_wr_norm, -1.0, 1.0)),
+            float(regime_trend_norm),
+            float(np.clip(atr_zscore, -3.0, 3.0)),
+            float(day_of_week_norm),
+            float(regime_consistency),
+            float(np.clip(cum_pnl_norm, -0.15, 0.15)),
         ], dtype=np.float32)
 
         return obs
@@ -511,6 +563,10 @@ class FTMOOptimizationEnv(gym.Env):
         # Normalize ATR around mean (12 pips) → [-2, 2]
         self.current_volatility = (market_data['atr_pips'] - 12.0) / 6.0
 
+        # บันทึก market history สำหรับ feature engineering ใน obs
+        self._regime_history.append(market_data['regime'])
+        self._atr_history.append(float(market_data['atr_pips']))
+
         # 3. Simulate trading day
         day_result = self._simulate_trading_day(params, market_data)
 
@@ -536,6 +592,10 @@ class FTMOOptimizationEnv(gym.Env):
         intraday_dd = day_result['max_intraday_dd']
         daily_denom = max(self.daily_start_balance, 1.0)
         self.daily_dd_pct = max(day_end_loss, intraday_dd) / daily_denom
+
+        # เก็บ intraday excursion เพื่อใช้ใน L2 swing penalty (ปิดช่อง "hold loser แล้วโชคดี")
+        self.intraday_excursion_pct = intraday_dd / daily_denom
+        self.day_end_loss_pct = day_end_loss / daily_denom
 
         # Target progress (% ของเป้า 10%)
         profit = self.balance - self.INITIAL_BALANCE

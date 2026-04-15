@@ -21,6 +21,10 @@ torch>=2.0.0
 schedule>=1.2.0
 python-dateutil>=2.8.0
 
+# Testing (สำหรับ pytest harness)
+pytest>=7.4.0
+pytest-mock>=3.12.0
+
 # Logging และ Utilities
 colorama>=0.4.6
 pytz>=2023.3

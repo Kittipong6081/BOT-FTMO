@@ -6,8 +6,9 @@ FTMO Trading Bot — RL Agent (สมองส่วนการเรียน�
 จากคลัง Stable-Baselines3 โดยจะทำการฝึกสอน (Train) จากประวัติ + Backtest
 แล้วนำค่าน้ำหนักไปปรับ Parameter จริงในระบบเทรด
 
-Observation Space (8 dims):
-  [total_dd, daily_dd, progress, sortino, last_win_loss, volatility, day%, recent_wr]
+Observation Space (13 dims — V2):
+  [total_dd, daily_dd, progress, sortino, last_win_loss, volatility, day%, recent_wr,
+   regime_trend, atr_zscore, day_of_week, regime_consistency, cum_pnl_norm]
 Action Space (4 dims, continuous [-1, 1]):
   [risk, confluence, atr_sl_mult, rr_ratio]
 ===============================================================================
@@ -24,8 +25,8 @@ from ml.rl_environment import FTMOOptimizationEnv
 class SelfLearningAgent:
     """ปัญญาประดิษฐ์ (AI Agent) สำหรับรับรู้ปัญหาการเทรดและปรับตัว"""
 
-    # ขนาด Observation Space ต้องตรงกับที่กำหนดใน FTMOOptimizationEnv
-    OBS_DIM: int = 8
+    # ขนาด Observation Space ต้องตรงกับที่กำหนดใน FTMOOptimizationEnv (V2: 8 → 13)
+    OBS_DIM: int = 13
 
     def __init__(
         self,
@@ -107,7 +108,7 @@ class SelfLearningAgent:
         ให้ AI ทำนายค่าพารามิเตอร์ที่ดีที่สุด (Inference) สำหรับตั้งค่า Bot ในวันถัดไป
 
         Args:
-            current_observation: ค่าสถานะปัจจุบัน (8 dims) — ถ้ายกเว้นจะใช้ Blank state
+            current_observation: ค่าสถานะปัจจุบัน (13 dims) — ถ้ายกเว้นจะใช้ Blank state
 
         Returns:
             Dict ของ 4 parameters: risk, confluence, atr_mult, rr_ratio
