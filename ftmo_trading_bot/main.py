@@ -659,14 +659,19 @@ def run_phase3_test():
     from strategy.smc_strategy import TradeSignal, SignalType
     from datetime import datetime
 
+    # คำนวณ SL/TP จากราคาตลาดจริง (หลีกเลี่ยง "Invalid stops" ถ้า EURUSD ไม่ได้ ~1.095)
+    px_now = connector.get_current_price("EURUSD")
+    mkt_entry = px_now["ask"] if px_now else 1.09500
+    sl_dist = 0.00180
+    tp_dist = 0.00360
     mock_signal = TradeSignal(
         signal_type=SignalType.BUY,
         symbol="EURUSD",
-        entry_price=1.09500,
-        sl_price=1.09320,
-        tp_price=1.09860,
-        sl_distance=0.00180,
-        tp_distance=0.00360,
+        entry_price=mkt_entry,
+        sl_price=round(mkt_entry - sl_dist, 5),
+        tp_price=round(mkt_entry + tp_dist, 5),
+        sl_distance=sl_dist,
+        tp_distance=tp_dist,
         rr_ratio=2.0,
         confluence_score=75.0,
         atr_value=0.00120,
