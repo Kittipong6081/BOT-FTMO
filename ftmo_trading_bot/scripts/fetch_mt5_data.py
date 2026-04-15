@@ -18,6 +18,7 @@ import argparse
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+import time
 
 import pandas as pd
 
@@ -75,14 +76,33 @@ def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
     # คำนวณจำนวนแท่งโดยประมาณ (M15 = 96 bars/day, 5 trading days/week)
     bars_per_day = {"M15": 96, "H1": 24, "H4": 6}[timeframe_key]
     count = years * 365 * bars_per_day
-    count = min(count, 200_000)  # MT5 cap
+    
+    # ตรวจสอบขีดจำกัดของ Terminal (Max bars in chart)
+    term = mt5.terminal_info()
+    if term is not None:
+        max_bars = getattr(term, "maxbars", 100000)
+        if count > max_bars:
+            print(f"  ℹ️  {symbol}: คำขอ {count:,} bars เกินขีดจำกัด Terminal ({max_bars:,}) -> จะพยายามดึงเท่าที่ได้")
+            count = max_bars
 
-    # ใช้ copy_rates_from_pos: เริ่มจากแท่งล่าสุด (pos=0) ย้อนกลับไป count แท่ง
-    # วิธีนี้ stable กว่า copy_rates_range เพราะไม่มี timezone issue
-    rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+    count = min(count, 500_000)  # Absolute cap
+
+    # ลองดึงข้อมูลด้วย copy_rates_from_pos พร้อม Retry logic (รอดึงข้อมูลจาก Server)
+    rates = None
+    for attempt in range(3):
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+        if rates is not None and len(rates) > 0:
+            break
+        
+        # ถ้าไม่ได้ข้อมูล ให้ลองเช็คว่า symbol พร้อมไหม
+        mt5.symbol_select(symbol, True)
+        print(f"  ⏳ {symbol}: กำลังรอข้อมูลจาก Server (รอบที่ {attempt+1}/3)...")
+        time.sleep(3)
+
     if rates is None or len(rates) == 0:
-        # Fallback: ลอง copy_rates_range แบบ tz-aware (UTC)
-        end = datetime.now(timezone.utc)
+        # Fallback: ลอง copy_rates_range แบบใช้ naive datetime (ไม่มี timezone)
+        # MT5 library มักมีปัญหากับ timezone-aware datetime
+        end = datetime.now()
         start = end - timedelta(days=years * 365)
         rates = mt5.copy_rates_range(symbol, tf, start, end)
 
