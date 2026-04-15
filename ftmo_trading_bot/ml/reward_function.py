@@ -74,14 +74,14 @@ class FTMORewardCalculator:
         # ทวีคูณ Penalty ถ้ายิ่งใกล้ Limit ของ Daily
         daily_danger_ratio = daily_dd / self.daily_limit
         if daily_danger_ratio > 0.5:
-            # ใช้ Exponential ฐาน e: (e^(ratio*3) - 1)
-            # ตัวอย่าง ratio=0.9 -> e^2.7 - 1 ≈ 14.8 ลงโทษ
-            reward -= (math.exp(daily_danger_ratio * 3.5) - 1.0)
+            # Exponential แต่ลดชันลง (3.5→2.5) — ไม่ให้ dominate positive signal
+            # ratio=0.9 → e^2.25 - 1 ≈ 8.5 (เดิม 14.8)
+            reward -= (math.exp(daily_danger_ratio * 2.5) - 1.0)
 
-        # ทวีคูณ Penalty ถ้ายิ่งใกล้ Limit ของ Total
+        # ทวีคูณ Penalty ถ้ายิ่งใกล้ Limit ของ Total (4.0→3.0)
         total_danger_ratio = total_dd / self.total_limit
         if total_danger_ratio > 0.5:
-            reward -= (math.exp(total_danger_ratio * 4.0) - 1.0)
+            reward -= (math.exp(total_danger_ratio * 3.0) - 1.0)
 
         # ==========================================
         # 2. รางวัลด้านความเรียบเนียน (Stability Reward)
@@ -106,9 +106,9 @@ class FTMORewardCalculator:
             # กำไรหด ลงโทษเบาๆ เพราะเดี๋ยวไปเจอ DD penalty อยู่แล้ว
             reward -= abs(delta_progress * 100) * 0.2
 
-        # โบนัสถ้าถึงเป้า 10% — ลดจาก +50 → +30 เพื่อลดแรงจูงใจ gamble
+        # โบนัสถ้าถึงเป้า 10% — เพิ่ม 30→80 เพื่อสู้กับ breach -100 ให้ EV เป็นบวก
         if progress >= 100.0:
-            reward += 30.0
+            reward += 80.0
 
         # ==========================================
         # 4. Over-trading Penalty
@@ -133,8 +133,8 @@ class FTMORewardCalculator:
         # สูตร: มี effect เฉพาะส่วน reward ที่เป็นบวก
         if reward > 0 and trading_days >= 0:
             consistency = min(max(trading_days, 0), 15) / 15.0  # 0 → 0, ≥15 → 1.0
-            # blend: 60% × consistency + 40% flat → ไม่ punish หนักเกินไปตอนต้น episode
-            reward *= (0.4 + 0.6 * consistency)
+            # blend: 30% × consistency + 70% flat → เบาลง ไม่ punish ช่วงต้น episode
+            reward *= (0.7 + 0.3 * consistency)
 
         # ==========================================
         # 7. Consecutive-Loss Spiral Penalty (L4/L5)
