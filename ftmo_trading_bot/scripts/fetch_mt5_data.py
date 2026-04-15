@@ -60,10 +60,9 @@ def resolve_symbol(base: str) -> str:
 
 
 def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
-    """ดึง OHLCV ของ 1 symbol โดยใช้ copy_rates_from_pos (ไม่พึ่ง datetime range)"""
+    """ดึง OHLCV แบบแบ่ง Chunk (Progressive Chunking) เพื่อหลีกเลี่ยง Invalid params"""
     tf = TIMEFRAMES[timeframe_key]
 
-    # Resolve symbol ที่มี suffix (broker-specific)
     resolved = resolve_symbol(symbol)
     if resolved != symbol:
         print(f"  🔍 {symbol} → ใช้ชื่อจริงในโบรก: {resolved}")
@@ -73,46 +72,66 @@ def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
         print(f"  ⚠️  {symbol}: select failed ({mt5.last_error()})")
         return pd.DataFrame()
 
-    # คำนวณจำนวนแท่งโดยประมาณ (M15 = 96 bars/day, 5 trading days/week)
+    # คำนวณจำนวนแท่งที่ต้องการ
     bars_per_day = {"M15": 96, "H1": 24, "H4": 6}[timeframe_key]
-    count = years * 365 * bars_per_day
+    requested_count = years * 365 * bars_per_day
     
-    # ตรวจสอบขีดจำกัดของ Terminal (Max bars in chart)
+    # ตรวจสอบขีดจำกัด Terminal (Max bars)
     term = mt5.terminal_info()
-    if term is not None:
-        max_bars = getattr(term, "maxbars", 100000)
-        if count > max_bars:
-            print(f"  ℹ️  {symbol}: คำขอ {count:,} bars เกินขีดจำกัด Terminal ({max_bars:,}) -> จะพยายามดึงเท่าที่ได้")
-            count = max_bars
+    max_bars = getattr(term, "maxbars", 100000) if term else 100000
+    # เผื่อ buffer ไว้เล็กน้อย ไม่ให้ชนขอบ limit พอดีเป๊ะ
+    limit = min(requested_count, max_bars - 500)
+    
+    if limit < requested_count:
+        print(f"  ℹ️  {symbol}: จำกัดการดึงที่ {limit:,} bars (ตาม Max bars ใน MT5)")
 
-    count = min(count, 500_000)  # Absolute cap
+    all_rates = []
+    chunk_size = 20000
+    pos = 0
+    
+    print(f"  📥 {symbol}: เริ่มดึงข้อมูลแบบ chunk (เป้าหมาย {limit:,} bars)...", end="", flush=True)
 
-    # ลองดึงข้อมูลด้วย copy_rates_from_pos พร้อม Retry logic (รอดึงข้อมูลจาก Server)
-    rates = None
-    for attempt in range(3):
-        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
-        if rates is not None and len(rates) > 0:
-            break
+    while pos < limit:
+        # คำนวณจำนวนที่ต้องดึงใน chunk นี้
+        current_chunk = min(chunk_size, limit - pos)
         
-        # ถ้าไม่ได้ข้อมูล ให้ลองเช็คว่า symbol พร้อมไหม
-        mt5.symbol_select(symbol, True)
-        print(f"  ⏳ {symbol}: กำลังรอข้อมูลจาก Server (รอบที่ {attempt+1}/3)...")
-        time.sleep(3)
+        # ลองดึงข้อมูล (Retry 2 ครั้งต่อ chunk กันเหนียว)
+        rates = None
+        for attempt in range(2):
+            rates = mt5.copy_rates_from_pos(symbol, tf, pos, current_chunk)
+            if rates is not None and len(rates) > 0:
+                break
+            time.sleep(2) # รอ sync
+        
+        if rates is None or len(rates) == 0:
+            # ถ้าดึง chunk แรกไม่ได้เลย อาจจะไม่มีข้อมูลจุดนี้
+            if pos == 0:
+                print(f"\n  ⚠️  {symbol}: ดึง chunk แรกไม่ได้ ({mt5.last_error()})")
+                return pd.DataFrame()
+            else:
+                print(f"\n  ℹ️  {symbol}: สิ้นสุดการดึงที่ {pos:,} bars (Broker ไม่มีข้อมูลเก่ากว่านี้)")
+                break
+        
+        all_rates.append(pd.DataFrame(rates))
+        pos += len(rates)
+        print(".", end="", flush=True)
+        
+        # ถ้าดึงได้น้อยกว่าที่ขอ แสดงว่าสุดสายส่งแล้ว
+        if len(rates) < current_chunk:
+            break
 
-    if rates is None or len(rates) == 0:
-        # Fallback: ลอง copy_rates_range แบบใช้ naive datetime (ไม่มี timezone)
-        # MT5 library มักมีปัญหากับ timezone-aware datetime
-        end = datetime.now()
-        start = end - timedelta(days=years * 365)
-        rates = mt5.copy_rates_range(symbol, tf, start, end)
-
-    if rates is None or len(rates) == 0:
-        print(f"  ⚠️  {symbol}: no data ({mt5.last_error()})")
+    if not all_rates:
+        print(" Failed.")
         return pd.DataFrame()
 
-    df = pd.DataFrame(rates)
+    print(" Done!")
+    df = pd.concat(all_rates, ignore_index=True)
+    
+    # จัดการข้อมูลและการเรียงลำดับ
     df['time'] = pd.to_datetime(df['time'], unit='s')
     df = df.rename(columns={'tick_volume': 'volume'})
+    df = df.drop_duplicates(subset=['time']).sort_values('time')
+    
     return df[['time', 'open', 'high', 'low', 'close', 'volume']]
 
 
