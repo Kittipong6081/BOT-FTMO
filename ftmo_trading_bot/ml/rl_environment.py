@@ -30,6 +30,7 @@ from gymnasium import spaces
 from typing import Dict, List, Optional
 
 from ml.reward_function import FTMORewardCalculator
+from ml.strategy_backtester import StrategyBacktester
 
 
 class FTMOOptimizationEnv(gym.Env):
@@ -89,6 +90,18 @@ class FTMOOptimizationEnv(gym.Env):
             )
         self._data_dir = data_dir
         self._load_ohlcv_data()
+
+        # Strategy Backtester — ใช้ SMC Strategy จริงแทน statistical simulation
+        try:
+            self._backtester = StrategyBacktester(data_dir, self.symbols)
+            if self._backtester.is_available:
+                print(f"🎯 [RL Env] Strategy Backtester พร้อม — ฝึกจาก SMC Strategy จริง")
+            else:
+                self._backtester = None
+                print(f"📊 [RL Env] ไม่มีข้อมูล 3 TFs — ใช้ statistical simulation")
+        except Exception as e:
+            self._backtester = None
+            print(f"⚠️ [RL Env] Backtester init ล้มเหลว ({e}) — fallback statistical")
 
         # โหลดประวัติเทรดจริง (สำหรับคำนวณ win-rate เชิงสถิติ)
         self._trade_history: Optional[pd.DataFrame] = None
@@ -569,8 +582,13 @@ class FTMOOptimizationEnv(gym.Env):
         self._regime_history.append(market_data['regime'])
         self._atr_history.append(float(market_data['atr_pips']))
 
-        # 3. Simulate trading day
-        day_result = self._simulate_trading_day(params, market_data)
+        # 3. Simulate trading day (ใช้ Strategy จริงถ้ามี backtester)
+        if self._backtester is not None:
+            day_result = self._backtester.simulate_day_with_strategy(
+                params, self.current_step - 1, self._get_rng()
+            )
+        else:
+            day_result = self._simulate_trading_day(params, market_data)
 
         # 4. อัพเดทสถานะ
         self.daily_start_balance = self.balance

@@ -41,6 +41,8 @@ from core.time_manager import TimeManager
 from strategy.indicators import TechnicalIndicators
 from strategy.market_structure import MarketStructure, StructureType
 from strategy.order_blocks import OrderBlockDetector, OBType
+from strategy.fair_value_gaps import FVGDetector
+from strategy.liquidity_sweeps import LiquiditySweepDetector
 
 
 class SignalType(Enum):
@@ -138,7 +140,9 @@ class SMCStrategy:
         self._structure_mtf = MarketStructure()     # โครงสร้าง H1
         self._structure_ltf = MarketStructure()     # โครงสร้าง M15
         self._ob_detector = OrderBlockDetector()    # Order Blocks M15
-        
+        self._fvg_detector = FVGDetector()          # Fair Value Gaps M15
+        self._sweep_detector = LiquiditySweepDetector()  # Liquidity Sweeps M15
+
         # Cache ข้อมูลที่วิเคราะห์แล้ว
         self._htf_data: Optional[pd.DataFrame] = None   # H4 data
         self._mtf_data: Optional[pd.DataFrame] = None   # H1 data
@@ -152,6 +156,80 @@ class SMCStrategy:
     # =========================================================================
     # 🔄 วิเคราะห์สัญญาณ (Main Analysis)
     # =========================================================================
+
+    def analyze_with_data(
+        self, symbol: str, htf_df, mtf_df, ltf_df, price_info: dict
+    ) -> 'TradeSignal':
+        """วิเคราะห์สัญญาณจาก DataFrames ที่ส่งมา (สำหรับ Backtesting — ไม่ต้องต่อ MT5)"""
+        no_signal = TradeSignal(
+            signal_type=SignalType.NO_SIGNAL,
+            symbol=symbol, entry_price=0, sl_price=0, tp_price=0,
+            sl_distance=0, tp_distance=0, rr_ratio=0,
+            confluence_score=0, atr_value=0,
+            timestamp=datetime.now(), reasons=["ไม่มีสัญญาณ"]
+        )
+
+        if htf_df is None or mtf_df is None or ltf_df is None:
+            return no_signal
+        if len(htf_df) < 200 or len(mtf_df) < 200 or len(ltf_df) < 200:
+            return no_signal
+
+        htf_df = self._indicators.calculate_all(htf_df)
+        mtf_df = self._indicators.calculate_all(mtf_df)
+        ltf_df = self._indicators.calculate_all(ltf_df)
+
+        self._htf_data = htf_df
+        self._mtf_data = mtf_df
+        self._ltf_data = ltf_df
+
+        if htf_df is not None and len(htf_df) >= 3:
+            recent_trends = htf_df["trend"].iloc[-3:].tolist()
+            bullish_count = sum(1 for t in recent_trends if t == 1)
+            bearish_count = sum(1 for t in recent_trends if t == -1)
+            if bullish_count >= 2:
+                self._htf_bias = 1
+            elif bearish_count >= 2:
+                self._htf_bias = -1
+            else:
+                self._htf_bias = 0
+        else:
+            htf_values = self._indicators.get_latest_values(htf_df)
+            self._htf_bias = htf_values["trend"] if htf_values else 0
+
+        mtf_df = self._structure_mtf.analyze(mtf_df)
+        mtf_bias = self._structure_mtf.get_current_bias()
+
+        ltf_df = self._structure_ltf.analyze(ltf_df)
+        ltf_df = self._ob_detector.analyze(ltf_df)
+        ltf_df = self._fvg_detector.analyze(ltf_df)
+        self._sweep_detector.analyze(ltf_df, self._structure_ltf)
+
+        ltf_values = self._indicators.get_latest_values(ltf_df)
+        if ltf_values is None:
+            return no_signal
+
+        current_price = ltf_values["close"]
+        atr_value = ltf_values["atr"]
+        rsi_value = ltf_values["rsi"]
+        ltf_trend = ltf_values["trend"]
+        volatility_ok = ltf_values["volatility_ok"]
+
+        buy_signal = self._evaluate_buy_signal(
+            symbol, current_price, atr_value, rsi_value,
+            ltf_trend, mtf_bias, volatility_ok, ltf_df, price_info
+        )
+        sell_signal = self._evaluate_sell_signal(
+            symbol, current_price, atr_value, rsi_value,
+            ltf_trend, mtf_bias, volatility_ok, ltf_df, price_info
+        )
+
+        if buy_signal.is_valid and sell_signal.is_valid:
+            return buy_signal if buy_signal.confluence_score >= sell_signal.confluence_score else sell_signal
+        elif buy_signal.is_valid:
+            return buy_signal
+        elif sell_signal.is_valid:
+            return sell_signal
+        return no_signal
 
     def analyze(self, symbol: str) -> TradeSignal:
         """
@@ -252,6 +330,8 @@ class SMCStrategy:
         # === ขั้นตอนที่ 7: วิเคราะห์ LTF (M15) — Entry ===
         ltf_df = self._structure_ltf.analyze(ltf_df)
         ltf_df = self._ob_detector.analyze(ltf_df)
+        ltf_df = self._fvg_detector.analyze(ltf_df)
+        self._sweep_detector.analyze(ltf_df, self._structure_ltf)
 
         # ดึงค่า Indicator ล่าสุดของ M15
         ltf_values = self._indicators.get_latest_values(ltf_df)
@@ -362,12 +442,34 @@ class SMCStrategy:
         )
         
         if bullish_ob:
-            ob_contribution = min(25, bullish_ob.strength_score * 0.25)
+            cluster_score = self._ob_detector.get_bullish_cluster_score(
+                current_price, tolerance_pips=15, pip_size=pip_size
+            )
+            if cluster_score:
+                ob_contribution = min(25, cluster_score * 0.25)
+                reasons.append(f"✅ Bullish OB Cluster (score={cluster_score:.0f})")
+            else:
+                ob_contribution = min(25, bullish_ob.strength_score * 0.25)
+                reasons.append(f"✅ ราคาอยู่ที่ Bullish OB (score={bullish_ob.strength_score:.0f})")
             score += ob_contribution
-            reasons.append(f"✅ ราคาอยู่ที่ Bullish OB (score={bullish_ob.strength_score:.0f})")
         else:
-            # ยังไม่มี OB → ลดสิทธิ์ แต่ไม่ตัดทั้งหมด
             reasons.append("⚠️ ไม่มี Bullish OB ใกล้ราคา")
+
+        # === ปัจจัยที่ 3.5: Fair Value Gap (10 คะแนน) ===
+        bullish_fvg = self._fvg_detector.is_price_at_bullish_fvg(
+            current_price, tolerance_pips=5, pip_size=pip_size
+        )
+        if bullish_fvg:
+            fvg_contribution = min(10, bullish_fvg.strength_score * 0.1)
+            score += fvg_contribution
+            reasons.append(f"✅ Bullish FVG (score={bullish_fvg.strength_score:.0f})")
+
+        # === ปัจจัยที่ 3.6: Liquidity Sweep (15 คะแนน) ===
+        bullish_sweep = self._sweep_detector.get_recent_bullish_sweep(max_bars_ago=5)
+        if bullish_sweep:
+            sweep_contribution = min(15, bullish_sweep.strength_score * 0.15)
+            score += sweep_contribution
+            reasons.append(f"✅ Bullish Liquidity Sweep (score={bullish_sweep.strength_score:.0f})")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
         if rsi_value < bot_config.indicators.rsi_overbought:  # < 70
@@ -390,6 +492,12 @@ class SMCStrategy:
         elif ltf_trend == 0:
             score += 3
             reasons.append("⚠️ LTF (M15) Ranging")
+
+        # === Session Weighting — ปรับคะแนนตามช่วงเวลา ===
+        session_mult = self._get_session_multiplier()
+        if session_mult != 1.0:
+            score *= session_mult
+            reasons.append(f"📊 Session multiplier: ×{session_mult:.2f}")
 
         # === ตรวจสอบว่าผ่านเกณฑ์หรือไม่ ===
         if score < self.MIN_CONFLUENCE_SCORE:
@@ -527,11 +635,34 @@ class SMCStrategy:
         )
         
         if bearish_ob:
-            ob_contribution = min(25, bearish_ob.strength_score * 0.25)
+            cluster_score = self._ob_detector.get_bearish_cluster_score(
+                current_price, tolerance_pips=15, pip_size=pip_size
+            )
+            if cluster_score:
+                ob_contribution = min(25, cluster_score * 0.25)
+                reasons.append(f"✅ Bearish OB Cluster (score={cluster_score:.0f})")
+            else:
+                ob_contribution = min(25, bearish_ob.strength_score * 0.25)
+                reasons.append(f"✅ ราคาอยู่ที่ Bearish OB (score={bearish_ob.strength_score:.0f})")
             score += ob_contribution
-            reasons.append(f"✅ ราคาอยู่ที่ Bearish OB (score={bearish_ob.strength_score:.0f})")
         else:
             reasons.append("⚠️ ไม่มี Bearish OB ใกล้ราคา")
+
+        # === ปัจจัยที่ 3.5: Fair Value Gap (10 คะแนน) ===
+        bearish_fvg = self._fvg_detector.is_price_at_bearish_fvg(
+            current_price, tolerance_pips=5, pip_size=pip_size
+        )
+        if bearish_fvg:
+            fvg_contribution = min(10, bearish_fvg.strength_score * 0.1)
+            score += fvg_contribution
+            reasons.append(f"✅ Bearish FVG (score={bearish_fvg.strength_score:.0f})")
+
+        # === ปัจจัยที่ 3.6: Liquidity Sweep (15 คะแนน) ===
+        bearish_sweep = self._sweep_detector.get_recent_bearish_sweep(max_bars_ago=5)
+        if bearish_sweep:
+            sweep_contribution = min(15, bearish_sweep.strength_score * 0.15)
+            score += sweep_contribution
+            reasons.append(f"✅ Bearish Liquidity Sweep (score={bearish_sweep.strength_score:.0f})")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
         if rsi_value > bot_config.indicators.rsi_oversold:  # > 30
@@ -554,6 +685,12 @@ class SMCStrategy:
         elif ltf_trend == 0:
             score += 3
             reasons.append("⚠️ LTF (M15) Ranging")
+
+        # === Session Weighting — ปรับคะแนนตามช่วงเวลา ===
+        session_mult = self._get_session_multiplier()
+        if session_mult != 1.0:
+            score *= session_mult
+            reasons.append(f"📊 Session multiplier: ×{session_mult:.2f}")
 
         # === ตรวจสอบเกณฑ์ ===
         if score < self.MIN_CONFLUENCE_SCORE:
@@ -618,6 +755,26 @@ class SMCStrategy:
     # =========================================================================
     # ⏰ Trading Session Check
     # =========================================================================
+
+    def _get_session_multiplier(self) -> float:
+        """คืนค่า multiplier ตามช่วงเวลา (Session Weighting)"""
+        try:
+            now_utc = TimeManager.get_server_time().astimezone(pytz.UTC)
+            hour = now_utc.hour
+        except Exception:
+            return 1.0
+
+        if 12 <= hour < 13:
+            return 1.10   # London/NY overlap
+        elif 8 <= hour < 12:
+            return 1.00   # Core London
+        elif 13 <= hour < 16:
+            return 1.00   # Core NY
+        elif 7 <= hour < 8:
+            return 0.90   # Early London
+        elif 16 <= hour < 17:
+            return 0.90   # Late NY
+        return 1.0
 
     def _is_trading_session(self) -> bool:
         """

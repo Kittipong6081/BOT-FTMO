@@ -424,6 +424,42 @@ class OrderBlockDetector:
         
         return best_ob
 
+    # =========================================================================
+    # 🔗 OB Clustering — รวม OB ที่อยู่ใกล้กันเป็นโซนแข็งแกร่ง
+    # =========================================================================
+
+    def get_bullish_cluster_score(
+        self, price: float, tolerance_pips: float = 15, pip_size: float = 0.0001
+    ) -> Optional[float]:
+        """หา cluster ของ Bullish OBs ใกล้ราคา แล้วคืนคะแนนรวม"""
+        return self._get_cluster_score(
+            self.get_active_bullish_obs(min_score=20), price, tolerance_pips, pip_size
+        )
+
+    def get_bearish_cluster_score(
+        self, price: float, tolerance_pips: float = 15, pip_size: float = 0.0001
+    ) -> Optional[float]:
+        """หา cluster ของ Bearish OBs ใกล้ราคา แล้วคืนคะแนนรวม"""
+        return self._get_cluster_score(
+            self.get_active_bearish_obs(min_score=20), price, tolerance_pips, pip_size
+        )
+
+    def _get_cluster_score(
+        self, obs: List[OrderBlock], price: float,
+        tolerance_pips: float, pip_size: float
+    ) -> Optional[float]:
+        """คำนวณ cluster score จาก OBs ที่อยู่ใกล้ราคา"""
+        tolerance = tolerance_pips * pip_size
+        nearby = [
+            ob for ob in obs
+            if (ob.low - tolerance) <= price <= (ob.high + tolerance)
+        ]
+        if not nearby:
+            return None
+        avg_score = sum(ob.strength_score for ob in nearby) / len(nearby)
+        cluster_bonus = 1.0 + 0.15 * (len(nearby) - 1)
+        return min(avg_score * cluster_bonus, 100.0)
+
     def get_ob_summary(self) -> Dict:
         """สรุปข้อมูล Order Blocks ทั้งหมด"""
         active_bull = [ob for ob in self._bullish_obs if ob.is_active]

@@ -381,6 +381,14 @@ class MarketStructure:
                 return sl
         return self._swing_lows[-1] if self._swing_lows else None
 
+    def get_all_swing_highs(self) -> list:
+        """ดึง Swing Highs ทั้งหมด"""
+        return list(self._swing_highs)
+
+    def get_all_swing_lows(self) -> list:
+        """ดึง Swing Lows ทั้งหมด"""
+        return list(self._swing_lows)
+
     def get_structure_summary(self) -> Dict:
         """
         สรุปโครงสร้างตลาดปัจจุบัน

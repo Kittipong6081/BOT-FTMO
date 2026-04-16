@@ -24,7 +24,9 @@
       "Bash(python3 -m py_compile ftmo_trading_bot/strategy/market_structure.py)",
       "Bash(python3 -m py_compile ftmo_trading_bot/strategy/order_blocks.py)",
       "Bash(python3 -m py_compile ftmo_trading_bot/strategy/smc_strategy.py)",
-      "Bash(grep -n \"FVG\\\\|Fair Value Gap\\\\|Liquidity\\\\|Sweep\\\\|Cluster\" /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/strategy/*.py)"
+      "Bash(grep -n \"FVG\\\\|Fair Value Gap\\\\|Liquidity\\\\|Sweep\\\\|Cluster\" /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/strategy/*.py)",
+      "Bash(python -c ' *)",
+      "Bash(python3 -c ' *)"
     ]
   }
 }
