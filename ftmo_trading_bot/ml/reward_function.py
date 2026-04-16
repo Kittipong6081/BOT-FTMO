@@ -141,7 +141,7 @@ class FTMORewardCalculator:
         # ถ้า progress >= 70% ของ expected → on-pace bonus
         # ถ้า progress < 70% ของ expected → behind-pace penalty
         current_step = current_stats.get('current_step', 0)
-        max_steps = current_stats.get('max_steps', 30)
+        max_steps = current_stats.get('max_steps', 45)
         if not is_final_step and current_step > 0:
             expected_progress = (current_step / max_steps) * 100.0
             if progress >= expected_progress * 0.7:

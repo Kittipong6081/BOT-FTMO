@@ -47,7 +47,7 @@ class FTMOOptimizationEnv(gym.Env):
 
     # ค่าคงที่สำหรับ FTMO Challenge
     INITIAL_BALANCE: float = 100_000.0
-    CHALLENGE_DAYS: int = 30
+    CHALLENGE_DAYS: int = 45
     MAX_POSITIONS_PER_DAY: int = 3  # จำกัดที่ 3 ตาม bot_config.ftmo.MAX_OPEN_POSITIONS
 
     # Market Regime (สภาวะตลาด) — สัดส่วนถ่วงน้ำหนักจากการสังเกตตลาด Forex จริง
@@ -66,7 +66,7 @@ class FTMOOptimizationEnv(gym.Env):
         self,
         data_dir: Optional[str] = None,
         excel_log_path: str = "logs/trading_log.xlsx",
-        max_steps: int = 30,
+        max_steps: int = 45,
         symbols: Optional[List[str]] = None,
     ):
         super().__init__()
