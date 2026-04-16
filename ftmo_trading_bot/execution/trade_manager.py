@@ -57,10 +57,11 @@ class TradeManager:
     """
 
     # === ค่าคงที่สำหรับการจัดการ ===
-    BE_TRIGGER_RR: float = 1.0          # เลื่อน SL มา Entry เมื่อกำไรถึง RR 1:1
+    BE_TRIGGER_RR: float = 0.5          # เลื่อน SL มา Entry เมื่อกำไรถึง RR 0.5:1
     BE_OFFSET_PIPS: float = 1.0         # เลื่อน SL เลย Entry + 1 pip (ไม่ใช่แค่ Entry)
     PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ TP1 Hit
-    TRAIL_ACTIVATION_RR: float = 1.0    # เริ่ม Trail เมื่อกำไรถึง RR 1:1
+    PARTIAL_TRIGGER_RR: float = 1.0     # ปิดบางส่วนเมื่อกำไรถึง RR 1:1
+    TRAIL_ACTIVATION_RR: float = 1.5    # เริ่ม Trail เมื่อกำไรถึง RR 1.5:1
     TRAIL_ATR_MULTIPLIER: float = 1.0   # Trail SL ห่างจาก Best Price = ATR × 1.0
 
     def __init__(
@@ -187,7 +188,7 @@ class TradeManager:
             self._move_to_breakeven(trade, state, price_info)
 
         # === ขั้นตอนที่ 2: Partial Close ===
-        if not state.partial_closed and current_rr >= self.BE_TRIGGER_RR:
+        if not state.partial_closed and current_rr >= self.PARTIAL_TRIGGER_RR:
             self._partial_close(trade, state)
 
         # === ขั้นตอนที่ 3: Trailing Stop ===

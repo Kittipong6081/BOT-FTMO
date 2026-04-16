@@ -143,15 +143,32 @@ class TradeExecutor:
     # Magic Number สำหรับระบุว่าเป็นคำสั่งจาก Bot
     MAGIC_NUMBER = 123456
 
-    # === Correlation Groups (กันเทรดทิศทางเดียวกันในคู่ที่ correlated สูง) ===
-    # ถ้าเปิด BUY EURUSD ก็ไม่ควรเปิด BUY GBPUSD พร้อมกัน (Correlation > 0.85)
-    # กลุ่มเดียวกัน = เคลื่อนไหวไปทางเดียวกันเป็นส่วนใหญ่
+    # === Correlation Groups ===
+    # กลุ่มเดียวกัน = exposure ด้านเดียวกัน (ทั้ง BUY/SELL ต้องดูทิศ USD/JPY ไม่ใช่ order direction)
+    # EURUSD BUY = USD อ่อน, USDCHF SELL = USD อ่อน → exposure เดียวกัน
     CORRELATION_GROUPS = {
-        "USD_WEAK": {"EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"},  # USD ลง = กลุ่มนี้ขึ้น
-        "USD_STRONG": {"USDJPY", "USDCAD", "USDCHF"},           # USD ขึ้น = กลุ่มนี้ขึ้น
-        "JPY_CROSS": {"USDJPY", "EURJPY", "GBPJPY"},            # JPY อ่อน = กลุ่มนี้ขึ้น
-        "EUR_PAIRS": {"EURUSD", "EURJPY"},                       # EUR strength
-        "GBP_PAIRS": {"GBPUSD", "GBPJPY"},                       # GBP strength
+        "USD_WEAK": {"EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"},
+        "USD_STRONG": {"USDJPY", "USDCAD", "USDCHF"},
+        "JPY_CROSS": {"USDJPY", "EURJPY", "GBPJPY"},
+        "EUR_PAIRS": {"EURUSD", "EURJPY"},
+        "GBP_PAIRS": {"GBPUSD", "GBPJPY"},
+    }
+
+    # ทิศทางที่ "positive" สำหรับแต่ละ symbol ในกลุ่ม
+    # BUY symbol ที่ base=X → X strength. SELL → X weakness.
+    # กลุ่ม USD_WEAK: BUY EURUSD = USD weak, กลุ่ม USD_STRONG: BUY USDJPY = USD strong
+    # ถ้า symbol อยู่ในกลุ่ม "ด้านเดียว" → BUY = positive exposure
+    # ถ้า symbol อยู่ในกลุ่ม "ด้านตรงข้าม" → SELL = positive exposure
+    # ตาราง: symbol → direction ที่ให้ "group-positive exposure"
+    _GROUP_POSITIVE_DIR = {
+        # USD_WEAK group: BUY = USD weak (positive exposure ต่อ theme "USD อ่อน")
+        "USD_WEAK": {"EURUSD": "BUY", "GBPUSD": "BUY", "AUDUSD": "BUY", "NZDUSD": "BUY"},
+        # USD_STRONG group: BUY = USD strong
+        "USD_STRONG": {"USDJPY": "BUY", "USDCAD": "BUY", "USDCHF": "BUY"},
+        # JPY_CROSS group: BUY = JPY weak
+        "JPY_CROSS": {"USDJPY": "BUY", "EURJPY": "BUY", "GBPJPY": "BUY"},
+        "EUR_PAIRS": {"EURUSD": "BUY", "EURJPY": "BUY"},
+        "GBP_PAIRS": {"GBPUSD": "BUY", "GBPJPY": "BUY"},
     }
 
     # จำนวน Position ต่อกลุ่ม correlation ที่ยอมรับได้
@@ -500,22 +517,26 @@ class TradeExecutor:
             if symbol_upper not in group_symbols:
                 continue
 
-            # นับเทรดที่เปิดอยู่ในกลุ่มนี้ + ทิศทางเดียวกัน
-            # ⚠️ ต้องคำนึงว่า "ทิศทางเดียวกัน" ใน correlation หมายถึง
-            # ทิศที่ทำให้ได้กำไร/ขาดทุนเหมือนกัน ไม่ใช่ BUY/SELL ตัวอักษรเดียวกัน
-            # เช่น BUY EURUSD กับ SELL USDCHF → ทั้งคู่กำไรเมื่อ USD อ่อน
-            # เพื่อความง่าย เราเช็คเฉพาะทิศทางเดียวกันในกลุ่มที่ “เคลื่อนไหวพร้อมกัน”
             same_direction_count = 0
+            group_dir_map = self._GROUP_POSITIVE_DIR.get(group_name, {})
+            new_pos_dir = group_dir_map.get(symbol_upper)
+            new_effective = 1 if tt_upper == new_pos_dir else -1
+
             for trade in self._active_trades.values():
                 if not trade.is_open:
                     continue
-                if trade.symbol.upper() in group_symbols and trade.trade_type.upper() == tt_upper:
+                existing_sym = trade.symbol.upper()
+                if existing_sym not in group_symbols:
+                    continue
+                existing_pos_dir = group_dir_map.get(existing_sym)
+                existing_effective = 1 if trade.trade_type.upper() == existing_pos_dir else -1
+                if existing_effective == new_effective:
                     same_direction_count += 1
 
             if same_direction_count >= self.MAX_CORRELATED_POSITIONS:
                 return (
                     False,
-                    f"กลุ่ม {group_name} มีเทรด {tt_upper} เปิดแล้ว {same_direction_count} ตัว "
+                    f"กลุ่ม {group_name} มี effective exposure เดียวกันเปิดแล้ว {same_direction_count} ตัว "
                     f"(จำกัด {self.MAX_CORRELATED_POSITIONS})"
                 )
 

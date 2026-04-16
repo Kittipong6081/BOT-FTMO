@@ -230,9 +230,20 @@ class SMCStrategy:
         self._mtf_data = mtf_df
         self._ltf_data = ltf_df
 
-        # === ขั้นตอนที่ 5: วิเคราะห์ HTF (H4) — ทิศทางหลัก ===
+        # === ขั้นตอนที่ 5: วิเคราะห์ HTF (H4) — ทิศทางหลัก (ยืนยัน 3 แท่ง) ===
         htf_values = self._indicators.get_latest_values(htf_df)
-        self._htf_bias = htf_values["trend"] if htf_values else 0
+        if htf_values and len(htf_df) >= 3:
+            recent_trends = htf_df["trend"].iloc[-3:].tolist()
+            bullish_count = sum(1 for t in recent_trends if t == 1)
+            bearish_count = sum(1 for t in recent_trends if t == -1)
+            if bullish_count >= 2:
+                self._htf_bias = 1
+            elif bearish_count >= 2:
+                self._htf_bias = -1
+            else:
+                self._htf_bias = 0
+        else:
+            self._htf_bias = htf_values["trend"] if htf_values else 0
 
         # === ขั้นตอนที่ 6: วิเคราะห์ MTF (H1) — Market Structure ===
         mtf_df = self._structure_mtf.analyze(mtf_df)
