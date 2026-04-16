@@ -464,6 +464,8 @@ class FTMOOptimizationEnv(gym.Env):
             'trading_days': trading_days,
             'consecutive_losses': consecutive_losses,
             'is_final_step': self.current_step >= self.max_steps,
+            'current_step': self.current_step,
+            'max_steps': self.max_steps,
             'intraday_excursion_pct': getattr(self, 'intraday_excursion_pct', 0.0),
             'day_end_loss_pct': getattr(self, 'day_end_loss_pct', 0.0),
         }

@@ -106,9 +106,11 @@ class FTMORewardCalculator:
             # กำไรหด ลงโทษเบาๆ เพราะเดี๋ยวไปเจอ DD penalty อยู่แล้ว
             reward -= abs(delta_progress * 100) * 0.2
 
-        # โบนัสถ้าถึงเป้า 10% — เพิ่ม 30→80 เพื่อสู้กับ breach -100 ให้ EV เป็นบวก
+        # โบนัสถ้าถึงเป้า 10% — ต้องสูงพอให้ EV(aggressive) > EV(passive)
+        # Passive agent: ~30 steps × -1.5 urgency + end penalty -20 = -65 → /10 = -6.5
+        # Target agent: +150 target + progress + urgency - some DD = ต้อง net positive
         if progress >= 100.0:
-            reward += 80.0
+            reward += 150.0
 
         # ==========================================
         # 4. Over-trading Penalty
@@ -125,6 +127,35 @@ class FTMORewardCalculator:
         if is_final_step and trading_days < 10:
             missing = 10 - trading_days
             reward -= min(missing * 3.0, 30.0)  # ขาด 10 วัน = -30
+
+        # ==========================================
+        # 5.5. Urgency Reward — บังคับให้เดินหน้า ไม่ใช่นั่งเฉยรอจบ
+        # ==========================================
+        # expected_pace = วันที่ / 30 × 100 (ต้องถึง 100% ใน 30 วัน)
+        # ถ้า progress >= 70% ของ expected → on-pace bonus
+        # ถ้า progress < 70% ของ expected → behind-pace penalty
+        current_step = current_stats.get('current_step', 0)
+        max_steps = current_stats.get('max_steps', 30)
+        if not is_final_step and current_step > 0:
+            expected_progress = (current_step / max_steps) * 100.0
+            if progress >= expected_progress * 0.7:
+                reward += 2.0
+            else:
+                # passive policy: 30 steps × -1.5 = -45 → /10 = -4.5 (เลวกว่าเดิม)
+                reward -= 1.5
+
+        # ==========================================
+        # 5.6. End-of-Challenge Penalty — ไม่ถึงเป้า = ลงโทษ
+        # ==========================================
+        if is_final_step and progress < 100.0:
+            if progress < 30.0:
+                # ไม่ถึง 30% = ปรับหนัก (passive agent ตกที่นี่)
+                reward -= 20.0
+            elif progress < 70.0:
+                reward -= 10.0
+            else:
+                # 70-99% ใกล้แล้ว — penalty เบาๆ
+                reward -= 5.0
 
         # ==========================================
         # 6. Consistency Multiplier (L4) — ให้ reward เชิงบวกลดลงถ้าเทรดน้อย

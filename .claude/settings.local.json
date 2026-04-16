@@ -13,7 +13,14 @@
       "Bash(python3 -m py_compile ftmo_trading_bot/execution/trade_executor.py ftmo_trading_bot/core/risk_manager.py ftmo_trading_bot/core/mt5_connector.py ftmo_trading_bot/strategy/smc_strategy.py ftmo_trading_bot/config/news_events.py)",
       "Bash(python3 -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['ftmo_trading_bot/ml/rl_environment.py','ftmo_trading_bot/ml/reward_function.py','ftmo_trading_bot/core/risk_manager.py','ftmo_trading_bot/core/mt5_connector.py','ftmo_trading_bot/core/position_sizer.py','ftmo_trading_bot/execution/trade_executor.py','ftmo_trading_bot/strategy/order_blocks.py']]; print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('ftmo_trading_bot/ml/rl_environment.py'\\).read\\(\\)\\); ast.parse\\(open\\('ftmo_trading_bot/ml/reward_function.py'\\).read\\(\\)\\); ast.parse\\(open\\('ftmo_trading_bot/execution/trade_executor.py'\\).read\\(\\)\\); ast.parse\\(open\\('ftmo_trading_bot/core/position_sizer.py'\\).read\\(\\)\\); ast.parse\\(open\\('ftmo_trading_bot/strategy/order_blocks.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c ':*)"
+      "Bash(python3 -c ':*)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/core/risk_manager.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/config/settings.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/ml/reward_function.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/ml/rl_environment.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/main.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/ml/rl_agent.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/scripts/train_ppo.py)"
     ]
   }
 }

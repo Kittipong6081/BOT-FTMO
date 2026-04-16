@@ -86,6 +86,11 @@ class RiskManager:
         # global halt-until timestamp (ISO) — ใช้ตอนแพ้ติดกันครบ threshold
         self._halt_until: Optional[str] = None
 
+        # === FTMO Consistency Rule (v3) ===
+        # เก็บกำไร/ขาดทุนที่ปิดแล้วรายวัน (date_iso → USD)
+        # ใช้ตรวจสอบว่า max_day_profit / total_profit ≤ 45%
+        self._daily_pnl_history: Dict[str, float] = {}
+
         # === เส้นทางไฟล์สถานะ ===
         self._state_file = bot_config.paths.state_file
         
@@ -170,6 +175,13 @@ class RiskManager:
         """
         broker_today = TimeManager.get_server_time().date()
         print(f"\n🌅 [Risk Manager] === วันใหม่เริ่มต้น: {broker_today} (Broker Time) ===")
+
+        # Finalize วันก่อนลง daily_pnl_history (Consistency Rule)
+        yesterday_str = str(self._current_day)
+        if self._daily_closed_pnl != 0.0:
+            self._daily_pnl_history[yesterday_str] = (
+                self._daily_pnl_history.get(yesterday_str, 0.0) + self._daily_closed_pnl
+            )
 
         # FTMO ใช้ค่ามากกว่าระหว่าง Balance กับ Equity ตอนเริ่มวัน
         self._daily_start_equity = max(current_balance, current_equity)
@@ -456,8 +468,63 @@ class RiskManager:
         if sl_distance_pips <= 0:
             return (False, "❌ ห้ามเทรดโดยไม่มี Stop Loss! (SL distance = 0)")
 
+        # === ตรวจสอบที่ 7: FTMO Consistency Rule ===
+        # สมมติ best case: trade ชนะเต็ม RR → วันนี้ได้เพิ่มเท่าไร
+        potential_best_profit = risk_amount * rr_ratio
+        consistency_ok, consistency_reason = self.check_consistency_rule(potential_best_profit)
+        if not consistency_ok:
+            return (False, consistency_reason)
+
         # ✅ ผ่านทุกการตรวจสอบ
         return (True, f"✅ อนุญาตให้เทรด {symbol} (Risk: {risk_pct:.2%}, RR: 1:{rr_ratio:.1f})")
+
+    def check_consistency_rule(self, potential_profit: float = 0.0) -> Tuple[bool, str]:
+        """
+        ตรวจ FTMO Consistency Rule: วันที่กำไรสูงสุดห้ามเกิน threshold ของ total profit
+
+        Args:
+            potential_profit: กำไรสมมติที่อาจได้ถ้า trade นี้ชนะ (ใช้คัดกรอง pre-trade)
+
+        Returns:
+            (ok, reason) — ok=True ถ้ายังไม่ละเมิด
+        """
+        threshold = getattr(self._config, "CONSISTENCY_RULE_THRESHOLD", 0.45)
+        min_profit_pct = getattr(self._config, "CONSISTENCY_MIN_PROFIT_PCT", 0.02)
+        initial = self._initial_balance or 100_000.0
+
+        # รวม PnL ของวันนี้ (ปิดแล้ว + potential)
+        today_str = str(self._current_day)
+        today_pnl = self._daily_pnl_history.get(today_str, 0.0) + self._daily_closed_pnl + potential_profit
+
+        # รวม total profit จากทุกวัน + วันนี้
+        total_profit = sum(self._daily_pnl_history.values()) + self._daily_closed_pnl + potential_profit
+        # ลบ today ที่อยู่ใน history ออก (เพราะรวมซ้ำกับ _daily_closed_pnl)
+        total_profit -= self._daily_pnl_history.get(today_str, 0.0)
+
+        # ข้ามการตรวจถ้า total profit ยังต่ำ (ช่วงเริ่มต้น challenge)
+        if total_profit <= initial * min_profit_pct:
+            return (True, "")
+
+        # ถ้า total ≤ 0 ไม่ต้องตรวจ (ไม่มีกำไรรวม → consistency ไม่เกี่ยว)
+        if total_profit <= 0:
+            return (True, "")
+
+        # หาวันที่กำไรสูงสุด (รวม today ด้วย)
+        all_days = dict(self._daily_pnl_history)
+        all_days[today_str] = today_pnl  # override today ด้วยค่าล่าสุด
+
+        max_day_profit = max(all_days.values())
+        if max_day_profit <= 0:
+            return (True, "")
+
+        ratio = max_day_profit / total_profit
+        if ratio > threshold:
+            return (
+                False,
+                f"📏 Consistency Rule: วันที่กำไรสูงสุด ${max_day_profit:,.0f} = "
+                f"{ratio:.0%} ของ total ${total_profit:,.0f} (limit: {threshold:.0%})"
+            )
+        return (True, "")
 
     def get_remaining_daily_budget(self) -> float:
         """
@@ -587,6 +654,9 @@ class RiskManager:
             "open_positions": self._connector.get_positions_count(),
             "max_positions": self._config.MAX_OPEN_POSITIONS,
             "current_date": str(TimeManager.get_server_time().date()),
+            # Consistency Rule
+            "consistency_ok": self.check_consistency_rule()[0],
+            "daily_pnl_today": self._daily_closed_pnl,
         }
 
     def _print_risk_status(self, balance: float, equity: float):
@@ -638,6 +708,8 @@ class RiskManager:
             "last_loss_time_per_symbol": self._last_loss_time_per_symbol,
             "consecutive_losses": self._consecutive_losses,
             "halt_until": self._halt_until,
+            # --- v3: Consistency Rule ---
+            "daily_pnl_history": self._daily_pnl_history,
             "last_updated": datetime.now().isoformat(),
         }
 
@@ -684,6 +756,8 @@ class RiskManager:
             self._last_loss_time_per_symbol = data.get("last_loss_time_per_symbol", {}) or {}
             self._consecutive_losses = int(data.get("consecutive_losses", 0) or 0)
             self._halt_until = data.get("halt_until") or None
+            # --- v3: Consistency Rule ---
+            self._daily_pnl_history = data.get("daily_pnl_history", {}) or {}
             
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))

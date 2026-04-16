@@ -94,6 +94,13 @@ class FTMOConfig:
     MAX_CORRELATED_POSITIONS: int = 1           # 1 ตำแหน่งต่อกลุ่ม correlation
     MIN_CONFLUENCE_SCORE: float = 70.0          # เกณฑ์ confluence ขั้นต่ำ (ปรับได้ runtime)
 
+    # === FTMO Consistency Rule ===
+    # FTMO Swing: วันที่มีกำไรสูงสุดห้ามเกิน 50% ของ total profit
+    # ใช้ buffer 45% เพื่อกันความคลาดเคลื่อน + ความผันผวนของ trade ที่ยังไม่ปิด
+    CONSISTENCY_RULE_THRESHOLD: float = 0.45    # max_day / total_profit ≤ 45%
+    # เริ่มบังคับใช้เมื่อ total_profit ≥ 2% ของ initial (ต่ำกว่านี้ข้าม เพื่อไม่ block วันแรกๆ)
+    CONSISTENCY_MIN_PROFIT_PCT: float = 0.02
+
     # === Cooldown / Anti-Revenge-Trading ===
     # หลังโดน SL บนคู่เงินใดคู่เงินหนึ่ง ต้องรอกี่นาทีก่อนเปิดคู่เดิมอีกครั้ง
     COOLDOWN_AFTER_LOSS_MIN: int = 30

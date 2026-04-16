@@ -130,7 +130,7 @@ def main():
             gae_lambda=0.95,
             clip_range=0.2,
             clip_range_vf=0.2,   # clip value loss — กัน value function ระเบิด
-            ent_coef=0.0,        # ปิด entropy bonus — บังคับให้ policy converge
+            ent_coef=0.001,      # ต่ำมาก — กัน premature convergence แต่ไม่ diverge
             verbose=1,
             tensorboard_log=tb_log_dir,
         )
