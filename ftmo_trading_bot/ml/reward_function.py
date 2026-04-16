@@ -147,8 +147,8 @@ class FTMORewardCalculator:
             if progress >= expected_progress * 0.7:
                 reward += 2.0
             else:
-                # passive policy: 30 steps × -1.5 = -45 → /10 = -4.5 (เลวกว่าเดิม)
-                reward -= 1.5
+                # passive policy: 45 steps × -1.0 = -45 → /10 = -4.5
+                reward -= 1.0
 
         # ==========================================
         # 5.6. End-of-Challenge Penalty — ไม่ถึงเป้า = ลงโทษ
@@ -176,9 +176,9 @@ class FTMORewardCalculator:
         # ==========================================
         # 7. Consecutive-Loss Spiral Penalty (L4/L5)
         # ==========================================
-        # แพ้ติดกัน ≥3 → ลดแรง revenge trading
+        # แพ้ติดกัน ≥3 → ลดแรง revenge trading (ลดจาก 5→3 เพราะ 45 วันมีเวลาฟื้น)
         if consecutive_losses >= 3:
-            reward -= min((consecutive_losses - 2) * 5.0, 25.0)
+            reward -= min((consecutive_losses - 2) * 3.0, 15.0)
 
         # ==========================================
         # 8. Intraday Swing Penalty (L2-equivalent)
