@@ -126,7 +126,13 @@ class MarketStructure:
         n = lookback
         highs = df['high'].values
         lows = df['low'].values
+        opens = df['open'].values
+        closes = df['close'].values
         length = len(df)
+
+        # Body high/low — ใช้เปรียบเทียบ swing แทน wick เพื่อกรอง spike ปลอม
+        body_highs = np.maximum(opens, closes)
+        body_lows = np.minimum(opens, closes)
         
         # สร้าง Arrays สำหรับ Swing Points
         swing_high = np.full(length, np.nan)
@@ -140,10 +146,11 @@ class MarketStructure:
         # ตรวจจับ Swing Points
         for i in range(n, length - n):
             # === ตรวจจับ Swing High ===
-            # High ของแท่ง i ต้องสูงกว่า High ของ N แท่งซ้ายและขวา
+            # Body high ของแท่ง i ต้องสูงกว่า body high ของ N แท่งซ้ายและขวา
+            # ใช้ body เปรียบเทียบเพื่อกรอง wick spike ปลอม (SMC standard)
             is_swing_high = True
             for j in range(1, n + 1):
-                if highs[i] <= highs[i - j] or highs[i] <= highs[i + j]:
+                if body_highs[i] <= body_highs[i - j] or body_highs[i] <= body_highs[i + j]:
                     is_swing_high = False
                     break
             
@@ -163,7 +170,7 @@ class MarketStructure:
             # Low ของแท่ง i ต้องต่ำกว่า Low ของ N แท่งซ้ายและขวา
             is_swing_low = True
             for j in range(1, n + 1):
-                if lows[i] >= lows[i - j] or lows[i] >= lows[i + j]:
+                if body_lows[i] >= body_lows[i - j] or body_lows[i] >= body_lows[i + j]:
                     is_swing_low = False
                     break
             

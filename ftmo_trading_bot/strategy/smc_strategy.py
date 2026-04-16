@@ -351,7 +351,7 @@ class SMCStrategy:
         )
         
         if bullish_ob:
-            ob_contribution = min(25, bullish_ob.strength_score * 0.5)
+            ob_contribution = min(25, bullish_ob.strength_score * 0.25)
             score += ob_contribution
             reasons.append(f"✅ ราคาอยู่ที่ Bullish OB (score={bullish_ob.strength_score:.0f})")
         else:
@@ -516,7 +516,7 @@ class SMCStrategy:
         )
         
         if bearish_ob:
-            ob_contribution = min(25, bearish_ob.strength_score * 0.5)
+            ob_contribution = min(25, bearish_ob.strength_score * 0.25)
             score += ob_contribution
             reasons.append(f"✅ ราคาอยู่ที่ Bearish OB (score={bearish_ob.strength_score:.0f})")
         else:

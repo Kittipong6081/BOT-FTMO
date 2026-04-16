@@ -236,33 +236,35 @@ class OrderBlockDetector:
     def _check_mitigation(self, df: pd.DataFrame):
         """
         ตรวจสอบว่า Order Block ถูก Mitigate (ราคากลับมาทดสอบแล้ว) หรือยัง
-        
-        กฎ:
-        - Bullish OB: ถูก Mitigate เมื่อราคา (Low) แตะเข้าโซน OB
-        - Bearish OB: ถูก Mitigate เมื่อราคา (High) แตะเข้าโซน OB
-        
+
+        กฎ (SMC standard):
+        - Bullish OB: ถูก Mitigate เมื่อ **body ปิด** ต่ำกว่า OB.low (ทะลุโซนจริง)
+          wick ลงไปแตะแล้วเด้งกลับ = OB ยังดีอยู่ (liquidity sweep)
+        - Bearish OB: ถูก Mitigate เมื่อ **body ปิด** สูงกว่า OB.high
+
         OB ที่ถูก Mitigate แล้วจะลดความสำคัญลง
         """
-        lows = df['low'].values
-        highs = df['high'].values
-        
-        # ตรวจ Bullish OBs
+        closes = df['close'].values
+        opens = df['open'].values
+
+        # ตรวจ Bullish OBs — body close ต่ำกว่าขอบล่าง OB = ทะลุจริง
         for ob in self._bullish_obs:
             if ob.mitigated:
                 continue
-            # ตรวจว่ามีแท่งไหนหลัง OB ที่ราคากลับลงมาแตะเข้าโซน
             for i in range(ob.index + 1, len(df)):
-                if lows[i] <= ob.high:  # ราคาแตะเข้าโซน OB
+                candle_body_low = min(closes[i], opens[i])
+                if candle_body_low < ob.low:
                     ob.mitigated = True
                     ob.mitigated_index = i
                     break
-        
-        # ตรวจ Bearish OBs
+
+        # ตรวจ Bearish OBs — body close สูงกว่าขอบบน OB = ทะลุจริง
         for ob in self._bearish_obs:
             if ob.mitigated:
                 continue
             for i in range(ob.index + 1, len(df)):
-                if highs[i] >= ob.low:  # ราคาแตะเข้าโซน OB
+                candle_body_high = max(closes[i], opens[i])
+                if candle_body_high > ob.high:
                     ob.mitigated = True
                     ob.mitigated_index = i
                     break

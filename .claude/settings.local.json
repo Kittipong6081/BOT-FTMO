@@ -20,7 +20,10 @@
       "Bash(python3 -m py_compile ftmo_trading_bot/ml/rl_environment.py)",
       "Bash(python3 -m py_compile ftmo_trading_bot/main.py)",
       "Bash(python3 -m py_compile ftmo_trading_bot/ml/rl_agent.py)",
-      "Bash(python3 -m py_compile ftmo_trading_bot/scripts/train_ppo.py)"
+      "Bash(python3 -m py_compile ftmo_trading_bot/scripts/train_ppo.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/strategy/market_structure.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/strategy/order_blocks.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/strategy/smc_strategy.py)"
     ]
   }
 }
