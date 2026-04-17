@@ -399,11 +399,11 @@ class FTMOTradingBot:
 
     def _build_live_observation(self) -> np.ndarray:
         """
-        สร้าง observation 13 dims จากสถานะจริงของบอท เพื่อส่งให้ PPO agent
+        สร้าง observation 16 dims จากสถานะจริงของบอท เพื่อส่งให้ PPO agent (V3)
         ต้อง match กับ FTMOOptimizationEnv._get_obs() ลำดับและ scale
 
         Returns:
-            np.ndarray shape (13,) dtype float32
+            np.ndarray shape (16,) dtype float32
         """
         try:
             risk = self._risk_manager.get_risk_status()
@@ -422,7 +422,6 @@ class FTMOTradingBot:
         # Sortino + recent trades จาก analyzer
         sortino = 0.0
         recent_wr_norm = 0.0
-        last_trade_result = 0
         try:
             risk_stats = self._analyzer.get_risk_stats() or {}
             sortino = float(risk_stats.get("sortino_ratio", 0.0) or 0.0)
@@ -431,9 +430,6 @@ class FTMOTradingBot:
 
             trades = getattr(self._analyzer, "_trades", None) or []
             if trades:
-                last = trades[-1]
-                last_pnl = float(getattr(last, "profit", 0.0) or 0.0)
-                last_trade_result = 1 if last_pnl > 0 else (-1 if last_pnl < 0 else 0)
                 recent = trades[-10:]
                 if recent:
                     wins = sum(1 for t in recent if float(getattr(t, "profit", 0.0) or 0.0) > 0)
@@ -464,12 +460,31 @@ class FTMOTradingBot:
 
         cum_pnl_norm = (balance / initial) - 1.0 if initial > 0 else 0.0
 
+        # T16: 3 features ใหม่ (indices 13-15)
+        avg_rr_achieved = 0.0
+        dd_velocity = 0.0
+        profit_factor = 0.0
+        try:
+            trades = getattr(self._analyzer, "_trades", None) or []
+            if len(trades) >= 3:
+                wins = [float(getattr(t, "profit", 0.0) or 0.0) for t in trades if float(getattr(t, "profit", 0.0) or 0.0) > 0]
+                losses = [abs(float(getattr(t, "profit", 0.0) or 0.0)) for t in trades if float(getattr(t, "profit", 0.0) or 0.0) < 0]
+                if wins and losses:
+                    avg_rr_achieved = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
+                    profit_factor = sum(wins) / sum(losses)
+
+            prev_dd = getattr(self, '_prev_total_dd', total_dd)
+            dd_velocity = total_dd - prev_dd
+            self._prev_total_dd = total_dd
+        except Exception:
+            pass
+
         obs = np.array([
-            float(np.clip(-total_dd / 0.10, -5.0, 0.0)),     # total_dd เป็นบวก → ใส่ลบ
+            float(np.clip(-total_dd / 0.10, -5.0, 0.0)),
             float(np.clip(-daily_dd / 0.05, -5.0, 0.0)),
             float(np.clip(progress / 100.0, -1.0, 2.0)),
             float(np.clip(sortino, -5.0, 5.0)),
-            float(last_trade_result),
+            float(min(len(getattr(self._analyzer, '_trades', []) or []), 5) / 5.0),
             float(np.clip(current_volatility, -2.0, 2.0)),
             float(np.clip(day_progress, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
@@ -478,6 +493,10 @@ class FTMOTradingBot:
             float(day_of_week_norm),
             float(regime_consistency),
             float(np.clip(cum_pnl_norm, -0.15, 0.15)),
+            # T16 expanded:
+            float(np.clip(avg_rr_achieved, 0.0, 3.0)),
+            float(np.clip(dd_velocity, -1.0, 1.0)),
+            float(np.clip(profit_factor, 0.0, 3.0)),
         ], dtype=np.float32)
         return obs
 
@@ -499,12 +518,16 @@ class FTMOTradingBot:
             bot_config.indicators.atr_sl_multiplier = params['atr_sl_multiplier']
             if hasattr(self._strategy, 'MIN_CONFLUENCE_SCORE'):
                 self._strategy.MIN_CONFLUENCE_SCORE = params['min_confluence_score']
+            # T16: apply max_daily_trades
+            if 'max_daily_trades' in params:
+                bot_config.ftmo.MAX_OPEN_POSITIONS = params['max_daily_trades']
 
             self._rl_params_applied = params
             print(f"✅ [RL:{reason}] Risk: {params['risk_per_trade_pct']*100:.2f}% | "
                   f"Confluence: {params['min_confluence_score']} | "
                   f"RR: 1:{params['preferred_risk_reward_ratio']} | "
-                  f"ATR: {params['atr_sl_multiplier']}x")
+                  f"ATR: {params['atr_sl_multiplier']}x | "
+                  f"MaxTrades: {params.get('max_daily_trades', 3)}")
             try:
                 self._notifier.send_ai_tuning(params)
             except Exception:

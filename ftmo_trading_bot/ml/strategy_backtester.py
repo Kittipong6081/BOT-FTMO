@@ -127,6 +127,65 @@ class StrategyBacktester:
     def is_available(self) -> bool:
         return len(self._available_symbols) > 0
 
+    def get_min_bars_for_episode(self, max_steps: int = 45) -> int:
+        """คำนวณจำนวน M15 bars ขั้นต่ำที่ต้องการสำหรับ 1 episode แบบ sequential"""
+        return self.MIN_M15_BARS + max_steps * self.M15_PER_DAY + self.M15_PER_DAY + 48
+
+    def get_sequential_symbols(self, max_steps: int = 45) -> List[str]:
+        """คืน symbols ที่มีข้อมูลเพียงพอสำหรับ sequential episode"""
+        min_bars = self.get_min_bars_for_episode(max_steps)
+        return [
+            s for s in self._available_symbols
+            if len(self._m15_cache.get(s, [])) >= min_bars
+        ]
+
+    def simulate_day_sequential(
+        self,
+        params: Dict,
+        symbol: str,
+        m15_day_start: int,
+        rng: np.random.Generator,
+    ) -> Dict:
+        """
+        T14/T15: จำลอง 1 วันเทรดแบบ chronological — ใช้ symbol + ตำแหน่งเฉพาะ
+
+        Args:
+            params: trading parameters
+            symbol: symbol ที่เลือกสำหรับ episode นี้
+            m15_day_start: M15 bar index ที่เริ่มวันนี้ (ต้องมี lookback ก่อนหน้า)
+            rng: random number generator
+        """
+        if symbol not in self._m15_cache:
+            return self._empty_result()
+
+        m15_df = self._m15_cache[symbol]
+        h1_df = self._h1_cache.get(symbol)
+        h4_df = self._h4_cache.get(symbol)
+
+        if h1_df is None or h4_df is None:
+            return self._empty_result()
+
+        m15_start = max(0, m15_day_start - self.MIN_M15_BARS)
+        m15_window_end = m15_day_start
+
+        if m15_window_end >= len(m15_df) - self.M15_PER_DAY:
+            return self._empty_result()
+
+        h1_ratio = len(h1_df) / max(len(m15_df), 1)
+        h4_ratio = len(h4_df) / max(len(m15_df), 1)
+        h1_end = min(int(m15_window_end * h1_ratio), len(h1_df))
+        h4_end = min(int(m15_window_end * h4_ratio), len(h4_df))
+        h1_start = max(0, h1_end - self.MIN_H1_BARS)
+        h4_start = max(0, h4_end - self.MIN_H4_BARS)
+
+        if h1_end - h1_start < 200 or h4_end - h4_start < 200:
+            return self._empty_result()
+
+        return self._run_day_scan(
+            params, symbol, m15_df, h1_df, h4_df,
+            m15_start, m15_window_end, h1_start, h1_end, h4_start, h4_end, rng
+        )
+
     def simulate_day_with_strategy(
         self,
         params: Dict,
@@ -134,7 +193,7 @@ class StrategyBacktester:
         rng: np.random.Generator,
     ) -> Dict:
         """
-        จำลอง 1 วันเทรดด้วย SMC Strategy จริง
+        จำลอง 1 วันเทรดด้วย SMC Strategy จริง (random sampling mode)
 
         Args:
             params: {risk_per_trade_pct, min_confluence_score, atr_sl_multiplier, preferred_risk_reward_ratio}
@@ -168,6 +227,27 @@ class StrategyBacktester:
         if h1_end - h1_start < 200 or h4_end - h4_start < 200:
             return self._empty_result()
 
+        return self._run_day_scan(
+            params, symbol, m15_df, h1_df, h4_df,
+            m15_start, m15_window_end, h1_start, h1_end, h4_start, h4_end, rng
+        )
+
+    def _run_day_scan(
+        self,
+        params: Dict,
+        symbol: str,
+        m15_df: pd.DataFrame,
+        h1_df: pd.DataFrame,
+        h4_df: pd.DataFrame,
+        m15_start: int,
+        m15_window_end: int,
+        h1_start: int,
+        h1_end: int,
+        h4_start: int,
+        h4_end: int,
+        rng: np.random.Generator,
+    ) -> Dict:
+        """Core scan logic — shared by random and sequential modes"""
         risk_pct = params['risk_per_trade_pct']
         min_confluence = params['min_confluence_score']
         atr_sl_mult = params['atr_sl_multiplier']
@@ -180,7 +260,7 @@ class StrategyBacktester:
         losses = 0
         running_pnl = 0.0
         min_running = 0.0
-        max_trades = 3
+        max_trades = params.get('max_daily_trades', 3)
 
         # สแกนหา signal 4 ครั้งต่อวัน (ทุก 24 แท่ง M15 = ทุก 6 ชั่วโมง)
         scan_points = [0, 24, 48, 72]
@@ -303,7 +383,13 @@ class StrategyBacktester:
         future_df: pd.DataFrame, risk_amount: float,
         pip_size: float, rng: np.random.Generator,
     ) -> float:
-        """จำลองผลเทรดจาก signal กับราคาอนาคต"""
+        """
+        จำลองผลเทรดจาก signal กับราคาอนาคต
+
+        Fix: เมื่อแท่งเทียนชนทั้ง SL และ TP ในแท่งเดียวกัน
+        ใช้ระยะทาง (entry → SL vs entry → TP) เทียบกับ bar open
+        เพื่อประมาณว่าราคาชนอะไรก่อน แทนที่จะ bias เป็น SL เสมอ
+        """
         entry = signal.entry_price
         is_buy = signal.signal_type.value == "BUY"
 
@@ -314,26 +400,47 @@ class StrategyBacktester:
             sl_price = entry + sl_dist
             tp_price = entry - tp_dist
 
-        # วิ่งแท่งต่อแท่ง ดูว่าชน SL หรือ TP ก่อน
         for _, row in future_df.iterrows():
             bar_high = row['high']
             bar_low = row['low']
+            bar_open = row['open']
 
             if is_buy:
-                if bar_low <= sl_price:
-                    slippage = float(rng.uniform(1.0, 1.05))
-                    return -risk_amount * slippage
-                if bar_high >= tp_price:
-                    # Partial TP logic: 50% ที่ 1R, ที่เหลือถึง full TP
-                    partial_rr = 0.5 * 1.0 + 0.5 * (tp_dist / max(sl_dist, pip_size))
-                    return risk_amount * partial_rr * float(rng.uniform(0.85, 1.0))
+                hit_sl = bar_low <= sl_price
+                hit_tp = bar_high >= tp_price
             else:
-                if bar_high >= sl_price:
-                    slippage = float(rng.uniform(1.0, 1.05))
-                    return -risk_amount * slippage
-                if bar_low <= tp_price:
-                    partial_rr = 0.5 * 1.0 + 0.5 * (tp_dist / max(sl_dist, pip_size))
-                    return risk_amount * partial_rr * float(rng.uniform(0.85, 1.0))
+                hit_sl = bar_high >= sl_price
+                hit_tp = bar_low <= tp_price
+
+            if hit_sl and hit_tp:
+                # ทั้ง SL และ TP โดนในแท่งเดียวกัน — ประมาณจาก open direction
+                # ถ้า open ใกล้ TP มากกว่า → น่าจะชน TP ก่อน (momentum ไปทาง TP)
+                if is_buy:
+                    dist_to_sl = abs(bar_open - sl_price)
+                    dist_to_tp = abs(bar_open - tp_price)
+                else:
+                    dist_to_sl = abs(bar_open - sl_price)
+                    dist_to_tp = abs(bar_open - tp_price)
+
+                # TP ใกล้กว่า → ชน TP ก่อน, SL ใกล้กว่า → ชน SL ก่อน
+                # เท่ากัน → 50/50 random
+                if dist_to_tp < dist_to_sl:
+                    hit_sl = False  # TP ก่อน
+                elif dist_to_sl < dist_to_tp:
+                    hit_tp = False  # SL ก่อน
+                else:
+                    if rng.random() < 0.5:
+                        hit_sl = False
+                    else:
+                        hit_tp = False
+
+            if hit_sl:
+                slippage = float(rng.uniform(1.0, 1.05))
+                return -risk_amount * slippage
+
+            if hit_tp:
+                partial_rr = 0.5 * 1.0 + 0.5 * (tp_dist / max(sl_dist, pip_size))
+                return risk_amount * partial_rr * float(rng.uniform(0.85, 1.0))
 
         # ไม่ชนทั้ง SL/TP ใน 48 แท่ง → ปิดที่ราคาปัจจุบัน
         last_close = float(future_df['close'].iloc[-1])

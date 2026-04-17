@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/data/ohlcv/*.csv)",
+      "Bash(python3.14 -c \"import numpy; print\\(numpy.__version__\\)\")",
+      "Bash(python3.13 -c \"import numpy; print\\(numpy.__version__\\)\")",
+      "Bash(python3.12 -c \"import numpy; print\\(numpy.__version__\\)\")",
+      "Bash(python3.14 -c ' *)",
+      "WebFetch(domain:localhost)",
+      "Bash(curl -s http://localhost:6006/data/runs)",
+      "Bash(curl -s http://localhost:6006/data/plugin/scalars/tags)",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=eval/mean_reward\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=eval/mean_ep_length\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/loss\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/value_loss\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/policy_gradient_loss\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/entropy_loss\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/explained_variance\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/approx_kl\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/clip_fraction\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/std\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=train/learning_rate\")",
+      "Bash(curl -s \"http://localhost:6006/data/plugin/scalars/scalars?run=PPO_1&tag=time/fps\")",
+      "Bash(find /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/tb_ppo -type f -exec ls -lh {} \\\\;)",
+      "Bash(find /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/models -type f -exec ls -lh {} \\\\;)",
+      "Bash(python3)",
+      "Bash(file /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/tb_ppo/PPO_3/events.out.tfevents.*)",
+      "Bash(grep -c \"\\\\.zip$\")",
+      "Bash(pip3 list *)",
+      "Read(//opt/homebrew/bin/**)",
+      "Bash(python3.14 -c \"import numpy; print\\('numpy OK'\\)\")",
+      "Bash(python3.14 --version)"
+    ]
+  }
+}
