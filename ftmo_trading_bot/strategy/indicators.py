@@ -193,11 +193,139 @@ class TechnicalIndicators:
         # คำนวณค่าเฉลี่ยด้วย Wilder's Smoothing (เหมือน ATR)
         avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
         avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
-        
-        # คำนวณ RS และ RSI
-        rs = avg_gain / avg_loss
-        df[column_name] = 100 - (100 / (1 + rs))
-        
+
+        # คำนวณ RS และ RSI — ป้องกัน divide-by-zero เมื่อ avg_loss=0 (ตลาดขึ้นล้วน)
+        # เคสนี้ rs→∞ ⇒ RSI=100 ใช้ np.where แทนการ fill ค่า epsilon เพื่อได้ค่าถูกต้อง
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.where(avg_loss > 0, 100.0)   # avg_loss=0 → ราคาขึ้นล้วน → RSI=100
+        rsi = rsi.where(avg_gain > 0, 0.0)     # avg_gain=0 → ราคาลงล้วน → RSI=0
+        df[column_name] = rsi
+
+        return df
+
+    # =========================================================================
+    # 📉 MACD — Moving Average Convergence Divergence
+    # =========================================================================
+
+    def calculate_macd(
+        self,
+        df: pd.DataFrame,
+        fast: int = 12,
+        slow: int = 26,
+        signal: int = 9,
+    ) -> pd.DataFrame:
+        """
+        คำนวณ MACD: MACD Line, Signal Line, Histogram
+
+        Histogram > 0 = momentum ขาขึ้น, < 0 = momentum ขาลง
+        """
+        ema_fast = df['close'].ewm(span=fast, min_periods=fast).mean()
+        ema_slow = df['close'].ewm(span=slow, min_periods=slow).mean()
+        df['macd'] = ema_fast - ema_slow
+        df['macd_signal'] = df['macd'].ewm(span=signal, min_periods=signal).mean()
+        df['macd_histogram'] = df['macd'] - df['macd_signal']
+        return df
+
+    # =========================================================================
+    # 📐 ADX — Average Directional Index (วัดว่าตลาด Trend หรือ Range)
+    # =========================================================================
+
+    def calculate_adx(self, df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+        """
+        ADX บอกว่าตลาดกำลัง trending หรือ ranging
+        > 25 = trending, < 20 = ranging
+        ต่างจาก trend_strength (EMA spread) ตรงที่ ADX วัดจาก directional movement โดยตรง
+        """
+        high = df['high']
+        low = df['low']
+        close = df['close']
+
+        plus_dm = high.diff()
+        minus_dm = -low.diff()
+        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+        tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs()
+        ], axis=1).max(axis=1)
+
+        atr_smooth = tr.ewm(alpha=1/period, min_periods=period).mean()
+        plus_di = 100 * plus_dm.ewm(alpha=1/period, min_periods=period).mean() / atr_smooth
+        minus_di = 100 * minus_dm.ewm(alpha=1/period, min_periods=period).mean() / atr_smooth
+
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)
+        df['adx'] = dx.ewm(alpha=1/period, min_periods=period).mean()
+        return df
+
+    # =========================================================================
+    # 📊 Stochastic — ตำแหน่งราคาใน Range ล่าสุด
+    # =========================================================================
+
+    def calculate_stochastic(self, df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> pd.DataFrame:
+        """
+        Stochastic %K บอกว่าราคาอยู่ตรงไหนของ high-low range ล่าสุด
+        0 = อยู่ที่ low สุด, 100 = อยู่ที่ high สุด
+        ช่วย agent เห็นว่า momentum หมดแรงหรือยัง
+        """
+        lowest = df['low'].rolling(k_period).min()
+        highest = df['high'].rolling(k_period).max()
+        df['stoch_k'] = 100 * (df['close'] - lowest) / (highest - lowest + 1e-10)
+        df['stoch_d'] = df['stoch_k'].rolling(d_period).mean()
+        return df
+
+    # =========================================================================
+    # 📈 Bollinger %B — ตำแหน่งราคาใน Volatility Band
+    # =========================================================================
+
+    def calculate_bollinger_pctb(self, df: pd.DataFrame, period: int = 20, std_dev: float = 2.0) -> pd.DataFrame:
+        """
+        Bollinger %B บอกว่าราคาอยู่ตรงไหนของ Bollinger Bands
+        0 = อยู่ที่ lower band, 1 = อยู่ที่ upper band
+        < 0 หรือ > 1 = ราคาทะลุออกนอก band
+        ช่วย agent ตัดสินว่า entry price ดีหรือไม่
+        """
+        sma = df['close'].rolling(period).mean()
+        std = df['close'].rolling(period).std()
+        upper = sma + std_dev * std
+        lower = sma - std_dev * std
+        df['bb_pctb'] = (df['close'] - lower) / (upper - lower + 1e-10)
+        return df
+
+    # =========================================================================
+    # 📉 ATR Change Ratio — ความผันผวนกำลังขยายหรือหด
+    # =========================================================================
+
+    def calculate_atr_change(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        ATR(14) / SMA(ATR, 50) - 1
+        > 0 = volatility กำลังขยาย (ตลาดเริ่มผันผวน)
+        < 0 = volatility กำลังหด (ตลาดเริ่มสงบ)
+        ช่วย agent หลีกเลี่ยงช่วง volatility spike
+        """
+        if 'atr' not in df.columns:
+            df = self.calculate_atr(df)
+        atr_sma = df['atr'].rolling(50).mean()
+        df['atr_change_ratio'] = df['atr'] / (atr_sma + 1e-10) - 1.0
+        return df
+
+    # =========================================================================
+    # 🚀 Price ROC — การเปลี่ยนแปลงราคาล่าสุด (Momentum)
+    # =========================================================================
+
+    def calculate_price_roc(self, df: pd.DataFrame, lookback: int = 5) -> pd.DataFrame:
+        """
+        (Close - Close[N]) / ATR
+        บอกว่าราคาเคลื่อนที่ไปไกลแค่ไหนใน N แท่งล่าสุด เทียบกับ ATR
+        ค่าบวก = ขึ้น, ค่าลบ = ลง, magnitude = ความรุนแรง
+        ช่วย agent เห็น short-term momentum ที่ confluence score ไม่บอก
+        """
+        if 'atr' not in df.columns:
+            df = self.calculate_atr(df)
+        price_change = df['close'] - df['close'].shift(lookback)
+        df['price_roc'] = price_change / (df['atr'] + 1e-10)
         return df
 
     # =========================================================================
@@ -259,25 +387,31 @@ class TechnicalIndicators:
     def calculate_volatility_filter(
         self,
         df: pd.DataFrame,
-        atr_min_pips: float = 5.0,
-        atr_max_pips: float = 50.0,
+        atr_min_pips: Optional[float] = None,
+        atr_max_pips: Optional[float] = None,
         pip_size: Optional[float] = None,
     ) -> pd.DataFrame:
         """
         กรองสภาวะตลาดด้วย ATR — เทรดเฉพาะเมื่อ Volatility อยู่ในช่วงที่เหมาะสม
 
-        กฎ:
+        กฎ (Forex):
         - ATR ต่ำเกินไป (< 5 pips): ตลาดเงียบ → ไม่เทรด
-        - ATR สูงเกินไป (> 50 pips): ตลาดผันผวนมาก → ไม่เทรด (เสี่ยงเกินไป)
+        - ATR สูงเกินไป (> 50 pips): ตลาดผันผวนมาก → ไม่เทรด
         - ATR อยู่ในช่วง: เทรดได้
+
+        กฎ (Metals เช่น XAUUSD):
+        - ATR <200 ticks ($2): เงียบเกิน
+        - ATR >5000 ticks ($50): news event / risk event → skip
+        - ค่ากลาง: ATR ปกติของ Gold ~1500-2500 ticks/day ($15-25)
 
         Args:
             df: DataFrame ที่ต้องมี ATR
-            atr_min_pips: ATR ขั้นต่ำ (pips)
-            atr_max_pips: ATR สูงสุด (pips)
+            atr_min_pips: ATR ขั้นต่ำ (None = auto by instrument)
+            atr_max_pips: ATR สูงสุด (None = auto by instrument)
             pip_size: ขนาด 1 pip (None = autodetect จากระดับราคา)
                       - Major pairs (EURUSD, GBPUSD): 0.0001
                       - JPY pairs (USDJPY, EURJPY): 0.01
+                      - Metals (XAUUSD): 0.01
 
         Returns:
             pd.DataFrame: DataFrame ที่เพิ่มคอลัมน์ 'volatility_ok'
@@ -286,20 +420,34 @@ class TechnicalIndicators:
         if 'atr' not in df.columns:
             df = self.calculate_atr(df)
 
+        # === Detect instrument type จากราคา ===
+        # Forex major  : ~0.5-2.0  (EURUSD 1.08)
+        # Forex JPY    : ~100-200  (USDJPY 150)
+        # Metals (Gold): ~1500-4000 (XAUUSD 3000)
+        try:
+            ref_price = float(df['close'].iloc[-1])
+        except Exception:
+            ref_price = 1.0
+
+        is_metal = ref_price > 500   # Gold/Silver/Palladium range
+        is_jpy = 20 < ref_price <= 500
+
         # === Autodetect pip_size ถ้าไม่ได้ระบุ ===
-        # JPY pairs มีราคาประมาณ 100-200 (e.g. USDJPY ~150)
-        # Major pairs มีราคา ~0.5-2.0 (e.g. EURUSD ~1.08)
         if pip_size is None:
-            # ใช้ราคาเฉลี่ยของ close ล่าสุดในการจำแนก
-            try:
-                ref_price = float(df['close'].iloc[-1])
-                pip_size = 0.01 if ref_price > 20 else 0.0001
-            except Exception:
-                pip_size = 0.0001  # ค่าเริ่มต้นสำหรับ Major pairs
+            if is_metal or is_jpy:
+                pip_size = 0.01
+            else:
+                pip_size = 0.0001  # Major pairs
+
+        # === Auto thresholds by instrument type (backward compat) ===
+        # Forex defaults เดิม 5-50 pips ไม่เปลี่ยน
+        # Metals ใช้ threshold กว้างกว่าเพราะ ATR ใน ticks (0.01) มีค่าหลักพัน
+        if atr_min_pips is None:
+            atr_min_pips = 200.0 if is_metal else 5.0
+        if atr_max_pips is None:
+            atr_max_pips = 5000.0 if is_metal else 50.0
 
         # แปลง ATR (ราคา) → pips
-        # EURUSD: ATR=0.0010 / 0.0001 = 10 pips
-        # USDJPY: ATR=0.10   / 0.01   = 10 pips
         pip_multiplier = 1.0 / pip_size
         atr_pips = df['atr'] * pip_multiplier
 
@@ -334,13 +482,22 @@ class TechnicalIndicators:
             print(f"⚠️ [Indicators] ข้อมูลไม่เพียงพอ (ต้องการ >= 200 แท่ง, มี {len(df) if df is not None else 0})")
             return df
 
+        if 'adx' in df.columns and 'price_roc' in df.columns:
+            return df
+
         # คำนวณทุก Indicator
         df = self.calculate_atr(df)
         df = self.calculate_all_emas(df)
         df = self.calculate_rsi(df)
+        df = self.calculate_macd(df)
+        df = self.calculate_adx(df)
+        df = self.calculate_stochastic(df)
+        df = self.calculate_bollinger_pctb(df)
+        df = self.calculate_atr_change(df)
+        df = self.calculate_price_roc(df)
         df = self.detect_trend(df)
         df = self.calculate_volatility_filter(df)
-        
+
         return df
 
     # =========================================================================
@@ -370,6 +527,12 @@ class TechnicalIndicators:
             "ema_medium": last.get("ema_medium", 0),
             "ema_slow": last.get("ema_slow", 0),
             "rsi": last.get("rsi", 50),
+            "macd_histogram": last.get("macd_histogram", 0),
+            "adx": last.get("adx", 0),
+            "stoch_k": last.get("stoch_k", 50),
+            "bb_pctb": last.get("bb_pctb", 0.5),
+            "atr_change_ratio": last.get("atr_change_ratio", 0),
+            "price_roc": last.get("price_roc", 0),
             "trend": int(last.get("trend", 0)),
             "trend_strength": last.get("trend_strength", 0),
             "volatility_ok": bool(last.get("volatility_ok", False)),

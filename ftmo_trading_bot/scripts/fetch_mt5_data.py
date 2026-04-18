@@ -2,12 +2,14 @@
 ===============================================================================
 Fetch OHLCV Data from MT5 → CSV (สำหรับ RL Training)
 ===============================================================================
-ดึงข้อมูลแท่งเทียน M15 ของ 9 symbols จาก MetaTrader 5 broker
-แล้วบันทึกเป็น CSV ที่ ftmo_trading_bot/data/ohlcv/{SYMBOL}_M15.csv
+ดึงข้อมูลแท่งเทียน M15 + H1 + H4 ของ 9 symbols จาก MetaTrader 5 broker
+แล้วบันทึกเป็น CSV ที่ ftmo_trading_bot/data/ohlcv/{SYMBOL}_{TF}.csv
 
 Usage:
-    python scripts/fetch_mt5_data.py --years 3
-    python scripts/fetch_mt5_data.py --symbols EURUSD,GBPUSD --years 5
+    python scripts/fetch_mt5_data.py                              # ดึงทุก symbol, ทุก TF, 3 ปี
+    python scripts/fetch_mt5_data.py --years 5                    # ดึง 5 ปี
+    python scripts/fetch_mt5_data.py --symbols EURUSD,GBPUSD      # เฉพาะบาง symbol
+    python scripts/fetch_mt5_data.py --timeframe M15              # เฉพาะ M15 อย่างเดียว
 
 Prerequisites:
     - MT5 terminal เปิดอยู่ + login broker แล้ว
@@ -32,6 +34,7 @@ except ImportError:
 DEFAULT_SYMBOLS = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
     "USDCHF", "NZDUSD", "EURJPY", "GBPJPY",
+    "XAUUSD",  # Gold (metal — broker อาจใช้ชื่อ XAUUSD, GOLD, XAUUSD.raw, XAUUSDm)
 ]
 
 TIMEFRAMES = {
@@ -54,6 +57,16 @@ def resolve_symbol(base: str) -> str:
         return base
 
     candidates = [s.name for s in all_symbols if s.name.upper().startswith(base.upper())]
+
+    # Fallback aliases — broker อาจใช้ชื่อต่างจาก DEFAULT_SYMBOLS
+    # Gold: XAUUSD ↔ GOLD / XAU_USD / XAUUSD# etc.
+    if not candidates and base.upper() == "XAUUSD":
+        gold_aliases = ["GOLD", "XAU/USD", "XAU_USD", "XAUUSD#"]
+        for alias in gold_aliases:
+            candidates = [s.name for s in all_symbols if alias in s.name.upper()]
+            if candidates:
+                break
+
     # จัดลำดับตามความยาว (สั้นที่สุดก่อน = มักเป็น main symbol)
     candidates.sort(key=len)
     return candidates[0] if candidates else base
@@ -139,7 +152,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS),
                         help="คอมม่า-คั่น เช่น EURUSD,GBPUSD")
-    parser.add_argument("--timeframe", default="M15", choices=list(TIMEFRAMES.keys()))
+    parser.add_argument("--timeframe", default="ALL",
+                        choices=list(TIMEFRAMES.keys()) + ["ALL"],
+                        help="timeframe ที่ต้องการ (default: ALL = M15+H1+H4)")
     parser.add_argument("--years", type=int, default=3, help="ดึงย้อนหลังกี่ปี")
     parser.add_argument("--out_dir", default=None,
                         help="โฟลเดอร์ปลายทาง (default: ftmo_trading_bot/data/ohlcv)")
@@ -184,22 +199,29 @@ def main():
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
-    print(f"📥 ดึงข้อมูล {args.timeframe} ของ {len(symbols)} symbols "
-          f"ย้อนหลัง ~{args.years} ปี")
+    if args.timeframe == "ALL":
+        tf_list = list(TIMEFRAMES.keys())
+    else:
+        tf_list = [args.timeframe]
+
+    total_files = len(symbols) * len(tf_list)
+    print(f"📥 ดึงข้อมูล {', '.join(tf_list)} ของ {len(symbols)} symbols "
+          f"ย้อนหลัง ~{args.years} ปี ({total_files} ไฟล์)")
 
     success = 0
     for sym in symbols:
-        df = fetch_symbol(sym, args.timeframe, args.years)
-        if df.empty:
-            continue
-        out_path = os.path.join(args.out_dir, f"{sym}_{args.timeframe}.csv")
-        df.to_csv(out_path, index=False)
-        print(f"  ✅ {sym}: {len(df):,} bars → {out_path}")
-        success += 1
+        for tf_key in tf_list:
+            df = fetch_symbol(sym, tf_key, args.years)
+            if df.empty:
+                continue
+            out_path = os.path.join(args.out_dir, f"{sym}_{tf_key}.csv")
+            df.to_csv(out_path, index=False)
+            print(f"  ✅ {sym}_{tf_key}: {len(df):,} bars → {out_path}")
+            success += 1
 
     mt5.shutdown()
-    print(f"\n🎯 เสร็จสิ้น: {success}/{len(symbols)} symbols")
-    if success < len(symbols):
+    print(f"\n🎯 เสร็จสิ้น: {success}/{total_files} ไฟล์")
+    if success < total_files:
         print("   หมายเหตุ: บาง symbol อาจไม่อยู่ใน Market Watch — ลอง enable ใน MT5 ก่อน")
 
 

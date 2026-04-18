@@ -338,7 +338,7 @@ class MT5Connector:
         """
         if not MT5_AVAILABLE:
             # โหมดจำลอง — spread เป็นค่าราคาจริง (ask - bid)
-            # ครอบคลุมทุก symbol ใน SymbolConfig (9 คู่)
+            # ครอบคลุมทุก symbol ใน SymbolConfig (9 forex + 1 gold)
             mock_prices = {
                 "EURUSD": {"bid": 1.09500, "ask": 1.09510, "spread": 0.00010},
                 "GBPUSD": {"bid": 1.26800, "ask": 1.26815, "spread": 0.00015},
@@ -349,6 +349,7 @@ class MT5Connector:
                 "NZDUSD": {"bid": 0.60500, "ask": 0.60520, "spread": 0.00020},
                 "EURJPY": {"bid": 163.700, "ask": 163.725, "spread": 0.025},
                 "GBPJPY": {"bid": 189.600, "ask": 189.630, "spread": 0.030},
+                "XAUUSD": {"bid": 3000.00, "ask": 3000.50, "spread": 0.50},  # Gold: spread ~50 points
             }
             return mock_prices.get(symbol, {"bid": 1.0, "ask": 1.00010, "spread": 0.00010})
 
@@ -385,8 +386,8 @@ class MT5Connector:
             return self._symbol_cache[symbol]
 
         if not MT5_AVAILABLE:
-            # ข้อมูลจำลองครอบคลุมทุก Symbol ใน SymbolConfig (9 คู่)
-            # 5-digit สำหรับ Major pairs, 3-digit สำหรับ JPY pairs
+            # ข้อมูลจำลองครอบคลุมทุก Symbol ใน SymbolConfig (9 forex + 1 gold)
+            # 5-digit Major / 3-digit JPY / 2-digit Metals
             common_5d = {
                 "point": 0.00001, "digits": 5, "lot_min": 0.01, "lot_max": 100.0,
                 "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01,
@@ -395,10 +396,16 @@ class MT5Connector:
                 "point": 0.001, "digits": 3, "lot_min": 0.01, "lot_max": 100.0,
                 "lot_step": 0.01, "trade_contract_size": 100000, "volume_min": 0.01,
             }
+            # Gold: contract 100 oz, digits 2 (pip=0.01), tick = $0.01 per oz
+            common_2d_gold = {
+                "point": 0.01, "digits": 2, "lot_min": 0.01, "lot_max": 50.0,
+                "lot_step": 0.01, "trade_contract_size": 100, "volume_min": 0.01,
+            }
             mock_info = {
                 "EURUSD": common_5d, "GBPUSD": common_5d, "AUDUSD": common_5d,
                 "USDCAD": common_5d, "USDCHF": common_5d, "NZDUSD": common_5d,
                 "USDJPY": common_3d, "EURJPY": common_3d, "GBPJPY": common_3d,
+                "XAUUSD": common_2d_gold,
             }
             info = mock_info.get(symbol, common_5d)
             self._symbol_cache[symbol] = info

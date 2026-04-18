@@ -17,7 +17,7 @@ import os
 import sys
 import signal
 import time as time_module
-from datetime import datetime, date, time as dt_time
+from datetime import datetime, date
 
 import numpy as np
 import argparse
@@ -78,21 +78,35 @@ class FTMOTradingBot:
         )
         self._trade_manager = TradeManager(self._connector, self._risk_manager, self._executor)
         
-        # === AI Agent (Phase 5) ===
+        # === AI Signal Filter Agent (Phase 5) ===
         self._rl_agent = None
-        self._last_rl_tune_date: date = None  # วันที่ re-tune ครั้งล่าสุด (server date)
-        self._rl_params_applied: dict = {}    # params ล่าสุดที่ apply แล้ว
         try:
             self._rl_agent = SelfLearningAgent(
-                excel_path=bot_config.paths.trade_log_file,
                 model_dir=bot_config.paths.model_dir,
                 verbose=1
             )
-            # Strict load — ถ้าไม่มี trained model ใน live mode ให้ fail fast
             self._rl_agent.initialize_model(strict=True)
         except Exception as e:
-            print(f"❌ [Bot] ไม่สามารถโหลด AI Agent ได้: {e}")
+            print(f"⚠️ [Bot] AI Signal Filter ไม่พร้อม: {e} — ใช้ SMC Strategy โดยตรง")
             self._rl_agent = None
+
+        # === ML Signal Quality Model (GBM, AUC ~0.59) ===
+        # ให้ probability ว่า signal จะ win → feed เป็น obs feature ให้ RL agent
+        self._quality_model = None
+        try:
+            import os as _os
+            from ml.signal_quality import SignalQualityModel
+            _mpath = _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)),
+                "data", "signal_quality_model.pkl"
+            )
+            if _os.path.exists(_mpath):
+                self._quality_model = SignalQualityModel(_mpath)
+                print(f"✅ [Bot] โหลด ML Quality Model สำเร็จ")
+            else:
+                print(f"⚠️ [Bot] ML Quality Model ไม่พบที่ {_mpath} — obs[ml_score]=0.5 (neutral)")
+        except Exception as e:
+            print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
         
         # === ตัวแปรสถิติ ===
         self._loop_count = 0
@@ -139,14 +153,10 @@ class FTMOTradingBot:
         """
         print("🔄 [Bot] กำลังเริ่มต้นระบบ...\n")
 
-        # ขั้นตอนที่ 0: ปรับพารามิเตอร์ด้วย AI (RL Agent) — startup initial tune
-        # Note: จะ re-tune ทุกวันหลังตลาดปิด ผ่าน _maybe_daily_rl_tune() ใน main loop
         if self._rl_agent:
             print("━" * 40)
-            print("🧠 ขั้นตอนที่ 0: AI Self-Learning & Optimization (Startup)")
+            print("🧠 AI Signal Filter Agent — พร้อมกรอง signal จาก SMC Strategy")
             print("━" * 40)
-            # Startup tune ใช้ blank obs (วันแรก challenge) หรือ live state ถ้ามี balance เก่า
-            self._apply_rl_optimization(reason="startup")
 
         # ขั้นตอนที่ 1: เชื่อมต่อ MT5
         print("━" * 40)
@@ -397,168 +407,117 @@ class FTMOTradingBot:
                 business += 1
         return max(1, business)
 
-    def _build_live_observation(self) -> np.ndarray:
+    def _build_signal_observation(self, sig) -> np.ndarray:
         """
-        สร้าง observation 16 dims จากสถานะจริงของบอท เพื่อส่งให้ PPO agent (V3)
-        ต้อง match กับ FTMOOptimizationEnv._get_obs() ลำดับและ scale
-
-        Returns:
-            np.ndarray shape (16,) dtype float32
+        สร้าง 14-dim observation จาก TradeSignal + portfolio state สำหรับ Signal Filter Agent
+        ต้อง match กับ FTMOSignalFilterEnv._get_obs() ลำดับและ scale
         """
         try:
             risk = self._risk_manager.get_risk_status()
-            total_dd = float(risk.get("overall_drawdown_pct", 0.0))   # เช่น 0.035
+            total_dd = float(risk.get("overall_drawdown_pct", 0.0))
             daily_dd = float(risk.get("daily_loss_pct", 0.0))
             balance = float(risk.get("current_balance", self._risk_manager.initial_balance))
             initial = float(self._risk_manager.initial_balance) or 100_000.0
         except Exception:
             total_dd, daily_dd, balance, initial = 0.0, 0.0, 100_000.0, 100_000.0
 
-        # Progress (% ของเป้า 10%)
         profit = balance - initial
         target_amount = initial * 0.10
         progress = (profit / target_amount) * 100.0 if target_amount > 0 else 0.0
 
-        # Sortino + recent trades จาก analyzer
-        sortino = 0.0
-        recent_wr_norm = 0.0
-        try:
-            risk_stats = self._analyzer.get_risk_stats() or {}
-            sortino = float(risk_stats.get("sortino_ratio", 0.0) or 0.0)
-            if not np.isfinite(sortino):
-                sortino = 0.0
+        # Signal features (7 original)
+        confluence_norm = (sig.confluence_score - 50.0) / 50.0
+        rr_norm = (sig.rr_ratio - 1.0) / 4.0
+        direction = 1.0 if sig.signal_type.value == "BUY" else -1.0
+        atr_val = max(sig.atr_value, 1e-8)
+        atr_pips = atr_val / (0.01 if sig.entry_price > 50 else 0.0001)
+        atr_norm = (atr_pips - 15.0) / 10.0
+        ob_norm = sig.ob_score / 100.0
+        bias_align = direction * sig.market_bias
+        sl_atr = sig.sl_distance / atr_val
 
+        # Signal features — momentum & context (4)
+        rsi_norm = (sig.rsi_value - 50.0) / 50.0
+        macd_norm = sig.macd_histogram / atr_val
+        trend_str = sig.trend_strength / 100.0
+        ob_range = abs(sig.ob_high - sig.ob_low) if sig.ob_high is not None and sig.ob_low is not None else 0.0
+        ob_size_atr = ob_range / atr_val
+
+        # Signal features — market regime (5 ใหม่)
+        adx_norm = sig.adx / 100.0
+        stoch_norm = (sig.stoch_k - 50.0) / 50.0
+        bb_pctb = sig.bb_pctb
+        atr_chg = sig.atr_change_ratio
+        price_roc = sig.price_roc
+
+        # ML quality score — GBM P(win), AUC 0.59 ⭐
+        if self._quality_model is not None:
+            try:
+                # ต้องแปลง TradeSignal → dict หรือให้ model อ่าน attrs ตรง ๆ
+                ml_score = float(self._quality_model.score(sig))
+            except Exception:
+                ml_score = 0.5
+        else:
+            ml_score = 0.5
+        ml_score_norm = (ml_score - 0.5) * 2.0  # map [0,1] → [-1,+1]
+
+        # Portfolio features
+        try:
+            challenge_day = self._get_challenge_day(datetime.now().date())
+        except Exception:
+            challenge_day = 0
+        day_progress = float(challenge_day) / 45.0
+
+        open_positions = len(self._connector.get_open_positions() or [])
+        trades_today_n = min(open_positions, 3) / 3.0
+
+        recent_wr_norm = 0.0
+        consec_losses = 0
+        try:
             trades = getattr(self._analyzer, "_trades", None) or []
             if trades:
                 recent = trades[-10:]
-                if recent:
-                    wins = sum(1 for t in recent if float(getattr(t, "profit", 0.0) or 0.0) > 0)
-                    recent_wr_norm = (wins / len(recent)) * 2.0 - 1.0
-        except Exception:
-            pass
-
-        # Day-of-week + challenge day (server time)
-        try:
-            server_dt = TimeManager.get_server_time()
-            dow = server_dt.weekday()  # 0=Mon … 6=Sun
-            today = server_dt.date()
-        except Exception:
-            dow = 0
-            today = datetime.now().date()
-        day_of_week_norm = (dow % 5) / 4.0
-
-        # Live regime จาก EURUSD H1
-        regime_info = self._compute_live_regime()
-        current_volatility = regime_info["volatility_norm"]
-        regime_trend_norm = regime_info["regime_trend_norm"]
-        atr_zscore = regime_info["atr_zscore"]
-        regime_consistency = regime_info["regime_consistency"]
-
-        # day_progress: challenge day / 30 (นับ business days ตั้งแต่เริ่ม)
-        challenge_day = self._get_challenge_day(today)
-        day_progress = float(challenge_day) / 30.0
-
-        cum_pnl_norm = (balance / initial) - 1.0 if initial > 0 else 0.0
-
-        # T16: 3 features ใหม่ (indices 13-15)
-        avg_rr_achieved = 0.0
-        dd_velocity = 0.0
-        profit_factor = 0.0
-        try:
-            trades = getattr(self._analyzer, "_trades", None) or []
-            if len(trades) >= 3:
-                wins = [float(getattr(t, "profit", 0.0) or 0.0) for t in trades if float(getattr(t, "profit", 0.0) or 0.0) > 0]
-                losses = [abs(float(getattr(t, "profit", 0.0) or 0.0)) for t in trades if float(getattr(t, "profit", 0.0) or 0.0) < 0]
-                if wins and losses:
-                    avg_rr_achieved = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
-                    profit_factor = sum(wins) / sum(losses)
-
-            prev_dd = getattr(self, '_prev_total_dd', total_dd)
-            dd_velocity = total_dd - prev_dd
-            self._prev_total_dd = total_dd
+                wins = sum(1 for t in recent if float(getattr(t, "profit", 0.0) or 0.0) > 0)
+                recent_wr_norm = (wins / len(recent)) * 2.0 - 1.0
+                for t in reversed(trades[-5:]):
+                    if float(getattr(t, "profit", 0.0) or 0.0) < 0:
+                        consec_losses += 1
+                    else:
+                        break
         except Exception:
             pass
 
         obs = np.array([
+            # Signal core [0-11]
+            float(np.clip(confluence_norm, -1.0, 1.0)),
+            float(np.clip(rr_norm, 0.0, 1.0)),
+            float(direction),
+            float(np.clip(atr_norm, -2.0, 2.0)),
+            float(np.clip(ob_norm, 0.0, 1.0)),
+            float(np.clip(bias_align, -1.0, 1.0)),
+            float(np.clip(sl_atr, 0.0, 2.0)),
+            float(np.clip(rsi_norm, -1.0, 1.0)),
+            float(np.clip(macd_norm, -2.0, 2.0)),
+            float(np.clip(trend_str, 0.0, 1.0)),
+            float(np.clip(ob_size_atr, 0.0, 3.0)),
+            float(np.clip(adx_norm, 0.0, 1.0)),
+            # Market regime [12-15]
+            float(np.clip(stoch_norm, -1.0, 1.0)),
+            float(np.clip(bb_pctb, -0.5, 1.5)),
+            float(np.clip(atr_chg, -1.0, 1.0)),
+            float(np.clip(price_roc, -3.0, 3.0)),
+            # ML quality [16] ⭐
+            float(np.clip(ml_score_norm, -1.0, 1.0)),
+            # Portfolio [17-23]
             float(np.clip(-total_dd / 0.10, -5.0, 0.0)),
             float(np.clip(-daily_dd / 0.05, -5.0, 0.0)),
             float(np.clip(progress / 100.0, -1.0, 2.0)),
-            float(np.clip(sortino, -5.0, 5.0)),
-            float(min(len(getattr(self._analyzer, '_trades', []) or []), 5) / 5.0),
-            float(np.clip(current_volatility, -2.0, 2.0)),
             float(np.clip(day_progress, 0.0, 1.0)),
+            float(np.clip(trades_today_n, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
-            float(regime_trend_norm),
-            float(np.clip(atr_zscore, -3.0, 3.0)),
-            float(day_of_week_norm),
-            float(regime_consistency),
-            float(np.clip(cum_pnl_norm, -0.15, 0.15)),
-            # T16 expanded:
-            float(np.clip(avg_rr_achieved, 0.0, 3.0)),
-            float(np.clip(dd_velocity, -1.0, 1.0)),
-            float(np.clip(profit_factor, 0.0, 3.0)),
+            float(np.clip(consec_losses / 5.0, 0.0, 1.0)),
         ], dtype=np.float32)
         return obs
-
-    def _apply_rl_optimization(self, reason: str = "daily"):
-        """
-        เรียก agent ด้วย live observation แล้ว apply ค่าพารามิเตอร์ใหม่เข้าระบบ
-
-        Args:
-            reason: "startup" | "daily" | "manual" สำหรับ log/notify
-        """
-        if not self._rl_agent:
-            return
-        try:
-            obs = self._build_live_observation()
-            params = self._rl_agent.get_optimized_parameters(current_observation=obs)
-
-            bot_config.ftmo.DEFAULT_RISK_PER_TRADE_PCT = params['risk_per_trade_pct']
-            bot_config.ftmo.PREFERRED_RISK_REWARD_RATIO = params['preferred_risk_reward_ratio']
-            bot_config.indicators.atr_sl_multiplier = params['atr_sl_multiplier']
-            if hasattr(self._strategy, 'MIN_CONFLUENCE_SCORE'):
-                self._strategy.MIN_CONFLUENCE_SCORE = params['min_confluence_score']
-            # T16: apply max_daily_trades
-            if 'max_daily_trades' in params:
-                bot_config.ftmo.MAX_OPEN_POSITIONS = params['max_daily_trades']
-
-            self._rl_params_applied = params
-            print(f"✅ [RL:{reason}] Risk: {params['risk_per_trade_pct']*100:.2f}% | "
-                  f"Confluence: {params['min_confluence_score']} | "
-                  f"RR: 1:{params['preferred_risk_reward_ratio']} | "
-                  f"ATR: {params['atr_sl_multiplier']}x | "
-                  f"MaxTrades: {params.get('max_daily_trades', 3)}")
-            try:
-                self._notifier.send_ai_tuning(params)
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"⚠️ [RL:{reason}] ประเมินล้มเหลว ใช้ค่าเดิม: {e}")
-
-    def _maybe_daily_rl_tune(self, current_server_time: datetime):
-        """
-        Trigger re-tune วันละ 1 ครั้ง หลังตลาด Forex ปิดของวัน (NY close ≈ 23:00 EET)
-
-        Logic:
-        - ถ้ายังไม่เคย tune วันนี้ (server date) AND เวลาผ่าน 23:00 EET แล้ว → tune
-        - วันเสาร์/อาทิตย์ข้าม (market ปิด ไม่ต้อง tune)
-        """
-        if not self._rl_agent:
-            return
-        # ข้าม weekend (เสาร์=5, อาทิตย์=6) — ไม่มี close ของวันนั้น
-        if current_server_time.weekday() >= 5:
-            return
-
-        today_server: date = current_server_time.date()
-        if self._last_rl_tune_date == today_server:
-            return  # tuned แล้ววันนี้
-
-        # NY close ~22:00 UTC = 23:00 EET (EEST = 00:00 next day)
-        # ใช้ 23:00 server time เป็น trigger หลัก
-        if current_server_time.time() >= dt_time(23, 0):
-            print(f"🧠 [RL] Daily Re-tune — Market close ({current_server_time.strftime('%Y-%m-%d %H:%M EET')})")
-            self._apply_rl_optimization(reason="daily")
-            self._last_rl_tune_date = today_server
 
     def _print_config_summary(self):
         """แสดงสรุปการตั้งค่าทั้งหมด"""
@@ -630,9 +589,6 @@ class FTMOTradingBot:
                 # === ขั้นตอนที่ 1.5: ตรวจสอบระดับการจัดการเวลาเซิร์ฟเวอร์แบบเข้มงวด (FTMO Compliance) ===
                 current_server_time = TimeManager.get_server_time()
 
-                # === ขั้นตอนที่ 1.6: Daily RL Re-tune (หลังตลาดปิด ~23:00 EET, วันจันทร์-ศุกร์) ===
-                self._maybe_daily_rl_tune(current_server_time)
-
                 # หากเลยเวลา Friday 20:45 ระบบจะบังคับตัวเองไม่ให้เทรดอีกต่อไปจนกว่าจะสัปดาห์หน้า
                 if TimeManager.is_friday_close_time(current_server_time):
                     if self._loop_count % 60 == 0:
@@ -648,16 +604,28 @@ class FTMOTradingBot:
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
 
-                # === ขั้นตอนที่ 2: สแกนสัญญาณ + ส่งคำสั่งเทรด ===
+                # === ขั้นตอนที่ 2: สแกนสัญญาณ + กรองด้วย AI + ส่งคำสั่งเทรด ===
                 # สแกนทุกๆ 12 loops (~1 นาที)
                 if self._loop_count % 12 == 0:
                     try:
                         signals = self._strategy.scan_all_symbols()
                         for sig in signals:
-                            print(f"📡 [Bot] สัญญาณ {sig.signal_type.value} {sig.symbol} "
-                                  f"Confluence={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f}")
-                            
-                            # === ขั้นตอนที่ 3: ส่งคำสั่งเทรด (Executor จัดการ Risk+Lot ภายใน) ===
+                            if self._rl_agent:
+                                signal_obs = self._build_signal_observation(sig)
+                                take = self._rl_agent.should_take_signal(signal_obs)
+                                confidence = self._rl_agent.get_action_confidence(signal_obs)
+                                if not take:
+                                    print(f"⏭️ [Agent] SKIP {sig.signal_type.value} {sig.symbol} "
+                                          f"Conf={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f} "
+                                          f"(confidence={confidence:.2f})")
+                                    continue
+                                print(f"📡 [Agent] TAKE {sig.signal_type.value} {sig.symbol} "
+                                      f"Conf={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f} "
+                                      f"(confidence={confidence:.2f})")
+                            else:
+                                print(f"📡 [Bot] สัญญาณ {sig.signal_type.value} {sig.symbol} "
+                                      f"Confluence={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f}")
+
                             executed = self._executor.execute_signal(sig)
                             if executed:
                                 print(f"✅ [Bot] เปิดเทรดสำเร็จ: Ticket {executed.ticket}")

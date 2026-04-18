@@ -121,7 +121,7 @@ class SymbolConfig:
     เลือกคู่เงินที่มี Spread ต่ำและสภาพคล่องสูง
     """
     
-    # คู่เงินหลักที่เทรด (Major Pairs — Spread ต่ำ)
+    # คู่เงินหลักที่เทรด (Major Pairs — Spread ต่ำ) + Gold
     symbols: List[str] = field(default_factory=lambda: [
         "EURUSD",   # Euro / US Dollar
         "GBPUSD",   # British Pound / US Dollar
@@ -132,6 +132,7 @@ class SymbolConfig:
         "NZDUSD",   # New Zealand Dollar / US Dollar
         "EURJPY",   # Euro / Japanese Yen
         "GBPJPY",   # British Pound / Japanese Yen
+        "XAUUSD",   # Gold / US Dollar (metal — digits=2, contract=100 oz)
     ])
     
     # Timeframe หลักสำหรับการวิเคราะห์ (ใช้ค่า MT5 constant)
@@ -154,6 +155,7 @@ class SymbolConfig:
         "NZDUSD": 20,   # ไม่เทรดถ้า Spread > 2.0 pips
         "EURJPY": 25,   # ไม่เทรดถ้า Spread > 2.5 pips
         "GBPJPY": 30,   # ไม่เทรดถ้า Spread > 3.0 pips
+        "XAUUSD": 80,   # Gold spread ~50-80 points (0.5-0.8 USD)
     })
 
 
@@ -312,6 +314,13 @@ class BotConfig:
 # สร้าง Config ตัวหลักที่ทุกโมดูลจะ import ไปใช้
 # ใช้: from config.settings import bot_config
 bot_config = BotConfig()
+
+# Environment-based quiet mode — ปิด debug prints ตอน training
+# Training scripts ตั้ง SMC_QUIET=1 ก่อน import เพื่อ silence strategy logs
+# ใน subprocess (SubprocVecEnv) env var inherit จาก parent → propagate อัตโนมัติ
+import os as _os
+if _os.environ.get("SMC_QUIET", "0") == "1":
+    bot_config.debug_mode = False
 
 
 # =============================================================================

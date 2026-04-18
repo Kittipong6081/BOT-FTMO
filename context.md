@@ -1,144 +1,392 @@
-# SYSTEM_STATE_CONTEXT (End of Phase 5 + Post-Review Patches)
+# SYSTEM_STATE_CONTEXT
 
-## 📌 Project Overview
-**Name:** FTMO Algorithmic Forex Trading Bot
-**Goal:** A fully autonomous trading system tailored specifically to pass the FTMO challenge and manage a funded account securely.
-**Current Status:** All 5 phases finished. Discord Webhook integration active for real-time monitoring.
-**Last Updated:** 2026-04-13 — Comprehensive code review + bug fix pass (13 issues)
+> Technical reference for FTMO Trading Bot — Signal Filter Architecture  
+> **Last Updated:** 2026-04-18
 
-## 🏗️ Architecture & Modules
+## 📌 Project Summary
 
-### 1. Phase 1: Core Systems (`core/`)
-- **`MT5Connector`**: Deals with MetaTrader 5 API connection, OHLCV data retrieval, position fetching, and emergency hard-closing. Currently supports a mock mode if `MetaTrader5` is unavailable. Mock data covers **all 9 configured symbols**. Symbol cache is **cleared on disconnect/reconnect** to avoid stale broker specs.
-- **`RiskManager`**: Enforces strict FTMO rules (4% daily drawdown, 8% max total drawdown). Persists state locally via JSON to survive restarts. **Daily reset now uses broker EET time** (`TimeManager.get_server_time().date()`) instead of local VPS time — prevents incorrect reset if VPS timezone differs from broker.
-- **`PositionSizer`**: Calculates trade lot size based on account equity, risk per trade, and ATR multiplier. **Pip value for cross pairs (EURJPY, GBPJPY) now uses the correct USD conversion rate** (USDJPY) instead of the cross pair's own price, which was numerically wrong.
-- **`DiscordNotifier`**: A centralized notification engine leveraging Discord Webhooks. **Now includes a sliding-window rate limiter** (20 req/min + 1s min interval) with 429 back-off handling, so bursts of trades don't hit Discord's webhook limit.
+**Name:** FTMO Signal Filter Agent  
+**Goal:** Pass FTMO Challenge (10% profit, 4% daily DD, 8% total DD in 45 days)  
+**Current Architecture:** Hybrid SMC + ML + RL (3-brain system)
 
-### 2. Phase 2: Strategy (`strategy/`)
-- **`TechnicalIndicators`**: Computes ATR, EMA (fast/med/slow), and RSI. **Volatility filter is now pip-aware**: autodetects pip size from price level (0.01 for JPY pairs where price > 20, else 0.0001) instead of hardcoding `× 10000`. Previously JPY pairs produced ATR-in-pips values that were 100× too large.
-- **`MarketStructure`**: Evaluates H1 market bias (BOS, CHoCH) holding swing highs and lows.
-- **`OrderBlockDetector`**: Detects bearish/bullish Order Blocks (OB) on M15 timeframe.
-- **`SMCStrategy`**: The backbone. Generates trade signals by scoring setups based on HTF structure, MTF bias, RSI, volatility, and executing strict RR filtering. Enforces correct trading session windows by rigorously converting server time (EET) to UTC using `pytz` prior to session config comparisons to prevent timezone shifting bugs. Will only trigger if the Confluence Score is above `MIN_CONFLUENCE_SCORE` (auto-tuned by AI).
+### Headline Numbers
 
-### 3. Phase 3: Trade Execution (`execution/`)
-- **`TradeExecutor`**: Verifies signals across **8 gates**: Valid → **Duplicate Symbol + Correlation** → Lot Sizing → Risk Manager → Spread → Final Validation → Market Order → Notification. **New correlation guard** groups highly-correlated pairs (USD_WEAK, USD_STRONG, JPY_CROSS, EUR_PAIRS, GBP_PAIRS) and caps same-direction exposure at 2 positions per group to prevent over-concentration. **Duplicate symbol check** prevents opening a second position in an already-traded symbol. P/L calculation on `close_trade()` now uses **actual `trade_contract_size`** from the broker symbol info (not hardcoded 100000) and correctly converts from quote currency to account currency for cross pairs.
-- **`TradeManager`**: Actively manages positions via ATR-Trailing Stop, Break-Even rules, and Session-end liquidation. **Session-close logic now converts server EET time to UTC** before comparing against UTC-defined config values (friday_cutoff, newyork_end). Previously mixed EET time with UTC config → sessions closed at wrong hour. Friday hard-close at 20:45 EET is still enforced via `TimeManager.is_friday_close_time()` (EET-native).
-
-### 4. Phase 4: Analytics (`analytics/`)
-- **`TradeLogger`**: Converts active and closed trade dictionaries into formatted lines inside an Excel file (`logs/trading_log.xlsx`). Tracks open vs closed states using colored cell formatting.
-- **`PerformanceAnalyzer`**: Consumes trade dictionaries to output standard stats (Win rate, Expectancy), advanced stats (Profit factor), and risk stats (Sharpe, Sortino, Drawdowns vs Target).
-
-### 5. Phase 5: Reinforcement Learning (`ml/`) — Rebuilt in Post-Review
-- **`FTMORewardCalculator`**: A specialized algorithmic critic penalizing drawdowns exponentially to prevent FTMO breaches whilst rewarding smooth growth.
-- **`FTMOOptimizationEnv`**: **Completely rewritten** as a real mini-backtest engine (previously was `np.random.uniform` with hardcoded if/else — PPO couldn't learn anything meaningful).
-  - **1 Episode = 1 FTMO Challenge (30 trading days)**; **1 step = 1 trading day**.
-  - Loads real OHLCV from `data/ohlcv/*.csv` if available (EURUSD_M15.csv, USDJPY_H1.csv, etc.); falls back to synthetic data tuned to realistic Forex characteristics (ATR ~12 ± 4 pips on M15).
-  - Per-day simulation: (1) generates market regime (trending / ranging / volatile / quiet), (2) calculates expected setups from confluence threshold, (3) adjusts win-rate based on confluence/RR/ATR-mult parameters, (4) simulates each trade outcome with break-even protection + slippage model, (5) tracks intraday + daily + total drawdown, (6) calls reward function.
-  - **Observation space expanded from 5 → 8 dims**: total_dd, daily_dd, progress, sortino, last_trade_result, volatility, day_progress, recent_win_rate.
-  - `map_actions_to_parameters` is now a `@staticmethod` — no need to instantiate a dummy env for inference.
-- **`SelfLearningAgent`**: A PPO RL implementation via Stable-Baselines3. **Refactored to call the static mapper directly** (no dummy env). Old models with 5-dim obs space are auto-rebuilt on load failure. Now trains 4096 timesteps default (was 2048) since each episode is a full 30-day challenge.
-- **`main.py (Integration)`**: Phase 5 enables Auto-Tuning at the initial system boot. `FTMOTradingBot` connects to the `SelfLearningAgent` object and fetches parameters dynamically bounding the `bot_config`.
-
-## ⚙️ Active Variables (`config/settings.py`)
-- **Core Parameters**: Bound to `bot_config` Singleton. Holds dynamic variables overridden by Phase 5 AI Agent. Connective credentials and API webhooks are isolated via `python-dotenv` reading from the `.env` file for enhanced security.
-  - `ftmo.DEFAULT_RISK_PER_TRADE_PCT` (Range: 0.5% - 1.0%)
-  - `ftmo.PREFERRED_RISK_REWARD_RATIO` (Range: 1.5 - 3.0)
-  - `indicators.atr_sl_multiplier` (Range: 1.0 - 2.5)
-- **Timeframes**: H4 (HTF Trend), H1 (Structure), M15 (Primary Entry).
-- **Symbols**: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY (9 pairs — mock mode supports all).
-- **Test Pipeline**: `python main.py --test-all` covers unit tests 1 through 22, verifying Core, Strategy, Execution, Analytics, and RL Environments sequentially.
-
-## 🛠️ Post-Review Patches (2026-04-13)
-
-Bug hunt and fixes applied after full code review:
-
-### 🔴 CRITICAL
-1. **RiskManager daily reset timezone**: `date.today()` → `TimeManager.get_server_time().date()` in 8 places. VPS local date ≠ broker EET date at rollover → could cause wrong daily reset.
-2. **RL Environment rebuild**: Random simulator replaced with real backtest engine (OHLCV-driven or synthetic fallback with realistic market regimes). PPO can now learn meaningful policies.
-
-### 🟠 HIGH
-3. **Duplicate symbol + correlation guard in TradeExecutor**: Prevents opening multiple positions in same symbol or correlated group (EURUSD/GBPUSD/AUDUSD together in "USD_WEAK" etc.).
-4. **Session-close timezone in TradeManager**: Server EET time now converted to UTC before comparing UTC config values; Friday hard-close still EET-native.
-5. **Pip value for cross pairs in PositionSizer**: EURJPY/GBPJPY now use USDJPY rate for USD conversion (not the cross pair's own price).
-6. **Volatility filter pip-awareness**: No more hardcoded `× 10000`; autodetects pip size from price level → JPY pairs now filter correctly.
-7. **P/L calculation in close_trade**: Uses actual `trade_contract_size` from broker and converts quote→account currency for non-USD-quote pairs.
-
-### 🟡 MEDIUM
-8. **Discord rate limiter in Notifier**: Sliding window 20 req/min, 1s min interval, 429 back-off handling.
-9. **Mock data completeness**: `MT5Connector` mock price/symbol dictionaries now cover all 9 configured symbols (not just 4).
-10. **Symbol cache invalidation**: `_symbol_cache` is cleared on `disconnect()` to prevent stale broker specs after reconnect.
-11. **RL Agent refactor**: `map_actions_to_parameters` is now `@staticmethod`; `SelfLearningAgent.get_optimized_parameters()` calls it directly instead of instantiating a dummy env.
-
-### 📦 Dependencies
-No new pip packages added; all existing `requirements.txt` deps already cover the additions (collections/threading are stdlib).
+| Metric | Value |
+|--------|-------|
+| Pool baseline win rate | 32.4% |
+| ML AUC (test split) | 0.58 |
+| WR @ `ml_score > 0.40` | 48.3% (EV +0.265) |
+| WR @ `ml_score > 0.45` | 57.5% (EV +0.527) |
+| RL obs dims | 24 |
+| Pool size | 2950 episodes / 158k signals |
 
 ---
 
-## 🛠️ Post-Review Patches v2 (2026-04-14)
+## 🏗️ Architecture (Current)
 
-รอบที่สองหลังเจอปัญหาจริงจาก live log: over-trading 45 เทรด/วัน, PnL=$0 ใน bot_state, Discord entry_price=0, ไม่มี cooldown, state persistence หลุด, ML ยังเทรนจาก mock. แก้ทั้งหมด 6 ปัญหา + hardening 5 จุดเพิ่ม
+```
+OHLCV (M15/H1/H4) ─→ [SMC] ─→ signal + 16 features
+                                    ↓
+                              [GBM ML filter] ─→ ml_score ∈ [0,1]
+                                    ↓
+                         signal dict + ml_score (17 features)
+                                    ↓
+                         [RL Env] → obs 24 dims (+ portfolio 7)
+                                    ↓
+                              [PPO Agent] ─→ TAKE / SKIP
+                                    ↓
+                             [Trade Executor] ─→ MT5
+```
 
-### 🔴 CRITICAL (Trading Safety)
+### 3-Brain Breakdown
 
-1. **MT5 deal matching bug (P/L = $0 ทุกที่)** — `TradeExecutor.sync_with_mt5` เคย match deals ด้วย `deal.order/deal.ticket` → หา deal ที่ปิดไม่เจอ → profit = 0. แก้โดย `MT5Connector.get_trade_history` เพิ่ม field `position` (จาก `deal.position_id` / `deal.position`) และ sync_with_mt5 match ด้วย `h["position"] == ticket` + ขยาย lookback 7 วัน + warning ถ้าไม่เจอ deal. เป็น root cause ของทั้ง state PnL=$0 และ Discord PnL=$0
+| # | Brain | File | Role |
+|---|-------|------|------|
+| 1 | **SMC Strategy** | [strategy/smc_strategy.py](ftmo_trading_bot/strategy/smc_strategy.py) | Hand-crafted rule-based signal generation (OB/FVG/BOS/Sweep) |
+| 2 | **ML Quality** | [ml/signal_quality.py](ftmo_trading_bot/ml/signal_quality.py) | GBM classifier; data-driven P(win) prediction (AUC 0.58) |
+| 3 | **RL Agent** | [ml/rl_agent.py](ftmo_trading_bot/ml/rl_agent.py) | PPO; TAKE/SKIP decision based on signal + ML + portfolio state |
 
-2. **State persistence atomic write** — `RiskManager._save_state` ใช้ tmp file + `os.fsync` + `os.replace` กันไฟล์พังถ้า crash ระหว่างเขียน. เพิ่ม public `save()` method. `main.shutdown()` เรียก `_risk_manager.save()` ก่อน disconnect. state file ตอนนี้เป็น source of truth ที่เชื่อถือได้
+---
 
-3. **Cooldown / Anti-Revenge Trading** — state machine เต็มตัวใน RiskManager:
-   - `_last_loss_time_per_symbol: Dict[str, iso_str]` — cooldown 30 นาที/คู่เงินหลังโดน SL
-   - `_consecutive_losses: int` + `_halt_until: iso_str`
-   - 2 แพ้ติด → pause ทั้งระบบ 60 นาที; 3 แพ้ติด → DAILY HALT
-   - ทุก field persist ใน state JSON (กัน restart = reset cooldown)
-   - Integrated ใน `can_open_trade()` ผ่าน `is_symbol_in_cooldown()` + `is_global_halted()` (auto-clears expired)
+## 📦 Core Modules
 
-### 🟠 HIGH (Anti-Overtrading)
+### `strategy/` — SMC Rule Engine
 
-4. **Guardrails ใหม่ใน `config.ftmo`**:
-   - `MAX_TRADES_PER_DAY: 5` (ก่อนหน้าไม่มี cap → 45 trades/วัน)
-   - `MAX_CORRELATED_POSITIONS: 1` (ลดจาก 2)
-   - `MIN_CONFLUENCE_SCORE: 70.0` (ขึ้นจาก 60 — **config-driven**, SMCStrategy อ่านจาก `bot_config.ftmo.MIN_CONFLUENCE_SCORE` ปรับ runtime ได้)
-   - `COOLDOWN_AFTER_LOSS_MIN: 30`, `CONSECUTIVE_LOSS_PAUSE_COUNT: 2`, `CONSECUTIVE_LOSS_HALT_COUNT: 3`
+| File | Purpose |
+|------|---------|
+| `smc_strategy.py` | Main strategy; HTF→MTF→LTF bias chain; confluence scoring [0-100] |
+| `indicators.py` | ATR, EMA, RSI, MACD, ADX, Stoch, BB, volatility filter |
+| `order_blocks.py` | Fractal-based OB detection; impulse + mitigation scoring |
+| `fair_value_gaps.py` | 3-candle imbalance detection; fill status tracking |
+| `liquidity_sweeps.py` | Swing high/low sweep detection |
+| `market_structure.py` | BOS/CHoCH detection (body-based, 5-bar lookback) |
 
-5. **Discord webhook hardening** (`DiscordNotifier`):
-   - `_fmt_price()` — 0/None → "N/A" + trim 5-decimal zeros (ไม่โชว์ "0.00000")
-   - `_fmt_num()` — safe null/exception handling
-   - `send_trade_open`: เพิ่ม Confluence, Session, RR fields + ⚠️ ถ้า entry = N/A
-   - `send_trade_close`: เพิ่ม PnL% ใน R-multiples, SL/TP/Close/Time-in-Trade, Reason
-   - Entry fallback 3-tier ใน `trade_executor.send_market_order`: `result.price` → `get_open_positions.price_open` → `current market price`
+**Key invariants**:
+- HTF bias uses **5-bar window, ≥3 bars same side, <2 opposite** (fixed from unstable 2/3)
+- Session config timezone = **UTC** (MT5 server = EET, converted in check)
+- Confluence score capped at 100 (session multiplier × raw score)
+- OB `strength_score ∈ [0, 100]`; cluster score = max of nearby OBs
 
-### 🟡 MEDIUM (ML Pipeline Overhaul)
+### `ml/` — Machine Learning Layer
 
-6. **Trade Schema v2** (`analytics/trade_logger.py`): ขยายจาก 19 → **31 columns** เพิ่ม ML features: `Session`, `DayOfWeek`, `HourOfDay`, `Spread@Entry`, `Slippage`, `HTF Bias`, `Volatility Regime`, `ConsecLoss Before`, `DD@Entry %`, `MAE`, `MFE`, `Time-in-Trade (s)`, `Exit Path`. File consolidated เป็น **`logs/ftmo_trades.xlsx`** (ไฟล์เดียว ไม่ split รายเดือนอีก)
+| File | Purpose |
+|------|---------|
+| `signal_quality.py` | `SignalQualityModel` wrapper (sklearn GBM) |
+| `strategy_backtester.py` | Pool generation engine; auto-injects `ml_score` |
+| `signal_filter_env.py` | Gymnasium env for RL training |
+| `rl_agent.py` | `SelfLearningAgent` — PPO inference for live |
 
-7. **MAE/MFE per-tick tracking** (`TradeManager._manage_single_position`): คำนวณ Max Adverse / Favorable Excursion เป็น pips ทุก tick → store บน `ExecutedTrade.mae` / `.mfe` → logger บันทึกตอนปิดเทรด. ใช้ **cached `pip_size` ใน `TrailingState`** (แทนเรียก `get_symbol_info()` ทุก tick — ลด I/O)
+**Key invariants**:
+- `StrategyBacktester._quality_model` auto-loads from `data/signal_quality_model.pkl` if exists
+- Pool signals ALWAYS have `ml_score` field (if model available) — else defaults to 0.5
+- `_resolve_trade` uses **bar color heuristic** for same-bar SL/TP hits (unbiased)
+- Slippage/spread friction: **0.5% max** (reduced from 2% which caused systematic bias)
+- Future window: **96 bars (24h)** M15 for resolution
 
-8. **Entry context capture** (`TradeExecutor._capture_entry_context`): helper ดึง session bucket (LONDON / LONDON_NY_OVERLAP / NEW_YORK / ASIAN / OFF_HOURS), spread_pts, slippage, dd_pct, htf_bias, volatility_regime ตอนเปิดเทรด → feed เข้า Trade Schema v2
+### `scripts/` — Training Pipeline
 
-9. **PerformanceAnalyzer restore on restart** (`analytics/performance.py`):
-   - `set_initial_balance(initial, peak)` — seed curve ด้วย balance จริงจาก broker + insert peak เพื่อรักษา Max DD history
-   - `load_from_excel()` — replay เทรดที่ปิดแล้วจาก `ftmo_trades.xlsx` map ตาม header name (v1/v2 compatible, ข้ามแถว Close Time ว่าง)
-   - `main.initialize()` เรียก `set_initial_balance` → `load_from_excel` หลัง `risk_manager.initialize` → equity curve / Sharpe / Sortino ต่อเนื่องข้าม restart
+| Script | Order | Purpose |
+|--------|-------|---------|
+| `build_signal_pool.py` | 1 | Parallel pool generation (multiprocessing.Pool) |
+| `train_signal_quality.py` | 2 | GBM training + re-score pool in-place |
+| `train_signal_filter.py` | 3 | PPO 2-phase curriculum (Alpha → Risk) |
+| `fetch_mt5_data.py` | prep | MT5 OHLCV → CSV (Windows only) |
 
-10. **RL Environment v2** (`ml/rl_environment.py`):
-    - Action bounds แคบลงเพื่อบังคับ Agent เลือกคุณภาพ: risk `[0.3%, 0.7%]` (เดิม 0.5-1%), confluence `[65, 85]` (เดิม 50-80), atr_sl_mult `[1.2, 2.5]`, rr `[2.0, 4.0]` (เดิม 1.5-3)
-    - `_get_stats()` ส่ง `trades_today` เข้า reward calculator
-    - `FTMORewardCalculator` เพิ่ม **Over-trading penalty**: ถ้า `trades_today > 5` → penalty `excess × 2.0` (cap -20)
-    - `SelfLearningAgent.excel_path` default → `"logs/ftmo_trades.xlsx"`
-    - **Old `models/ppo_ftmo_agent.zip` rename เป็น `.v1bak`** — action bounds เปลี่ยน → บังคับ retrain รอบหน้า
+### `main.py` — Live Trading Entry
 
-### 🔵 LOW (Hardening)
+- Loads SMC strategy + RL agent + ML quality model
+- Loops every `main_loop_interval` seconds (default 5s)
+- For each signal → `_build_signal_observation(sig)` → `rl_agent.should_take_signal(obs)`
+- Observation structure **must match** env obs (24 dims, same feature order)
 
-11. **ExecutedTrade dataclass v2** — เพิ่ม 13 fields: `session`, `day_of_week`, `hour_of_day`, `spread_at_entry`, `slippage`, `htf_bias`, `volatility_regime`, `consec_loss_before`, `dd_at_entry_pct`, `mae`, `mfe`, `time_in_trade`, `exit_path`. `to_dict()` expose ครบ
-12. **`update_daily_pnl(pnl, symbol=None)`** signature เพิ่ม symbol → `_record_trade_outcome()` track ชนะ/แพ้ per-symbol เพื่อเข้า cooldown logic
-13. **`record_external_close()` finalize**: trade.time_in_trade = `(close_time - open_time).total_seconds()`, trade.exit_path = reason
+---
 
-### 🔑 Key Invariants (v2)
+## 🎯 Observation Space (24 dims)
 
-- **MT5 deal matching** ต้องใช้ `deal.position` (หรือ `deal.position_id`) **ห้ามใช้** `deal.order` / `deal.ticket` — เป็น id คนละชนิด
-- **ftmo_trades.xlsx** ไฟล์เดียวเท่านั้น (consolidated ML dataset) — ห้ามแตกรายเดือน
-- **ML ต้องใช้ข้อมูลจริงเท่านั้น** — ห้าม synthetic/mock เมื่อมีไฟล์นี้อยู่
-- **RL model v1 → v2 incompatible** — ถ้าเจอ `ppo_ftmo_agent.zip` ที่ train บน bounds เก่า ต้อง rename เป็น `.v1bak` บังคับ retrain
-- **State file เป็น source of truth** — ใช้ atomic write, persist cooldown + peak + consecutive_losses ครบ
+**CRITICAL**: Must stay synchronized across 3 places:
+1. [`ml/signal_filter_env.py` `_get_obs()`](ftmo_trading_bot/ml/signal_filter_env.py#L141)
+2. [`main.py` `_build_signal_observation()`](ftmo_trading_bot/main.py#L407)
+3. [`ml/rl_agent.py` `OBS_DIM`](ftmo_trading_bot/ml/rl_agent.py#L31)
 
-### 📦 Dependencies (v2)
-ยังไม่เพิ่ม pip package ใหม่ — `openpyxl` ที่มีอยู่แล้วรองรับ `load_from_excel`
+### Layout
+
+| Idx | Feature | Source | Norm |
+|-----|---------|--------|------|
+| **Signal Core [0-11]** |
+| 0 | confluence_norm | `sig.confluence_score` | `(x-50)/50` |
+| 1 | rr_ratio_norm | `sig.rr_ratio` | `(x-1)/4` |
+| 2 | direction | BUY=+1, SELL=-1 | — |
+| 3 | atr_norm | `sig.atr_pips` | `(x-15)/10` |
+| 4 | ob_score_norm | `sig.ob_score` | `x/100` |
+| 5 | bias_alignment | `direction × market_bias` | ±1 |
+| 6 | sl_atr_ratio | `sl_distance / atr` | raw |
+| 7 | rsi_norm | `sig.rsi_value` | `(x-50)/50` |
+| 8 | macd_norm | `sig.macd_histogram / atr` | raw |
+| 9 | trend_str | `sig.trend_strength` | `x/100` |
+| 10 | ob_size_atr | OB body / ATR | raw |
+| 11 | adx_norm | `sig.adx` | `x/100` |
+| **Market Regime [12-15]** |
+| 12 | stoch_norm | `sig.stoch_k` | `(x-50)/50` |
+| 13 | bb_pctb | `sig.bb_pctb` | raw |
+| 14 | atr_chg | `sig.atr_change_ratio` | raw |
+| 15 | price_roc | `sig.price_roc` | raw |
+| **ML Quality [16]** ⭐ |
+| 16 | ml_score_norm | GBM `P(win)` | `(p-0.5)×2` |
+| **Portfolio State [17-23]** |
+| 17 | total_dd_norm | RiskMgr.total_dd | `-x/0.10` |
+| 18 | daily_dd_norm | RiskMgr.daily_dd | `-x/0.05` |
+| 19 | progress_norm | profit/target × 100 | `x/100` |
+| 20 | day_progress | challenge_day/45 | raw |
+| 21 | trades_today | open_positions/3 | raw |
+| 22 | recent_wr_norm | last 10 WR | `(wr×2)-1` |
+| 23 | consec_losses | min(consec, 5)/5 | raw |
+
+---
+
+## 🎓 Training Pipeline Details
+
+### Pool Generation (`build_signal_pool.py`)
+
+- **Parallel 8 workers** via `multiprocessing.Pool`
+- Stratified sampling: `pool_size // n_symbols` episodes per symbol, evenly spaced start_bars with ±48 bar jitter
+- Worker inits backtester ONCE at start (loads CSV + indicators)
+- Each episode = 45 days × 4 scan_points = 180 potential scans → avg ~54 valid signals
+- Output: `data/signal_pool_3000.pkl` (pickle list of episode lists)
+
+### ML Training (`train_signal_quality.py`)
+
+- **Model**: `GradientBoostingClassifier(max_depth=4, n_estimators=300, learning_rate=0.03)`
+- **Features**: 17 (all signal fields except `outcome_pnl_ratio`, `ml_score`, metadata)
+- **Target**: `wins = (outcome_pnl_ratio > 0).astype(int)`
+- **Train flow**: 70/30 split → AUC on test → retrain on full → save + re-score pool in-place
+- **Current AUC**: 0.5781 (test), moderate edge
+
+### RL Training (`train_signal_filter.py`)
+
+**2-Phase Curriculum**:
+
+| Phase | enable_risk_penalty | Steps (default) | Learning | Output |
+|-------|--------------------|-----------------|----------|--------|
+| 1 (Alpha) | False | 10M | chart reading + oracle SKIP | `ppo_signal_filter_p1.zip` |
+| 2 (Risk) | True | 5M | + DD penalties | `ppo_signal_filter.zip` |
+
+**PPO Hyperparams**:
+- `learning_rate=3e-4` (P1) → `1e-4` (P2)
+- `gamma=0.99` (long-horizon credit)
+- `n_steps=4096, batch_size=256, n_epochs=5`
+- `ent_coef=0.05→0.005` (P1), `0.01→0.002` (P2)
+- `policy_kwargs: net_arch=dict(pi=[256,128], vf=[256,128])`
+- `clip_range=0.2, gae_lambda=0.95`
+
+**VecNormalize**:
+- `norm_obs=True, norm_reward=True`
+- `clip_obs=10.0, clip_reward=20.0` (20 expanded from 10 for DD breach penalty)
+
+**SubprocVecEnv**: Used when `n_envs > 1` → real multi-core parallelism
+
+### Reward Structure
+
+**Phase 1 (Alpha)** — Chart reading + profit:
+```
+TAKE: clip(pnl_norm, -1.5, 3.0)
+    + chart_reading_bonus (confluence × outcome alignment)
+    + 0.02 action nudge
+
+SKIP: Oracle feedback
+    outcome >= 0.5:  -0.50 (missed big win; -0.80 if conf >= 75)
+    outcome >= 0.1:  -0.16 (small missed win)
+    outcome <= -0.5: +0.30 (smart skip of big loss)
+    outcome <= -0.1: +0.10 (smart skip of small loss)
+    else: 0
+```
+
+**Phase 2 (Risk)** — Add DD management:
+```
+TAKE: Phase 1 reward
+    + dd_penalty() = -0.5·(exp(3·ratio)-1) for total DD > 4%
+    + -0.3·(exp(3·ratio)-1) for daily DD > 2.5%
+    + -0.5 if risk guard clamped PnL
+
+Activity floor (Phase 2 only):
+    take_rate < 8%:  -5.0
+    take_rate < 15%: -1.5
+    progress < 30%:  -1.0
+```
+
+**Target bonus**: `+2.0` when `target_progress_pct >= 100%` (terminate episode)
+
+### Outcome Perturbation
+
+- `outcome_noise_std=0.02` (default) → 2% Gaussian noise on pool outcomes during env step
+- Purpose: prevent overfitting to fixed pool outcomes; simulates live slippage variance
+- Only applies when pool is loaded (fresh-generation mode doesn't need it)
+
+---
+
+## 🛠️ Key Files & Line References
+
+### State Synchronization (when modifying)
+
+If you change **observation space**, update ALL of:
+- `ml/signal_filter_env.py:95` — `observation_space = Box(shape=(24,))`
+- `ml/signal_filter_env.py:141` — `_get_obs()` returns 24-dim array
+- `ml/rl_agent.py:31` — `OBS_DIM: int = 24`
+- `main.py:461` — `obs = np.array([...])` must be 24 elements
+
+If you change **reward structure**:
+- Tune in `ml/signal_filter_env.py:316` (step function)
+- Impact: Phase 1 and Phase 2 share same env, differ only via `enable_risk_penalty` flag
+
+### Critical Paths
+
+- Pool file: `data/signal_pool_3000.pkl` (auto-loaded by env if exists)
+- ML model: `data/signal_quality_model.pkl` (auto-loaded by backtester)
+- RL model: `models/ppo_signal_filter.zip` (loaded by `SelfLearningAgent`)
+- VecNormalize stats: `models/vec_normalize_sf.pkl` (MUST match model's train obs)
+- TensorBoard: `logs/tb_signal_filter/phaseN_*/`
+
+---
+
+## ⚙️ Configuration (`config/settings.py`)
+
+### FTMO Rules
+```python
+DAILY_LOSS_HARD_STOP_PCT = 0.04
+MAX_DRAWDOWN_HARD_STOP_PCT = 0.08
+TARGET_PROFIT_PCT = 0.10
+MIN_CONFLUENCE_SCORE = 70.0  # runtime override-able
+```
+
+### Symbols (9)
+`EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY`
+
+### Env Variables
+- `SMC_QUIET=1` → silences strategy debug prints (auto-set by train scripts)
+
+---
+
+## 🧪 Current State (2026-04-18)
+
+### What's Working ✅
+- SMC signal generation (all 9 symbols, 3 TFs)
+- ML GBM classifier (AUC 0.58, meaningful edge at p>0.40)
+- RL PPO training with Signal Pool (14k+ it/s on 8 workers)
+- Hybrid obs (24 dims with ML score)
+- 2-phase curriculum pipeline
+- Pool caching on disk (reuse across train runs)
+- TensorBoard logging (7 metric groups)
+- Graceful fallback if ML model missing
+
+### Known Limitations ⚠️
+- SMC hand-crafted confluence is weak predictor (near-zero correlation with outcomes)
+- ML model edge is moderate (AUC 0.58) — supervisory upper bound on RL performance
+- BUY direction systematically weaker than SELL (30.4% vs 33.6%) — possibly market regime bias in training data
+- Pool outcomes fixed per entry — small `outcome_noise=0.02` added for regularization
+
+### Recent Post-Review Patches (2026-04-18)
+
+**Resolver & Data Quality**:
+- Bar color heuristic for same-bar SL/TP ties (was distance-from-open bias)
+- Slippage/spread 2% → 0.5% (realistic major pair)
+- `_end_idx_at_or_before` timestamp-based window alignment (was ratio-based look-ahead bias)
+- FVG `analyze()` precondition documented
+
+**Architecture**:
+- Added ML quality layer → 24-dim obs (was 23)
+- SubprocVecEnv for real multi-core parallelism
+- Signal pool system (250× training speedup)
+- HTF bias 3/5 window instead of unstable 2/3
+
+**Training**:
+- Gamma 0.95 → 0.99 (long horizon)
+- clip_reward 10 → 20 (DD penalty room)
+- SKIP oracle reward ×2 (balance TAKE:SKIP gradients)
+- Network [128,64] → [256,128] (value approximation)
+- outcome_noise parameter (0.05 → 0.02 default)
+
+### Migration Notes
+
+**Model version incompatibility**:
+- Old `ppo_signal_filter.zip` (23 obs dim) — incompatible, auto-backup as `.bak_*`
+- Old `signal_pool_3000.pkl` without `ml_score` — rebuild required
+- Old `signal_quality_model.pkl` on old pool — works but retrain recommended
+
+**Recommended fresh setup**:
+```bash
+# 1. Clean old artifacts
+rm data/signal_pool_*.pkl
+
+# 2. Full pipeline
+python scripts/build_signal_pool.py --pool_size 3000 --workers 8
+python scripts/train_signal_quality.py
+python scripts/train_signal_filter.py --fresh --timesteps_p1 10000000 \
+    --timesteps_p2 5000000 --n_envs 8 --pool_size 3000 --outcome_noise 0.02
+```
+
+---
+
+## 📚 Decision Log (Reverse Chronological)
+
+### 2026-04-18: Hybrid ML+RL Architecture
+- **Motivation**: SMC confluence near-zero edge; RL couldn't filter
+- **Change**: Train GBM on pool outcomes → inject `ml_score` as obs[16]
+- **Impact**: Expected 45-55% WR (vs 21-31% baseline)
+
+### 2026-04-18: Signal Pool System
+- **Motivation**: Reset time ~6-9s per episode made training take 10+ hrs
+- **Change**: Pre-generate 3000 episodes, cache to disk, env samples from pool
+- **Impact**: Training 10.5 hrs → 25-30 min (250× speedup)
+
+### 2026-04-18: Resolver Bias Fix
+- **Motivation**: Same-bar SL/TP always resolved to SL (dist-from-open bias)
+- **Change**: Bar color heuristic (green→TP first for BUY)
+- **Impact**: Win rate 31.8% → 32.5% (+0.7pp)
+
+### 2026-04-18: Large Network + Long Horizon
+- **Motivation**: explained_variance stuck at 0.08 (value func not learning)
+- **Change**: Net [128,64]→[256,128], gamma 0.95→0.99, clip_reward 10→20
+- **Impact**: explained_variance 0.08 → 0.30 (P2)
+
+### 2026-04-17: 2-Phase Curriculum
+- **Motivation**: Agent needs to learn chart reading before DD management
+- **Change**: Phase 1 no DD penalty + oracle SKIP; Phase 2 adds DD
+- **Impact**: Better policy foundation
+
+---
+
+## 🔑 Invariants (Must Preserve)
+
+1. **Obs dim sync** — env / rl_agent / main.py must all be 24
+2. **Feature order** — must match across pool / env obs / main.py obs
+3. **MT5 deal matching** uses `position_id`, not `order`/`ticket`
+4. **Pool pickle** is source of truth for training (regenerate if architecture changes)
+5. **Risk guard denominators**: Total DD uses `INITIAL_BALANCE`, Daily DD uses `daily_start_balance` (FTMO rules)
+6. **Session times in config are UTC**, MT5 server is EET — convert before comparing
+7. **ML model path default**: `data/signal_quality_model.pkl` (loaded by backtester, env, main.py)
+8. **Pool file default**: `data/signal_pool_3000.pkl` (loaded by env, retrainable by `train_signal_quality.py`)
+
+---
+
+## 📞 Development Workflow
+
+**ถ้าเจอ bug**:
+1. Check TB metrics first (`tensorboard --logdir logs/tb_signal_filter`)
+2. Verify obs dim consistency across files
+3. Check pool has `ml_score` field: `pickle.load() → first_sig.get('ml_score')`
+4. Check ML model loads: `ls data/signal_quality_model.pkl`
+
+**ถ้าต้องเพิ่ม feature**:
+1. Add to signal dict in `strategy_backtester.py:generate_episode_signals`
+2. Add to obs in `signal_filter_env.py:_get_obs` + `main.py:_build_signal_observation`
+3. Increment OBS_DIM in `rl_agent.py`
+4. Rebuild pool + retrain ML + retrain RL
+
+**ถ้าต้อง retrain ML อย่างเดียว** (pool unchanged):
+```bash
+python scripts/train_signal_quality.py  # re-scores pool in-place
+```
+
+**ถ้าต้อง retrain RL อย่างเดียว** (pool + ML unchanged):
+```bash
+python scripts/train_signal_filter.py --fresh  # uses existing pool + ML
+```

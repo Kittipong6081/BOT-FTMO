@@ -315,7 +315,7 @@ class OrderBlockDetector:
             # ปัจจัยที่ 4: ความใกล้กับราคาปัจจุบัน (20 คะแนน)
             distance = abs(current_price - ob.zone_mid)
             relative_distance = distance / current_price if current_price > 0 else 1
-            proximity_score = max(0, 20 * (1 - relative_distance * 100))  # ยิ่งใกล้ = ยิ่งดี
+            proximity_score = max(0, 20 * (1 - relative_distance * 10))  # ยิ่งใกล้ = ยิ่งดี
             score += proximity_score
             
             ob.strength_score = min(score, 100)  # จำกัดที่ 100
@@ -448,7 +448,13 @@ class OrderBlockDetector:
         self, obs: List[OrderBlock], price: float,
         tolerance_pips: float, pip_size: float
     ) -> Optional[float]:
-        """คำนวณ cluster score จาก OBs ที่อยู่ใกล้ราคา"""
+        """
+        คืนคะแนน OB ดีที่สุดในรัศมี (ไม่ inflate ด้วย cluster bonus)
+
+        Returns:
+            float in [0, 100] — เพราะ ob.strength_score ถูก cap ที่ 100 ใน _score_obs()
+            หรือ None ถ้าไม่มี OB ใกล้
+        """
         tolerance = tolerance_pips * pip_size
         nearby = [
             ob for ob in obs
@@ -456,9 +462,7 @@ class OrderBlockDetector:
         ]
         if not nearby:
             return None
-        avg_score = sum(ob.strength_score for ob in nearby) / len(nearby)
-        cluster_bonus = 1.0 + 0.15 * (len(nearby) - 1)
-        return min(avg_score * cluster_bonus, 100.0)
+        return max(ob.strength_score for ob in nearby)
 
     def get_ob_summary(self) -> Dict:
         """สรุปข้อมูล Order Blocks ทั้งหมด"""

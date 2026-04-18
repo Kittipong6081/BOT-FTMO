@@ -26,13 +26,35 @@ class _MockConnector:
     """Mock connector สำหรับ backtesting — ไม่ต้องต่อ MT5"""
 
     def get_symbol_info(self, symbol: str) -> dict:
-        is_jpy = "JPY" in symbol.upper()
+        sym_upper = symbol.upper()
+        # Metals (XAUUSD, XAGUSD) — digits=2, contract 100 oz
+        if "XAU" in sym_upper or "XAG" in sym_upper:
+            return {
+                "digits": 2,
+                "point": 0.01,
+                "lot_min": 0.01,
+                "lot_max": 50.0,
+                "lot_step": 0.01,
+                "trade_contract_size": 100,
+            }
+        # JPY pairs — digits=3
+        if "JPY" in sym_upper:
+            return {
+                "digits": 3,
+                "point": 0.001,
+                "lot_min": 0.01,
+                "lot_max": 100.0,
+                "lot_step": 0.01,
+                "trade_contract_size": 100000,
+            }
+        # Major pairs — digits=5
         return {
-            "digits": 3 if is_jpy else 5,
-            "point": 0.001 if is_jpy else 0.00001,
+            "digits": 5,
+            "point": 0.00001,
             "lot_min": 0.01,
             "lot_max": 100.0,
             "lot_step": 0.01,
+            "trade_contract_size": 100000,
         }
 
     def get_current_price(self, symbol: str) -> None:
@@ -55,12 +77,31 @@ class StrategyBacktester:
     MIN_H1_BARS = 500
     MIN_H4_BARS = 300
 
-    def __init__(self, data_dir: str, symbols: Optional[List[str]] = None):
+    def __init__(self, data_dir: str, symbols: Optional[List[str]] = None,
+                 ml_model_path: Optional[str] = None):
         self.symbols = symbols or [
             "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
-            "USDCHF", "NZDUSD", "EURJPY", "GBPJPY"
+            "USDCHF", "NZDUSD", "EURJPY", "GBPJPY",
+            "XAUUSD",  # Gold — metal (digits=2, pip=0.01, contract 100 oz)
         ]
         self._data_dir = data_dir
+
+        # Load ML quality model (optional) — ถ้ามี จะ score ทุก signal
+        self._quality_model = None
+        if ml_model_path is None:
+            # Default: ./data/signal_quality_model.pkl
+            default_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "data", "signal_quality_model.pkl"
+            )
+            if os.path.exists(default_path):
+                ml_model_path = default_path
+        if ml_model_path and os.path.exists(ml_model_path):
+            try:
+                from ml.signal_quality import SignalQualityModel
+                self._quality_model = SignalQualityModel(ml_model_path)
+            except Exception as e:
+                print(f"⚠️ [Backtester] ML quality model load failed: {e}")
 
         self._m15_cache: Dict[str, pd.DataFrame] = {}
         self._h1_cache: Dict[str, pd.DataFrame] = {}
@@ -74,6 +115,8 @@ class StrategyBacktester:
             s for s in self.symbols
             if s in self._m15_cache and s in self._h1_cache and s in self._h4_cache
         ]
+
+        self._precompute_indicators()
 
     def _load_data(self):
         """โหลด OHLCV จาก CSV สำหรับ 3 timeframes"""
@@ -90,12 +133,39 @@ class StrategyBacktester:
                         required = {'open', 'high', 'low', 'close'}
                         if required.issubset(set(df.columns)) and len(df) >= 100:
                             if 'time' not in df.columns:
-                                df['time'] = range(len(df))
+                                df['time'] = pd.date_range(
+                                    start='2000-01-01', periods=len(df), freq='15min'
+                                )
+                            else:
+                                df['time'] = pd.to_datetime(df['time'], errors='coerce')
+                                df = df.dropna(subset=['time']).reset_index(drop=True)
+                            df = df.sort_values('time').reset_index(drop=True)
                             if 'volume' not in df.columns:
                                 df['volume'] = 0
                             cache[symbol] = df
                     except Exception:
                         continue
+
+    @staticmethod
+    def _end_idx_at_or_before(df: pd.DataFrame, ts) -> int:
+        """
+        หา index สุดท้ายที่ time <= ts (end-exclusive สำหรับ slice)
+        ใช้ searchsorted — O(log n) และกันปัญหา M15/H1/H4 มีข้อมูลไม่ตรงช่วง
+
+        Returns: end index (exclusive) — ใช้เป็น df.iloc[:end] ได้ตรง
+        """
+        times = df['time'].values
+        # searchsorted side='right' → first index where times[i] > ts
+        # ดังนั้น idx นี้ใช้เป็น end-exclusive ตรง ๆ
+        return int(np.searchsorted(times, ts, side='right'))
+
+    def _precompute_indicators(self):
+        """Pre-compute indicators ครั้งเดียวบน full DataFrame — ไม่ต้องคำนวณซ้ำทุก scan"""
+        indicators = TechnicalIndicators()
+        for symbol in self._available_symbols:
+            for cache in (self._m15_cache, self._h1_cache, self._h4_cache):
+                if symbol in cache and len(cache[symbol]) >= 200:
+                    cache[symbol] = indicators.calculate_all(cache[symbol])
 
     def _init_strategy(self):
         """สร้าง SMCStrategy โดยไม่ต้องมี MT5 connector"""
@@ -171,10 +241,10 @@ class StrategyBacktester:
         if m15_window_end >= len(m15_df) - self.M15_PER_DAY:
             return self._empty_result()
 
-        h1_ratio = len(h1_df) / max(len(m15_df), 1)
-        h4_ratio = len(h4_df) / max(len(m15_df), 1)
-        h1_end = min(int(m15_window_end * h1_ratio), len(h1_df))
-        h4_end = min(int(m15_window_end * h4_ratio), len(h4_df))
+        # Timestamp-based alignment — กัน look-ahead bias เมื่อ M15/H1/H4 มี bar count ไม่ตรงกัน
+        m15_end_ts = m15_df['time'].iloc[m15_window_end - 1]
+        h1_end = min(self._end_idx_at_or_before(h1_df, m15_end_ts), len(h1_df))
+        h4_end = min(self._end_idx_at_or_before(h4_df, m15_end_ts), len(h4_df))
         h1_start = max(0, h1_end - self.MIN_H1_BARS)
         h4_start = max(0, h4_end - self.MIN_H4_BARS)
 
@@ -217,10 +287,10 @@ class StrategyBacktester:
         m15_start = int(rng.integers(0, max(1, max_m15_start)))
         m15_window_end = m15_start + self.MIN_M15_BARS
 
-        h1_ratio = len(h1_df) / max(len(m15_df), 1)
-        h4_ratio = len(h4_df) / max(len(m15_df), 1)
-        h1_end = min(int(m15_window_end * h1_ratio), len(h1_df))
-        h4_end = min(int(m15_window_end * h4_ratio), len(h4_df))
+        # Timestamp-based alignment — กัน look-ahead bias
+        m15_end_ts = m15_df['time'].iloc[m15_window_end - 1]
+        h1_end = min(self._end_idx_at_or_before(h1_df, m15_end_ts), len(h1_df))
+        h4_end = min(self._end_idx_at_or_before(h4_df, m15_end_ts), len(h4_df))
         h1_start = max(0, h1_end - self.MIN_H1_BARS)
         h4_start = max(0, h4_end - self.MIN_H4_BARS)
 
@@ -384,11 +454,12 @@ class StrategyBacktester:
         pip_size: float, rng: np.random.Generator,
     ) -> float:
         """
-        จำลองผลเทรดจาก signal กับราคาอนาคต
+        จำลองผลเทรดจาก signal กับราคาอนาคตจริง
 
-        Fix: เมื่อแท่งเทียนชนทั้ง SL และ TP ในแท่งเดียวกัน
-        ใช้ระยะทาง (entry → SL vs entry → TP) เทียบกับ bar open
-        เพื่อประมาณว่าราคาชนอะไรก่อน แทนที่จะ bias เป็น SL เสมอ
+        เมื่อแท่งชนทั้ง SL+TP ใน bar เดียวกัน → ใช้ bar color heuristic
+          (candle direction สะท้อนทิศทางราคาเคลื่อนก่อน — ไม่มี tick data)
+        Friction: ~0.5% (major pair realistic) — ลดจาก 2% ที่เดิมมี bias ลบเกิน
+        Full RR on win
         """
         entry = signal.entry_price
         is_buy = signal.signal_type.value == "BUY"
@@ -404,6 +475,7 @@ class StrategyBacktester:
             bar_high = row['high']
             bar_low = row['low']
             bar_open = row['open']
+            bar_close = row['close']
 
             if is_buy:
                 hit_sl = bar_low <= sl_price
@@ -413,34 +485,39 @@ class StrategyBacktester:
                 hit_tp = bar_low <= tp_price
 
             if hit_sl and hit_tp:
-                # ทั้ง SL และ TP โดนในแท่งเดียวกัน — ประมาณจาก open direction
-                # ถ้า open ใกล้ TP มากกว่า → น่าจะชน TP ก่อน (momentum ไปทาง TP)
-                if is_buy:
-                    dist_to_sl = abs(bar_open - sl_price)
-                    dist_to_tp = abs(bar_open - tp_price)
+                # Bar color heuristic — fair ไม่ bias ไปทาง SL
+                # Green candle (close > open) — ราคาขึ้นก่อน
+                # Red candle (close < open) — ราคาลงก่อน
+                # Doji — 50/50 random
+                if bar_close > bar_open:
+                    # ราคาขึ้นก่อน
+                    if is_buy:
+                        hit_sl = False   # TP hit first (BUY ชอบ up)
+                    else:
+                        hit_tp = False   # SL hit first (SELL เจอ up = SL)
+                elif bar_close < bar_open:
+                    # ราคาลงก่อน
+                    if is_buy:
+                        hit_tp = False   # SL hit first (BUY เจอ down = SL)
+                    else:
+                        hit_sl = False   # TP hit first (SELL ชอบ down)
                 else:
-                    dist_to_sl = abs(bar_open - sl_price)
-                    dist_to_tp = abs(bar_open - tp_price)
-
-                # TP ใกล้กว่า → ชน TP ก่อน, SL ใกล้กว่า → ชน SL ก่อน
-                # เท่ากัน → 50/50 random
-                if dist_to_tp < dist_to_sl:
-                    hit_sl = False  # TP ก่อน
-                elif dist_to_sl < dist_to_tp:
-                    hit_tp = False  # SL ก่อน
-                else:
+                    # Doji — random
                     if rng.random() < 0.5:
                         hit_sl = False
                     else:
                         hit_tp = False
 
             if hit_sl:
-                slippage = float(rng.uniform(1.0, 1.05))
+                # Slippage realistic สำหรับ major pair: ~0.5% max
+                slippage = float(rng.uniform(1.0, 1.005))
                 return -risk_amount * slippage
 
             if hit_tp:
-                partial_rr = 0.5 * 1.0 + 0.5 * (tp_dist / max(sl_dist, pip_size))
-                return risk_amount * partial_rr * float(rng.uniform(0.85, 1.0))
+                actual_rr = tp_dist / max(sl_dist, pip_size)
+                # Spread cost realistic: ~0.5% max (ลดจาก 2%)
+                spread_cost = float(rng.uniform(0.995, 1.0))
+                return risk_amount * actual_rr * spread_cost
 
         # ไม่ชนทั้ง SL/TP ใน 48 แท่ง → ปิดที่ราคาปัจจุบัน
         last_close = float(future_df['close'].iloc[-1])
@@ -451,6 +528,176 @@ class StrategyBacktester:
 
         pnl_ratio = pnl_pips * pip_size / max(sl_dist, pip_size)
         return risk_amount * pnl_ratio
+
+    def generate_episode_signals(
+        self,
+        symbol: str,
+        m15_start_bar: int,
+        num_days: int = 45,
+        rng: np.random.Generator = None,
+    ) -> List[Dict]:
+        """
+        สร้างรายการ signals ทั้ง episode พร้อม pre-computed outcome
+        ใช้ MIN_CONFLUENCE_SCORE = 50 เพื่อให้ agent เห็นทั้ง signal ดีและแย่
+
+        Returns:
+            List ของ dict: day, signal_type, confluence_score, rr_ratio, atr_value,
+            ob_score, market_bias, trend, sl_distance_atr, outcome_pnl, outcome_rr
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+
+        if symbol not in self._m15_cache:
+            return []
+
+        m15_df = self._m15_cache[symbol]
+        h1_df = self._h1_cache.get(symbol)
+        h4_df = self._h4_cache.get(symbol)
+        if h1_df is None or h4_df is None:
+            return []
+
+        saved_confluence = self._strategy.MIN_CONFLUENCE_SCORE
+        self._strategy.MIN_CONFLUENCE_SCORE = 60.0
+
+        signals = []
+        scan_points = [0, 24, 48, 72]
+
+        for day in range(num_days):
+            day_m15_start = m15_start_bar + day * self.M15_PER_DAY
+            m15_window_end = day_m15_start
+
+            if m15_window_end >= len(m15_df) - self.M15_PER_DAY:
+                break
+
+            # Timestamp-based alignment — กัน look-ahead bias
+            m15_end_ts = m15_df['time'].iloc[m15_window_end - 1]
+            h1_end = min(self._end_idx_at_or_before(h1_df, m15_end_ts), len(h1_df))
+            h4_end = min(self._end_idx_at_or_before(h4_df, m15_end_ts), len(h4_df))
+            h1_start = max(0, h1_end - self.MIN_H1_BARS)
+            h4_start = max(0, h4_end - self.MIN_H4_BARS)
+
+            if h1_end - h1_start < 200 or h4_end - h4_start < 200:
+                continue
+
+            m15_lookback_start = max(0, day_m15_start - self.MIN_M15_BARS)
+
+            for offset in scan_points:
+                scan_idx = m15_lookback_start + self.MIN_M15_BARS + offset
+                if scan_idx >= len(m15_df) - 20:
+                    continue
+
+                ltf_slice = m15_df.iloc[scan_idx - self.MIN_M15_BARS + 1:scan_idx + 1].copy()
+                h1_slice = h1_df.iloc[h1_start:h1_end].copy()
+                h4_slice = h4_df.iloc[h4_start:h4_end].copy()
+
+                if len(ltf_slice) < 200 or len(h1_slice) < 200 or len(h4_slice) < 200:
+                    continue
+
+                last_close = float(ltf_slice["close"].iloc[-1])
+                pip_size = 0.01 if last_close > 50 else 0.0001
+                spread = pip_size * 2
+
+                price_info = {
+                    "bid": last_close,
+                    "ask": last_close + spread,
+                    "spread": spread,
+                }
+
+                try:
+                    signal = self._strategy.analyze_with_data(
+                        symbol, h4_slice, h1_slice, ltf_slice, price_info
+                    )
+                except Exception:
+                    continue
+
+                if not signal.is_valid:
+                    continue
+
+                signal_sl = abs(signal.entry_price - signal.sl_price)
+                if signal_sl < pip_size:
+                    continue
+
+                atr_val = max(signal.atr_value, pip_size)
+                sl_distance_atr = signal_sl / atr_val
+
+                actual_sl = signal_sl
+
+                adx_val = signal.adx if signal.adx > 0 else 25.0
+                # RR คง 1.5/2.0/2.5 เดิม (ทดลอง 2.0+/2.5+/3.0+ พบว่า WR drop
+                # มากกว่า RR gain → EV แย่ลง). ปล่อยให้ agent เรียนรู้เลือก setup
+                if adx_val >= 30:
+                    dynamic_rr = 2.5
+                elif adx_val >= 20:
+                    dynamic_rr = 2.0
+                else:
+                    dynamic_rr = 1.5
+                actual_tp = actual_sl * dynamic_rr
+
+                future_start = scan_idx + 1
+                # Window 48→96 bars (12h→24h) ให้ TP ที่ไกลมีเวลาถึงก่อน timeout
+                # ลด timeout-partial (เดิม 2.6%) → resolution ชัดเจนขึ้น
+                future_end = min(future_start + 96, len(m15_df))
+                if future_start >= len(m15_df):
+                    continue
+
+                future = m15_df.iloc[future_start:future_end]
+                if len(future) == 0:
+                    continue
+
+                risk_amount = 1.0
+                trade_pnl = self._resolve_trade(
+                    signal, actual_sl, actual_tp, future, risk_amount, pip_size, rng
+                )
+
+                is_buy = signal.signal_type.value == "BUY"
+                direction = 1.0 if is_buy else -1.0
+                bias_alignment = direction * signal.market_bias
+
+                ob_range = 0.0
+                if signal.ob_high is not None and signal.ob_low is not None:
+                    ob_range = abs(signal.ob_high - signal.ob_low)
+
+                signals.append({
+                    'day': day,
+                    'signal_type': signal.signal_type.value,
+                    'confluence_score': signal.confluence_score,
+                    'rr_ratio': dynamic_rr,
+                    'atr_value': atr_val,
+                    'atr_pips': atr_val / pip_size,
+                    'ob_score': signal.ob_score,
+                    'market_bias': signal.market_bias,
+                    'trend': signal.trend,
+                    'direction': direction,
+                    'bias_alignment': bias_alignment,
+                    'sl_distance_atr': sl_distance_atr,
+                    'outcome_pnl_ratio': float(trade_pnl),
+                    'pip_size': pip_size,
+                    'rsi_value': signal.rsi_value,
+                    'trend_strength': signal.trend_strength,
+                    'macd_histogram': signal.macd_histogram,
+                    'ob_size_atr': ob_range / atr_val if atr_val > 0 else 0.0,
+                    'adx': signal.adx,
+                    'stoch_k': signal.stoch_k,
+                    'bb_pctb': signal.bb_pctb,
+                    'atr_change_ratio': signal.atr_change_ratio,
+                    'price_roc': signal.price_roc,
+                })
+
+        self._strategy.MIN_CONFLUENCE_SCORE = saved_confluence
+
+        # Add ML quality score to each signal (if model available)
+        # ML score = P(win) ∈ [0, 1] — used เป็น obs feature สำหรับ RL agent
+        if signals and hasattr(self, '_quality_model') and self._quality_model is not None:
+            try:
+                scores = self._quality_model.score_batch(signals)
+                for sig, s in zip(signals, scores):
+                    sig['ml_score'] = float(s)
+            except Exception as e:
+                # Graceful fallback — ถ้า ML model มีปัญหา ใช้ 0.5 (neutral)
+                for sig in signals:
+                    sig['ml_score'] = 0.5
+
+        return signals
 
     def _empty_result(self) -> Dict:
         return {

@@ -82,6 +82,16 @@ class TradeSignal:
     # ข้อมูลโครงสร้างตลาด
     market_bias: int = 0             # 1=Bullish, -1=Bearish, 0=Neutral
     trend: int = 0                   # 1=Uptrend, -1=Downtrend, 0=Ranging
+
+    # Indicator values สำหรับ RL Agent observation
+    rsi_value: float = 50.0
+    trend_strength: float = 0.0
+    macd_histogram: float = 0.0
+    adx: float = 0.0
+    stoch_k: float = 50.0
+    bb_pctb: float = 0.5
+    atr_change_ratio: float = 0.0
+    price_roc: float = 0.0
     
     @property
     def is_valid(self) -> bool:
@@ -182,13 +192,16 @@ class SMCStrategy:
         self._mtf_data = mtf_df
         self._ltf_data = ltf_df
 
-        if htf_df is not None and len(htf_df) >= 3:
-            recent_trends = htf_df["trend"].iloc[-3:].tolist()
+        # HTF bias — ใช้ 5-bar window + ต้องมี 3+ bars ฝั่งเดียวกัน
+        # (ของเก่า 2/3 = แกว่ง noise มาก เพราะ H4 = 12h ข้อมูลเท่านั้น)
+        if htf_df is not None and len(htf_df) >= 5:
+            recent_trends = htf_df["trend"].iloc[-5:].tolist()
             bullish_count = sum(1 for t in recent_trends if t == 1)
             bearish_count = sum(1 for t in recent_trends if t == -1)
-            if bullish_count >= 2:
+            # 3/5 threshold + ห้าม mixed strong (ถ้า opposite >=2 → neutral)
+            if bullish_count >= 3 and bearish_count < 2:
                 self._htf_bias = 1
-            elif bearish_count >= 2:
+            elif bearish_count >= 3 and bullish_count < 2:
                 self._htf_bias = -1
             else:
                 self._htf_bias = 0
@@ -308,15 +321,15 @@ class SMCStrategy:
         self._mtf_data = mtf_df
         self._ltf_data = ltf_df
 
-        # === ขั้นตอนที่ 5: วิเคราะห์ HTF (H4) — ทิศทางหลัก (ยืนยัน 3 แท่ง) ===
+        # === ขั้นตอนที่ 5: วิเคราะห์ HTF (H4) — ทิศทางหลัก (5-bar window, 3/5 threshold) ===
         htf_values = self._indicators.get_latest_values(htf_df)
-        if htf_values and len(htf_df) >= 3:
-            recent_trends = htf_df["trend"].iloc[-3:].tolist()
+        if htf_values and len(htf_df) >= 5:
+            recent_trends = htf_df["trend"].iloc[-5:].tolist()
             bullish_count = sum(1 for t in recent_trends if t == 1)
             bearish_count = sum(1 for t in recent_trends if t == -1)
-            if bullish_count >= 2:
+            if bullish_count >= 3 and bearish_count < 2:
                 self._htf_bias = 1
-            elif bearish_count >= 2:
+            elif bearish_count >= 3 and bullish_count < 2:
                 self._htf_bias = -1
             else:
                 self._htf_bias = 0
@@ -407,6 +420,36 @@ class SMCStrategy:
         score = 0.0
         reasons = []
 
+        # === MANDATORY PRE-FILTERS (2026-04-18) ===
+        # Data-driven: WR ของ BUY = 26.3% vs SELL = 34.5% — BUY เป็น bias หลักของขาดทุน
+        # Filter เข้มเพื่อเอาเฉพาะ setup ที่ backtest พิสูจน์ว่า +EV
+        symbol_info = self._connector.get_symbol_info(symbol)
+        pip_size = 0.0001 if symbol_info and symbol_info["digits"] >= 4 else 0.01
+        atr_pips = atr_value / pip_size if pip_size > 0 else 0
+
+        # A. Volatility floor — gold-aware (Gold ticks × 100 vs Forex pips)
+        # Forex: 8 pips = meaningful / Gold: 8 ticks = $0.08 noise → raise to 100 ticks ($1)
+        is_metal = "XAU" in symbol.upper() or "XAG" in symbol.upper()
+        min_atr_pips = 100.0 if is_metal else 8.0
+        if atr_pips < min_atr_pips:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [f"❌ [REJECT] ATR {atr_pips:.1f} pips < {min_atr_pips:.0f} (volatility ต่ำ)"]
+            return no_signal
+
+        # B. RSI must be in pullback zone for BUY: RSI >= 60 → WR ตก (23%)
+        #    ที่ดี: RSI < 30 (WR 37.7%, EV +0.16R), RSI 30-50 (WR 28%)
+        if rsi_value >= 60:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [f"❌ [REJECT] RSI {rsi_value:.1f} >= 60 (BUY ห้ามใกล้ overbought)"]
+            return no_signal
+
+        # C. Trend alignment: ต้องมี HTF หรือ MTF ฝั่ง bullish อย่างน้อย 1
+        #    counter-trend BUY (HTF+MTF bearish ทั้งคู่) = losing setup
+        if self._htf_bias == -1 and mtf_bias == -1:
+            no_signal.confluence_score = 0
+            no_signal.reasons = ["❌ [REJECT] HTF+MTF bearish ทั้งคู่ — ห้าม BUY counter-trend"]
+            return no_signal
+
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == 1:
             score += 25
@@ -415,14 +458,14 @@ class SMCStrategy:
             score += 10  # Neutral ได้บางส่วน
             reasons.append("⚠️ HTF (H4) Neutral")
         else:
-            reasons.append("❌ HTF (H4) ขาลง — ขัดกับ BUY")
-            # ไม่ return ทันที เพราะ CHoCH อาจเป็นสัญญาณกลับตัว
+            score -= 15
+            reasons.append("❌ HTF (H4) ขาลง — ขัดกับ BUY (-15)")
 
         # === ปัจจัยที่ 2: MTF Market Bias (20 คะแนน) ===
         if mtf_bias == 1:
             score += 20
             reasons.append("✅ MTF (H1) Bullish Bias")
-            
+
             # เช็คว่ามี BOS ล่าสุดหรือไม่
             latest_event = self._structure_mtf.get_latest_event()
             if latest_event and latest_event.event_type == StructureType.BOS_BULLISH:
@@ -433,9 +476,6 @@ class SMCStrategy:
             reasons.append("⚠️ MTF (H1) Neutral")
 
         # === ปัจจัยที่ 3: Order Block (25 คะแนน) ===
-        # ดึง Pip Size จาก Symbol Info
-        symbol_info = self._connector.get_symbol_info(symbol)
-        pip_size = 0.0001 if symbol_info and symbol_info["digits"] >= 4 else 0.01
         
         bullish_ob = self._ob_detector.is_price_at_bullish_ob(
             current_price, tolerance_pips=5, pip_size=pip_size
@@ -472,11 +512,17 @@ class SMCStrategy:
             reasons.append(f"✅ Bullish Liquidity Sweep (score={bullish_sweep.strength_score:.0f})")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
-        if rsi_value < bot_config.indicators.rsi_overbought:  # < 70
-            score += 10
-            reasons.append(f"✅ RSI={rsi_value:.1f} (ไม่ Overbought)")
-        else:
-            reasons.append(f"❌ RSI={rsi_value:.1f} (Overbought — อันตราย)")
+        # Data-driven (2026-04-18): RSI < 30 WR=37.7%, 30-50 WR=28.3%, 50-60 WR=23%
+        # ให้ bonus สูงสุดที่ oversold zone (pullback ที่แท้จริง)
+        if rsi_value < 30:
+            score += 15
+            reasons.append(f"✅ RSI={rsi_value:.1f} (Oversold — pullback ที่ดี +15)")
+        elif rsi_value < 50:
+            score += 8
+            reasons.append(f"✅ RSI={rsi_value:.1f} (Below mid +8)")
+        else:  # 50-60
+            score += 2
+            reasons.append(f"⚠️ RSI={rsi_value:.1f} (Above mid — เตือน)")
 
         # === ปัจจัยที่ 5: Volatility (10 คะแนน) ===
         if volatility_ok:
@@ -493,11 +539,32 @@ class SMCStrategy:
             score += 3
             reasons.append("⚠️ LTF (M15) Ranging")
 
+        # === ปัจจัยที่ 7: Bollinger Band %B (2026-04-18) ===
+        # Data: BUY + BB<0.2 WR=37%, BB>0.6 WR=27%, BB>0.8 WR=24%
+        # BB %B ต่ำ → ราคาอยู่ล่าง = pullback ที่ดีสำหรับ BUY
+        bb_pctb = float(ltf_df['bb_pctb'].iloc[-1]) if 'bb_pctb' in ltf_df.columns else 0.5
+        if bb_pctb > 0.7:
+            # BUY ใน overbought zone = กับดัก → REJECT
+            no_signal.confluence_score = score
+            no_signal.reasons = reasons + [f"❌ [REJECT] BB %B={bb_pctb:.2f} > 0.7 (BUY ห้ามที่ upper band)"]
+            return no_signal
+        if bb_pctb < 0.2:
+            score += 12
+            reasons.append(f"✅ BB %B={bb_pctb:.2f} (ต่ำมาก — pullback แรง +12)")
+        elif bb_pctb < 0.4:
+            score += 7
+            reasons.append(f"✅ BB %B={bb_pctb:.2f} (Lower half +7)")
+        else:  # 0.4 - 0.7
+            reasons.append(f"⚠️ BB %B={bb_pctb:.2f} (กลาง/บน)")
+
         # === Session Weighting — ปรับคะแนนตามช่วงเวลา ===
         session_mult = self._get_session_multiplier()
         if session_mult != 1.0:
             score *= session_mult
             reasons.append(f"📊 Session multiplier: ×{session_mult:.2f}")
+
+        # === Cap score ที่ 100 ===
+        score = min(score, 100.0)
 
         # === ตรวจสอบว่าผ่านเกณฑ์หรือไม่ ===
         if score < self.MIN_CONFLUENCE_SCORE:
@@ -507,16 +574,16 @@ class SMCStrategy:
 
         # === คำนวณ Entry, SL, TP ===
         entry_price = price_info["ask"]  # BUY ที่ราคา Ask
-        
+
         # SL: ใช้ ATR × Multiplier หรือ ใต้ Order Block
         sl_distance = atr_value * bot_config.indicators.atr_sl_multiplier
-        
+
         # ถ้ามี OB → วาง SL ใต้ OB (ถ้าระยะไม่ไกลเกินไป)
         if bullish_ob:
             ob_sl_distance = entry_price - bullish_ob.low + (2 * pip_size)  # ใต้ OB + 2 pips
-            if 0 < ob_sl_distance < sl_distance * 2:  # ไม่ไกลเกิน 2 เท่าของ ATR SL
+            if 0 < ob_sl_distance < sl_distance * 1.5:  # ไม่ไกลเกิน 1.5 เท่าของ ATR SL
                 sl_distance = ob_sl_distance
-        
+
         sl_price = entry_price - sl_distance
         
         # TP: ใช้ RR ที่ต้องการ
@@ -552,6 +619,14 @@ class SMCStrategy:
             ob_score=bullish_ob.strength_score if bullish_ob else 0,
             market_bias=mtf_bias,
             trend=ltf_trend,
+            rsi_value=rsi_value,
+            trend_strength=float(ltf_df['trend_strength'].iloc[-1]) if 'trend_strength' in ltf_df.columns else 0.0,
+            macd_histogram=float(ltf_df['macd_histogram'].iloc[-1]) if 'macd_histogram' in ltf_df.columns else 0.0,
+            adx=float(ltf_df['adx'].iloc[-1]) if 'adx' in ltf_df.columns else 0.0,
+            stoch_k=float(ltf_df['stoch_k'].iloc[-1]) if 'stoch_k' in ltf_df.columns else 50.0,
+            bb_pctb=float(ltf_df['bb_pctb'].iloc[-1]) if 'bb_pctb' in ltf_df.columns else 0.5,
+            atr_change_ratio=float(ltf_df['atr_change_ratio'].iloc[-1]) if 'atr_change_ratio' in ltf_df.columns else 0.0,
+            price_roc=float(ltf_df['price_roc'].iloc[-1]) if 'price_roc' in ltf_df.columns else 0.0,
         )
 
         if bot_config.debug_mode:
@@ -603,6 +678,33 @@ class SMCStrategy:
         score = 0.0
         reasons = []
 
+        # === MANDATORY PRE-FILTERS (2026-04-18) — mirror ของ BUY ===
+        # SELL คือ setup หลักที่ profitable: SELL+RSI>50+align>0+adx>=25 = EV +0.27R
+        symbol_info = self._connector.get_symbol_info(symbol)
+        pip_size = 0.0001 if symbol_info and symbol_info["digits"] >= 4 else 0.01
+        atr_pips = atr_value / pip_size if pip_size > 0 else 0
+
+        # A. Volatility floor — gold-aware
+        is_metal = "XAU" in symbol.upper() or "XAG" in symbol.upper()
+        min_atr_pips = 100.0 if is_metal else 8.0
+        if atr_pips < min_atr_pips:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [f"❌ [REJECT] ATR {atr_pips:.1f} pips < {min_atr_pips:.0f} (volatility ต่ำ)"]
+            return no_signal
+
+        # B. RSI must be in pullback zone for SELL: RSI <= 40 → WR 27%, EV -0.1R
+        #    ที่ดี: RSI 50-70 (WR 37%, EV +0.05R)
+        if rsi_value <= 40:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [f"❌ [REJECT] RSI {rsi_value:.1f} <= 40 (SELL ห้ามใกล้ oversold)"]
+            return no_signal
+
+        # C. Trend alignment: ห้าม SELL ใน bull market เต็ม (HTF+MTF bullish)
+        if self._htf_bias == 1 and mtf_bias == 1:
+            no_signal.confluence_score = 0
+            no_signal.reasons = ["❌ [REJECT] HTF+MTF bullish ทั้งคู่ — ห้าม SELL counter-trend"]
+            return no_signal
+
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == -1:
             score += 25
@@ -611,13 +713,14 @@ class SMCStrategy:
             score += 10
             reasons.append("⚠️ HTF (H4) Neutral")
         else:
-            reasons.append("❌ HTF (H4) ขาขึ้น — ขัดกับ SELL")
+            score -= 15
+            reasons.append("❌ HTF (H4) ขาขึ้น — ขัดกับ SELL (-15)")
 
         # === ปัจจัยที่ 2: MTF Market Bias (20 คะแนน) ===
         if mtf_bias == -1:
             score += 20
             reasons.append("✅ MTF (H1) Bearish Bias")
-            
+
             latest_event = self._structure_mtf.get_latest_event()
             if latest_event and latest_event.event_type == StructureType.BOS_BEARISH:
                 score += 5
@@ -627,8 +730,6 @@ class SMCStrategy:
             reasons.append("⚠️ MTF (H1) Neutral")
 
         # === ปัจจัยที่ 3: Order Block (25 คะแนน) ===
-        symbol_info = self._connector.get_symbol_info(symbol)
-        pip_size = 0.0001 if symbol_info and symbol_info["digits"] >= 4 else 0.01
         
         bearish_ob = self._ob_detector.is_price_at_bearish_ob(
             current_price, tolerance_pips=5, pip_size=pip_size
@@ -665,11 +766,17 @@ class SMCStrategy:
             reasons.append(f"✅ Bearish Liquidity Sweep (score={bearish_sweep.strength_score:.0f})")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
-        if rsi_value > bot_config.indicators.rsi_oversold:  # > 30
-            score += 10
-            reasons.append(f"✅ RSI={rsi_value:.1f} (ไม่ Oversold)")
-        else:
-            reasons.append(f"❌ RSI={rsi_value:.1f} (Oversold — อันตราย)")
+        # Data-driven (2026-04-18): SELL RSI 50-70 WR=37.3%, 30-50 WR=32.7%, >70 WR=25%
+        # ให้ bonus สูงสุดที่ overbought zone (pullback sell)
+        if rsi_value > 70:
+            score += 15
+            reasons.append(f"✅ RSI={rsi_value:.1f} (Overbought — pullback ที่ดี +15)")
+        elif rsi_value > 50:
+            score += 8
+            reasons.append(f"✅ RSI={rsi_value:.1f} (Above mid +8)")
+        else:  # 40-50
+            score += 2
+            reasons.append(f"⚠️ RSI={rsi_value:.1f} (Below mid — เตือน)")
 
         # === ปัจจัยที่ 5: Volatility (10 คะแนน) ===
         if volatility_ok:
@@ -686,11 +793,31 @@ class SMCStrategy:
             score += 3
             reasons.append("⚠️ LTF (M15) Ranging")
 
+        # === ปัจจัยที่ 7: Bollinger Band %B (2026-04-18) — mirror ของ BUY ===
+        # SELL: อยู่ที่ upper band (%B > 0.6) = pullback ดี
+        bb_pctb = float(ltf_df['bb_pctb'].iloc[-1]) if 'bb_pctb' in ltf_df.columns else 0.5
+        if bb_pctb < 0.3:
+            # SELL ใน oversold zone = กับดัก → REJECT
+            no_signal.confluence_score = score
+            no_signal.reasons = reasons + [f"❌ [REJECT] BB %B={bb_pctb:.2f} < 0.3 (SELL ห้ามที่ lower band)"]
+            return no_signal
+        if bb_pctb > 0.8:
+            score += 12
+            reasons.append(f"✅ BB %B={bb_pctb:.2f} (สูงมาก — pullback แรง +12)")
+        elif bb_pctb > 0.6:
+            score += 7
+            reasons.append(f"✅ BB %B={bb_pctb:.2f} (Upper half +7)")
+        else:  # 0.3 - 0.6
+            reasons.append(f"⚠️ BB %B={bb_pctb:.2f} (กลาง/ล่าง)")
+
         # === Session Weighting — ปรับคะแนนตามช่วงเวลา ===
         session_mult = self._get_session_multiplier()
         if session_mult != 1.0:
             score *= session_mult
             reasons.append(f"📊 Session multiplier: ×{session_mult:.2f}")
+
+        # === Cap score ที่ 100 ===
+        score = min(score, 100.0)
 
         # === ตรวจสอบเกณฑ์ ===
         if score < self.MIN_CONFLUENCE_SCORE:
@@ -700,12 +827,12 @@ class SMCStrategy:
 
         # === คำนวณ Entry, SL, TP ===
         entry_price = price_info["bid"]  # SELL ที่ราคา Bid
-        
+
         sl_distance = atr_value * bot_config.indicators.atr_sl_multiplier
-        
+
         if bearish_ob:
             ob_sl_distance = bearish_ob.high - entry_price + (2 * pip_size)
-            if 0 < ob_sl_distance < sl_distance * 2:
+            if 0 < ob_sl_distance < sl_distance * 1.5:
                 sl_distance = ob_sl_distance
         
         sl_price = entry_price + sl_distance
@@ -739,6 +866,14 @@ class SMCStrategy:
             ob_score=bearish_ob.strength_score if bearish_ob else 0,
             market_bias=mtf_bias,
             trend=ltf_trend,
+            rsi_value=rsi_value,
+            trend_strength=float(ltf_df['trend_strength'].iloc[-1]) if 'trend_strength' in ltf_df.columns else 0.0,
+            macd_histogram=float(ltf_df['macd_histogram'].iloc[-1]) if 'macd_histogram' in ltf_df.columns else 0.0,
+            adx=float(ltf_df['adx'].iloc[-1]) if 'adx' in ltf_df.columns else 0.0,
+            stoch_k=float(ltf_df['stoch_k'].iloc[-1]) if 'stoch_k' in ltf_df.columns else 50.0,
+            bb_pctb=float(ltf_df['bb_pctb'].iloc[-1]) if 'bb_pctb' in ltf_df.columns else 0.5,
+            atr_change_ratio=float(ltf_df['atr_change_ratio'].iloc[-1]) if 'atr_change_ratio' in ltf_df.columns else 0.0,
+            price_roc=float(ltf_df['price_roc'].iloc[-1]) if 'price_roc' in ltf_df.columns else 0.0,
         )
 
         if bot_config.debug_mode:
@@ -788,33 +923,39 @@ class SMCStrategy:
         - Asian Session
         - วันศุกร์หลัง 15:00 UTC
         - วันเสาร์-อาทิตย์
-        
+
+        ⚠️ CRITICAL Timezone Contract:
+            MT5 Server Time (FTMO) = EET (UTC+2 หรือ UTC+3 ตาม DST)
+            bot_config.sessions.*_start/*_end/friday_cutoff ต้องเก็บเป็น **UTC** เสมอ
+            — ถ้า config เก็บเป็น EET ค่านี้จะผิดทั้ง session window และ Friday cutoff
+            ตรวจเช็คไฟล์ config/settings.py ว่ารับค่าเป็น UTC จริง
+
         Returns:
             bool: True ถ้าอยู่ในช่วงเทรด
         """
-        now = TimeManager.get_server_time()  # ใช้เวลาจริงของโบรกเกอร์ (EET) แบบเรียลไทม์
-        
-        # แปลงเวลาให้เป็น UTC ก่อนนำไปเทียบกับ Config
+        now = TimeManager.get_server_time()  # ดึงเวลา EET จาก MT5 server
+
+        # แปลง EET → UTC เพื่อเทียบกับ session config (UTC)
         now_utc = now.astimezone(pytz.UTC)
         current_time = now_utc.time()
         current_weekday = now_utc.weekday()  # 0=จันทร์, 6=อาทิตย์
-        
+
         session_config = bot_config.sessions
-        
+
         # ตรวจสอบวันเทรด
         if current_weekday not in session_config.trading_days:
             return False
-        
-        # ตรวจวันศุกร์ — หยุดหลัง 15:00 UTC
+
+        # ตรวจวันศุกร์ — หยุดหลัง friday_cutoff (UTC)
         if current_weekday == 4 and current_time >= session_config.friday_cutoff:
             return False
-        
-        # ตรวจช่วง London Session
+
+        # ตรวจช่วง London Session (UTC)
         in_london = session_config.london_start <= current_time <= session_config.london_end
-        
-        # ตรวจช่วง New York Session
+
+        # ตรวจช่วง New York Session (UTC)
         in_newyork = session_config.newyork_start <= current_time <= session_config.newyork_end
-        
+
         return in_london or in_newyork
 
     # =========================================================================

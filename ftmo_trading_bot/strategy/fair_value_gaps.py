@@ -206,7 +206,12 @@ class FVGDetector:
     def is_price_at_bullish_fvg(
         self, price: float, tolerance_pips: float = 5, pip_size: float = 0.0001
     ) -> Optional[FairValueGap]:
-        """ตรวจว่าราคาอยู่ในโซน Bullish FVG หรือไม่"""
+        """
+        ตรวจว่าราคาอยู่ในโซน Bullish FVG หรือไม่
+
+        ⚠️ Precondition: ต้องเรียก analyze(df) ก่อน (detect → fill → score)
+        ถ้าเรียกก่อน analyze() จะคืน None เพราะ _bullish_fvgs ว่าง
+        """
         tolerance = tolerance_pips * pip_size
         best = None
         best_score = 0
@@ -224,7 +229,11 @@ class FVGDetector:
     def is_price_at_bearish_fvg(
         self, price: float, tolerance_pips: float = 5, pip_size: float = 0.0001
     ) -> Optional[FairValueGap]:
-        """ตรวจว่าราคาอยู่ในโซน Bearish FVG หรือไม่"""
+        """
+        ตรวจว่าราคาอยู่ในโซน Bearish FVG หรือไม่
+
+        ⚠️ Precondition: ต้องเรียก analyze(df) ก่อน (detect → fill → score)
+        """
         tolerance = tolerance_pips * pip_size
         best = None
         best_score = 0

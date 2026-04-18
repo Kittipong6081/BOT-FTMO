@@ -152,6 +152,9 @@ class TradeExecutor:
         "JPY_CROSS": {"USDJPY", "EURJPY", "GBPJPY"},
         "EUR_PAIRS": {"EURUSD", "EURJPY"},
         "GBP_PAIRS": {"GBPUSD", "GBPJPY"},
+        # Safe-haven: Gold มักเคลื่อนไหวตรงข้ามกับ USD strength
+        # BUY XAUUSD = USD weak / risk-off sentiment
+        "SAFE_HAVEN": {"XAUUSD"},
     }
 
     # ทิศทางที่ "positive" สำหรับแต่ละ symbol ในกลุ่ม
@@ -169,6 +172,8 @@ class TradeExecutor:
         "JPY_CROSS": {"USDJPY": "BUY", "EURJPY": "BUY", "GBPJPY": "BUY"},
         "EUR_PAIRS": {"EURUSD": "BUY", "EURJPY": "BUY"},
         "GBP_PAIRS": {"GBPUSD": "BUY", "GBPJPY": "BUY"},
+        # SAFE_HAVEN: BUY XAUUSD = risk-off / USD weak (positive safe-haven exposure)
+        "SAFE_HAVEN": {"XAUUSD": "BUY"},
     }
 
     # จำนวน Position ต่อกลุ่ม correlation ที่ยอมรับได้

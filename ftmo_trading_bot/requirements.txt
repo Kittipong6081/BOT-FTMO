@@ -1,32 +1,28 @@
 # === FTMO Trading Bot Dependencies ===
-# === ไลบรารีที่จำเป็นสำหรับระบบเทรดอัตโนมัติ ===
 
-# การเชื่อมต่อ MetaTrader 5
-#MetaTrader5>=5.0.45
+# การเชื่อมต่อ MetaTrader 5 (ต้อง install แยก — ใช้ได้เฉพาะ Windows)
+# pip install MetaTrader5
+# บน macOS/Linux จะใช้ Mock Mode อัตโนมัติ
 
 # การจัดการและวิเคราะห์ข้อมูล
 pandas>=2.0.0
 numpy>=1.24.0
-openpyxl>=3.1.0
 
-# Technical Analysis Indicators
-ta>=0.11.0
-
-# Reinforcement Learning (Phase 5)
+# Reinforcement Learning (Signal Filter Agent)
 gymnasium>=0.29.0
 stable-baselines3>=2.1.0
 torch>=2.0.0
 
-# ตั้งเวลาและจัดการ Schedule
-schedule>=1.2.0
-python-dateutil>=2.8.0
+# Machine Learning (Signal Quality Model — GBM classifier)
+scikit-learn>=1.3.0
 
-# Testing (สำหรับ pytest harness)
-pytest>=7.4.0
-pytest-mock>=3.12.0
+# TensorBoard สำหรับดู training curves
+tensorboard>=2.14.0
 
-# Logging และ Utilities
-colorama>=0.4.6
+# Timezone และ Utilities
 pytz>=2023.3
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# Testing
+pytest>=7.4.0
