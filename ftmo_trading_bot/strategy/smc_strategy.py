@@ -381,6 +381,30 @@ class SMCStrategy:
         return no_signal
 
     # =========================================================================
+    # 🎯 Dynamic RR Helper (ตาม ADX Trend Strength)
+    # =========================================================================
+
+    @staticmethod
+    def _dynamic_rr(adx_value: float) -> float:
+        """
+        คำนวณ Risk:Reward ratio ตามความแรง trend (ADX)
+
+        ต้องตรงกับ strategy_backtester.py:671-676 เพื่อ align sim/live:
+          ADX >= 30: strong trend  → RR 2.5 (let winners run)
+          ADX 20-30: moderate      → RR 2.0 (default)
+          ADX < 20:  ranging       → RR 1.5 (tighter TP, more reliable hits)
+
+        Note: Pool signals ถูกสร้างด้วย logic นี้อยู่แล้ว → agent trained to
+              see varying rr_ratio. Previously strategy output fixed 2.0 →
+              live obs[1] distribution ต่างจาก pool → now matched.
+        """
+        if adx_value >= 30.0:
+            return 2.5
+        elif adx_value >= 20.0:
+            return 2.0
+        return 1.5
+
+    # =========================================================================
     # 📈 BUY Signal Evaluation
     # =========================================================================
 
@@ -585,9 +609,11 @@ class SMCStrategy:
                 sl_distance = ob_sl_distance
 
         sl_price = entry_price - sl_distance
-        
-        # TP: ใช้ RR ที่ต้องการ
-        tp_distance = sl_distance * bot_config.ftmo.PREFERRED_RISK_REWARD_RATIO  # SL × 2
+
+        # TP: Dynamic RR ตาม ADX (align กับ backtester rr distribution)
+        adx_current = float(ltf_df['adx'].iloc[-1]) if 'adx' in ltf_df.columns else 0.0
+        rr_target = self._dynamic_rr(adx_current)
+        tp_distance = sl_distance * rr_target
         tp_price = entry_price + tp_distance
         rr_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
 
@@ -836,7 +862,10 @@ class SMCStrategy:
                 sl_distance = ob_sl_distance
         
         sl_price = entry_price + sl_distance
-        tp_distance = sl_distance * bot_config.ftmo.PREFERRED_RISK_REWARD_RATIO
+        # TP: Dynamic RR ตาม ADX (align กับ backtester rr distribution)
+        adx_current = float(ltf_df['adx'].iloc[-1]) if 'adx' in ltf_df.columns else 0.0
+        rr_target = self._dynamic_rr(adx_current)
+        tp_distance = sl_distance * rr_target
         tp_price = entry_price - tp_distance
         rr_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
 

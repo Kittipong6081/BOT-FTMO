@@ -184,10 +184,19 @@ class SessionConfig:
     no_trade_after_news_minutes: int = 15    # หยุดเทรด 15 นาที หลังข่าว
     
     # === FTMO Friday Rule (บังคับปิดออเดอร์วันศุกร์) ===
-    # กฎ FTMO: ห้ามถือออเดอร์ข้ามสัปดาห์ในสุดสัปดาห์ 
+    # กฎ FTMO: ห้ามถือออเดอร์ข้ามสัปดาห์ในสุดสัปดาห์
     # เราจะปิดบังคับวันศุกร์เวลา 20:45 น. ตามเวลา Server (EET)
     friday_force_close: time = time(20, 45)
-    
+
+    # === Zero-Overnight Policy (FTMO-compliant) ===
+    # ปิดทุก position ก่อนข้ามวัน Mon-Thu (Friday ใช้ friday_force_close)
+    # เหตุผล: ไม่มี swap fee, ไม่มี gap risk, สอดคล้องกับ FTMO swing rule
+    # กำหนด 23:30 EET = 25 นาทีก่อน rollover → มี buffer ปิดทันเวลา
+    # Buffer กับ NY session end: SMC ปิดสัญญาณที่ 19:00 UTC (~21:00-22:00 EET)
+    # → late trade มี 1.5-2.5 ชม. ให้ hit TP/SL ก่อนถูก force close
+    enforce_daily_close: bool = True
+    daily_close_time: time = time(23, 30)   # EET
+
     # === Rollover Protection (เตะตัดขาสเปรดถ่าง) ===
     # บอทจะเข้าสู่โหมดหลับ (Pause) ช่วงรอยต่อวันเพื่อหนี Spread กว้าง
     rollover_start: time = time(23, 55)

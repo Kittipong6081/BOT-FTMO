@@ -596,7 +596,16 @@ class FTMOTradingBot:
                     self._trade_manager.manage_all_positions() # เพื่อให้มั่นใจว่าปิดหมดจริง
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
-                    
+
+                # Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิด position ก่อนข้ามวัน
+                # ต้องรัน manage_all_positions() ก่อน skip เพื่อให้ TradeManager ปิดทัน
+                if TimeManager.is_daily_close_time(current_server_time):
+                    if self._loop_count % 30 == 0:
+                        print(f"🌙 [Bot] Daily Close — ปิด position ประจำวัน ({current_server_time.strftime('%H:%M:%S')} EET)")
+                    self._trade_manager.manage_all_positions()
+                    time_module.sleep(bot_config.main_loop_interval)
+                    continue
+
                 # หากช่วงเวลา 23:55 น. ถึง 01:05 น. (Rollover / Spread Expansion)
                 if TimeManager.is_rollover_period(current_server_time):
                     if self._loop_count % 20 == 0:

@@ -465,6 +465,18 @@ class TradeManager:
                     closed_count += 1
             return closed_count
 
+        # === Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิดทุก Position ก่อนข้ามวัน ===
+        # เหตุผล: หลีกเลี่ยง swap fee + gap risk + align กับ FTMO compliance
+        # Priority หลัง Friday (20:45) แต่ก่อน NY winners-only close (ด้านล่าง)
+        if TimeManager.is_daily_close_time(server_time_now):
+            active_ct = len(self._executor.active_trades)
+            if active_ct > 0:
+                print(f"🌙 [Trade Manager] Daily Overnight Close — ปิด {active_ct} positions ก่อนข้ามวัน (FTMO Zero-Overnight)")
+                for ticket in list(self._executor.active_trades.keys()):
+                    if self._executor.close_trade(ticket, reason="Daily Overnight Close (FTMO)"):
+                        closed_count += 1
+            return closed_count
+
         # === ตรวจวันศุกร์ (แจ้งเตือน) — ปิดทุกเทรดก่อน cutoff (UTC-based) ===
         from datetime import time as dt_time
         friday_warning_utc = dt_time(

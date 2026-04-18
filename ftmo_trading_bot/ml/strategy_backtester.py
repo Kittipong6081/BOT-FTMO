@@ -14,6 +14,7 @@ FTMO Trading Bot — Strategy Backtester (Backtest Engine สำหรับ RL 
 """
 
 import os
+from datetime import time as dt_time
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
@@ -471,11 +472,52 @@ class StrategyBacktester:
             sl_price = entry + sl_dist
             tp_price = entry - tp_dist
 
+        # ─── Daily Close Simulation (FTMO Zero-Overnight) ───────────────
+        # Import config (lazy to avoid circular)
+        from config.settings import bot_config
+        _enforce_daily = getattr(bot_config.sessions, 'enforce_daily_close', False)
+        _daily_close_t = getattr(bot_config.sessions, 'daily_close_time', dt_time(23, 30))
+        _friday_close_t = getattr(bot_config.sessions, 'friday_force_close', dt_time(20, 45))
+
+        def _is_force_close_bar(bar_time) -> bool:
+            """True ถ้า bar timestamp อยู่ใน force-close window"""
+            if not _enforce_daily:
+                return False
+            if not hasattr(bar_time, 'weekday'):
+                return False
+            wd = bar_time.weekday()
+            bt = bar_time.time() if hasattr(bar_time, 'time') else None
+            if bt is None:
+                return False
+            if wd == 4:  # Friday
+                return bt >= _friday_close_t
+            if wd in (0, 1, 2, 3):  # Mon-Thu
+                return bt >= _daily_close_t
+            return False  # Weekend bars (rare in FX data)
+
         for _, row in future_df.iterrows():
             bar_high = row['high']
             bar_low = row['low']
             bar_open = row['open']
             bar_close = row['close']
+            bar_time = row.get('time', None) if hasattr(row, 'get') else None
+            if bar_time is None:
+                try:
+                    bar_time = row['time']
+                except (KeyError, IndexError):
+                    bar_time = None
+
+            # ─── Force close check (BEFORE TP/SL) ───────────────
+            # ปิด position ที่ bar_open ของแท่ง daily_close → จำลอง EOD execution
+            if bar_time is not None and _is_force_close_bar(bar_time):
+                if is_buy:
+                    pnl_pips = (bar_open - entry) / pip_size
+                else:
+                    pnl_pips = (entry - bar_open) / pip_size
+                pnl_ratio = pnl_pips * pip_size / max(sl_dist, pip_size)
+                # Slippage ~0.2% (execution at known close time, minor friction)
+                slippage = float(rng.uniform(0.998, 1.002))
+                return risk_amount * pnl_ratio * slippage
 
             if is_buy:
                 hit_sl = bar_low <= sl_price

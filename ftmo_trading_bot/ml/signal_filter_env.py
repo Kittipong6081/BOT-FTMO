@@ -152,6 +152,11 @@ class FTMOSignalFilterEnv(gym.Env):
         self.max_daily_dd_pct = 0.0
         self.target_progress_pct = 0.0
         self._last_progress = 0.0
+        # Track if episode ever hit target (สำหรับ sticky "passed" metric)
+        # เมื่อ Phase 1 ไม่ terminate ที่ target, agent อาจ drop below 10% กลับ
+        # → ต้อง track peak เพื่อบอกว่า "เคยผ่าน"
+        self._target_bonus_given = False
+        self._peak_passed = False
 
         self._signals: List[Dict] = []
         self._signal_idx = 0
@@ -375,8 +380,10 @@ class FTMOSignalFilterEnv(gym.Env):
             self._current_day = sig['day']
             self._start_new_day()
 
-        conf = float(sig['confluence_score'])
         outcome = float(sig.get('outcome_pnl_ratio', 0.0))
+        # ML quality score (จาก GBM) — ตัวทำนาย win ที่แม่นกว่า confluence
+        # ใช้เป็น primary signal สำหรับ reward shaping (แทน confluence ที่ uninformative)
+        ml_score = float(sig.get('ml_score', 0.5))
 
         # ═══ 1. TAKE — execute trade with Risk Guard ═══
         if take and self._trades_today < self.MAX_TRADES_PER_DAY:
@@ -428,13 +435,16 @@ class FTMOSignalFilterEnv(gym.Env):
             pnl_norm = pnl / max(risk_amount, 1.0)
             reward = float(np.clip(pnl_norm, -1.0, 3.0))
 
-            # Chart-reading bonus (Phase 1+2): สอนให้ "เชื่อ" confluence สูง
-            if pnl_norm > 0 and conf >= 75:
-                reward += 0.30           # High-conf + win → reinforce
-            elif pnl_norm > 0 and conf >= 65:
-                reward += 0.15
-            elif pnl_norm < -0.3 and conf < 65:
-                reward -= 0.20           # Low-conf + loss → discourage weak takes
+            # ML quality bonus (Option D) — ใช้ ml_score แทน confluence
+            # confluence ไม่มี correlation กับ outcome แต่ ml_score AUC 0.585
+            # → สอนให้ agent "เชื่อ ML" มากกว่า "เชื่อ confluence"
+            # Threshold reference: ml>=0.40 → WR 48% / ml>=0.36 → WR 43% / ml<0.35 → WR ~38%
+            if pnl_norm > 0 and ml_score >= 0.40:
+                reward += 0.35           # High-ml + win → reinforce (เชื่อ ML)
+            elif pnl_norm > 0 and ml_score >= 0.36:
+                reward += 0.15           # Moderate-ml + win → mild reward
+            elif pnl_norm < -0.3 and ml_score < 0.35:
+                reward -= 0.35           # Low-ml + loss → สอนไม่เอา marginal takes
 
             # Activity nudge: reward เล็ก ๆ ทุก TAKE (ทั้ง 2 phase)
             # กัน agent collapse ไปเลือก SKIP ทั้งหมด
@@ -455,15 +465,20 @@ class FTMOSignalFilterEnv(gym.Env):
             # → สอนว่า "SKIP signal แพ้ = ฉลาด, SKIP signal ชนะ = พลาด"
             # Asymmetric: missed opportunity penalty แรงกว่า avoided loss reward
             # เพราะ signal เป็น -EV (WR 30%) → ต้องกดดันให้ agent กล้าเทรด winner
+            # Option D: เพิ่ม ml_score modifier แทน confluence
             if outcome >= 0.5:
                 # Would win big → missed opportunity
                 reward -= 0.70
-                if conf >= 75:
-                    reward -= 0.40   # Extra: skip a high-confluence winner = bad chart reading
+                if ml_score >= 0.40:
+                    reward -= 0.40   # Extra: skip a high-ml winner = พลาด obvious signal
+                elif ml_score < 0.35:
+                    reward += 0.15   # Skip winner แต่ ml ต่ำ = lucky winner, skip ถูกเชิงสถิติ
             elif outcome >= 0.1:
                 reward -= 0.20       # Small missed win
             elif outcome <= -0.5:
-                reward += 0.20       # Would lose → smart skip (ลดลงจาก 0.30)
+                reward += 0.20       # Would lose → smart skip
+                if ml_score < 0.36:
+                    reward += 0.15   # Extra: ML agreed it was risky → skip ยืนยันถูก
             elif outcome <= -0.1:
                 reward += 0.06       # Small avoided loss
             # else outcome ≈ 0 → neutral skip (0.0)
@@ -480,10 +495,19 @@ class FTMOSignalFilterEnv(gym.Env):
             reward += 0.005 * progress_delta
         self._last_progress = self.target_progress_pct
 
+        # Target hit logic — P1 vs P2 ต่างกัน
+        # P1 (Alpha): ไม่ terminate — ให้ agent เรียนต่อเพื่อ maximize profit
+        # P2 (Risk):  terminate ที่ 10% ตาม FTMO rule (challenge จบ)
         terminated = False
         if self.target_progress_pct >= 100.0:
-            terminated = True
-            reward += 2.0
+            # Sticky mark: ครั้งแรกที่ถึง target
+            if not self._target_bonus_given:
+                reward += 2.0
+                self._target_bonus_given = True
+                self._peak_passed = True
+            # เฉพาะ P2 ที่จบ episode — P1 เรียนต่อ
+            if self.enable_risk_penalty:
+                terminated = True
 
         # ═══ 4. Episode end ═══
         self._signal_idx += 1
@@ -538,7 +562,9 @@ class FTMOSignalFilterEnv(gym.Env):
                 'total_trades': stats['total_trades'],
                 'target_progress_pct': self.target_progress_pct,
                 'breached': self.total_dd_pct >= self.TOTAL_DD_LIMIT or self.daily_dd_pct >= self.DAILY_DD_LIMIT,
-                'passed': self.target_progress_pct >= 100.0,
+                # 'passed' = sticky: เคยถึง target ณ จุดใดจุดหนึ่ง (ไม่ใช่แค่ตอนจบ)
+                # P1 ไม่ terminate ที่ target → อาจ drop กลับก่อน ep จบ ต้องใช้ peak
+                'passed': self._peak_passed or self.target_progress_pct >= 100.0,
                 'days_traded': self._current_day + 1,
                 'daily_dd_pct': self.daily_dd_pct,
                 'min_balance': self.min_balance,

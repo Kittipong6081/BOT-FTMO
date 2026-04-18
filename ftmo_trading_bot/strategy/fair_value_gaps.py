@@ -128,18 +128,26 @@ class FVGDetector:
     # =========================================================================
 
     def _check_fill_status(self, df: pd.DataFrame):
-        """ตรวจว่า FVG ถูก fill หรือยัง"""
+        """
+        ตรวจว่า FVG ถูก fill หรือยัง
+
+        SMC theory: FVG is filled เมื่อ candle **body** penetrates gap
+        — wick touches เป็นแค่ liquidity sweep ไม่ใช่ true fill
+        → ใช้ min(open, close) สำหรับ bullish, max(open, close) สำหรับ bearish
+        """
         if df is None or len(df) == 0:
             return
 
-        lows = df["low"].values
-        highs = df["high"].values
+        opens = df["open"].values
+        closes = df["close"].values
 
         for fvg in self._bullish_fvgs:
             if fvg.filled:
                 continue
             for i in range(fvg.index + 2, len(df)):
-                penetration = max(0, fvg.gap_high - lows[i])
+                # Body low = ส่วนที่ "อยู่ต่ำสุดของ body" (ไม่รวม wick ล่าง)
+                body_low = min(opens[i], closes[i])
+                penetration = max(0, fvg.gap_high - body_low)
                 if penetration > 0:
                     fvg.filled_pct = min(100.0, (penetration / fvg.gap_size) * 100)
                     if fvg.filled_pct >= 75.0:
@@ -150,7 +158,9 @@ class FVGDetector:
             if fvg.filled:
                 continue
             for i in range(fvg.index + 2, len(df)):
-                penetration = max(0, highs[i] - fvg.gap_low)
+                # Body high = ส่วนที่ "อยู่สูงสุดของ body" (ไม่รวม wick บน)
+                body_high = max(opens[i], closes[i])
+                penetration = max(0, body_high - fvg.gap_low)
                 if penetration > 0:
                     fvg.filled_pct = min(100.0, (penetration / fvg.gap_size) * 100)
                     if fvg.filled_pct >= 75.0:

@@ -373,11 +373,11 @@ def main():
     parser.add_argument("--pool_workers", type=int, default=8,
                         help="Workers ตอน build signal pool (ครั้งแรกเท่านั้น)")
     parser.add_argument("--outcome_noise", type=float, default=0.02,
-                        help="Gaussian noise std บน outcome (0 = ปิด, 0.02 = 2%% noise, 0.05 = 5%%)")
+                        help="Gaussian noise std on outcome (0=off, 0.02=2pct noise, 0.05=5pct)")
     parser.add_argument("--ml_threshold", type=float, default=0.0,
-                        help="ML pre-filter threshold (0 = ปิด; 0.36 แนะนำ = Option F Hybrid)")
+                        help="ML pre-filter threshold (0=off; 0.33-0.36 recommended Hybrid)")
     parser.add_argument("--risk_per_trade", type=float, default=None,
-                        help="Risk % per trade (default: 0.003 = 0.3%%; 0.005 = 0.5%% balanced)")
+                        help="Risk per trade as fraction (default 0.003=0.3pct; 0.005=0.5pct balanced)")
     args = parser.parse_args()
 
     if args.data_dir is None:

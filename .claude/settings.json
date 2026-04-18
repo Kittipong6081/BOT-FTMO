@@ -65,7 +65,10 @@
       "Read(//Users/kittipong.n/Desktop/BOT/**)",
       "Read(//Users/kittipong.n/Library/Python/**)",
       "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -c ' *)",
-      "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.36)"
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.36)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 ftmo_trading_bot/scripts/train_signal_filter.py --help)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.005)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.006)"
     ]
   }
 }
