@@ -40,9 +40,6 @@ class MT5Config:
     # Timeout สำหรับการเชื่อมต่อ (มิลลิวินาที)
     timeout: int = 10000        # รอเชื่อมต่อสูงสุด 10 วินาที
     
-    # โหมดเทรด: True = เทรดจริง, False = เทรดจำลอง (Paper Trading)
-    live_trading: bool = False# ⚠️ เริ่มต้นเป็น False เพื่อความปลอดภัย
-
 
 # =============================================================================
 # 🛡️ กฎ FTMO — ค่าความเสี่ยงที่ห้ามเกิน (HARD LIMITS)
@@ -71,9 +68,11 @@ class FTMOConfig:
     MAX_DRAWDOWN_HARD_STOP_PCT: float = 0.08  # 8%
     
     # === ความเสี่ยงต่อการเทรดแต่ละครั้ง ===
-    MIN_RISK_PER_TRADE_PCT: float = 0.005   # 0.5% ขั้นต่ำ
-    MAX_RISK_PER_TRADE_PCT: float = 0.01    # 1.0% สูงสุด
-    DEFAULT_RISK_PER_TRADE_PCT: float = 0.0075  # 0.75% ค่าเริ่มต้น
+    # ⚠️ ต้องตรงกับ --risk_per_trade ที่ใช้ตอน train (ปัจจุบัน 0.006 = 0.6%)
+    # ถ้าเปลี่ยน train risk ต้องมาแก้ตรงนี้ด้วยเพื่อให้ live match sim
+    MIN_RISK_PER_TRADE_PCT: float = 0.004   # 0.4% ขั้นต่ำ (floor ปลอดภัย)
+    MAX_RISK_PER_TRADE_PCT: float = 0.007   # 0.7% สูงสุด (cap ป้องกัน DD)
+    DEFAULT_RISK_PER_TRADE_PCT: float = 0.006  # 0.6% ค่าเริ่มต้น (ตรงกับ train)
     
     # === อัตราส่วน Risk:Reward ขั้นต่ำ ===
     MIN_RISK_REWARD_RATIO: float = 1.5      # ต้องได้อย่างน้อย 1:1.5

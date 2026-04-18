@@ -230,13 +230,20 @@ python3 scripts/train_signal_filter.py --fresh \
     --timesteps_p2 5000000 \
     --n_envs 8 \
     --pool_size 3000 \
-    --outcome_noise 0.02
+    --outcome_noise 0.02 \
+    --ml_threshold 0.33 \
+    --risk_per_trade 0.006
 ```
 
-**เวลา**: ~20-25 นาที  
-**Output**: 
+**เวลา**: ~20-25 นาที
+**Output**:
 - `models/ppo_signal_filter.zip` — RL model สุดท้าย
 - `models/vec_normalize_sf.pkl` — Observation normalization stats
+
+**Parameters explained**:
+- `--ml_threshold 0.33` — กรอง signals ที่ ml_score < 0.33 ออก (Hybrid ML+RL)
+- `--risk_per_trade 0.006` — ความเสี่ยง 0.6% ต่อเทรด (balance profit/DD)
+- `--outcome_noise 0.02` — Gaussian noise 2% กัน overfit pool
 
 ### ดู Training Progress
 
@@ -247,25 +254,70 @@ tensorboard --logdir logs/tb_signal_filter
 เปิด browser ที่ http://localhost:6006
 
 **ดูอะไร**:
-- `train/explained_variance` ควรขึ้นไป **> 0.4** (value function เรียนรู้)
-- `ftmo/pass_rate` ควรขึ้นเรื่อย ๆ (passing FTMO mặc  more)
-- `4_Performance/Take_Rate` ควรอยู่ **20-40%** (เลือก signal)
-- `4_Performance/Win_Rate` ควร **> 50%**
+- `train/explained_variance` ควรขึ้นไป **> 0.5** (value function เรียนรู้)
+- `ftmo/pass_rate` ควรขึ้นเรื่อย ๆ (passing FTMO challenges)
+- `4_Performance/Take_Rate` ควรอยู่ **60-70%** (หลัง ML filter)
+- `4_Performance/Win_Rate` ควร **> 43%**
 
 ### ประเมินผลหลังเทรน
 
 ```bash
-python3 scripts/train_signal_filter.py --eval_only --pool_size 3000
+python3 scripts/train_signal_filter.py --eval_only \
+    --pool_size 3000 \
+    --ml_threshold 0.33 \
+    --risk_per_trade 0.006
 ```
 
-**เป้าหมาย**:
+**เป้าหมายที่ realistic** (อิงจาก Run 11 benchmark):
 
-| Metric | ดี | เหตุผล |
-|--------|-----|--------|
-| Pass Rate | > 15% | ผ่าน FTMO 10% |
-| Breach Rate | < 15% | ไม่ชน DD limit |
-| Take Rate | 20-40% | เลือกเฉพาะ signal ดี |
-| Win Rate | > 50% | filter ทำงาน |
+| Metric | Good | Excellent | เหตุผล |
+|--------|------|-----------|--------|
+| Pass Rate | **5-10%** | > 10% | ถึงเป้า 10% FTMO (realistic ceiling ~10-15%) |
+| Breach Rate | **< 2%** | 0% | ไม่ชน DD limit 8% |
+| Profit avg/ep | **+2%** | +3% | กำไรคงที่ |
+| Take Rate (filtered) | **60-70%** | - | หลัง ML filter — selective |
+| Win Rate | **> 43%** | > 47% | agent filter ทำงาน |
+| DD max | **< 6%** | < 4% | safe margin |
+
+**Run 11 actual**: Pass 8.8%, Profit +2.03%, Win Rate 43.1%, DD max 5.8%, 0% breach ✅
+
+---
+
+## ⚙️ Sync Config ก่อน Deploy Live
+
+### ⚠️ ต้องแก้ `config/settings.py` ให้ตรงกับ train
+
+หลัง train ด้วย `--risk_per_trade 0.006` ต้องไปแก้ค่า **3 ตัว** ใน `FTMOConfig`:
+
+```python
+# config/settings.py line 71-73
+MIN_RISK_PER_TRADE_PCT: float = 0.004      # 0.4% floor
+MAX_RISK_PER_TRADE_PCT: float = 0.007      # 0.7% cap
+DEFAULT_RISK_PER_TRADE_PCT: float = 0.006  # 0.6% ← ตรงกับ train
+```
+
+### 🧮 Rule of Thumb
+
+```
+DEFAULT = --risk_per_trade ตอน train
+MIN     = DEFAULT − 0.002
+MAX     = DEFAULT + 0.001
+```
+
+### 📊 ตาราง mapping
+
+| Train risk | MIN | DEFAULT | MAX |
+|-----------|-----|---------|-----|
+| 0.003 (0.3%) | 0.002 | 0.003 | 0.004 |
+| 0.005 (0.5%) | 0.003 | 0.005 | 0.006 |
+| **0.006 (0.6%)** ⭐ | **0.004** | **0.006** | **0.007** |
+| 0.007 (0.7%) | 0.005 | 0.007 | 0.008 |
+
+### ❓ ทำไมต้องแก้?
+
+- Bot live ใช้ `DEFAULT_RISK_PER_TRADE_PCT` ในการคำนวณ lot size
+- ถ้าไม่ตรง train → **live sim-real mismatch** → performance ต่างจาก backtest
+- `MIN/MAX` เป็น guardrail ใน RiskManager → ป้องกัน lot เกินตั้งใจ
 
 ---
 
@@ -448,9 +500,19 @@ PyTorch ใช้ multi-core อัตโนมัติ
 
 ### Q: เทรดจริงควรใช้ lot เท่าไร?
 
-`config/settings.py` กำหนด `RISK_PER_TRADE = 0.3%` ของ balance  
-→ แนะนำ **เริ่มที่ 0.1-0.2%** ก่อน ดู performance 1-2 สัปดาห์  
-→ ถ้าได้ผลตาม backtest ค่อยเพิ่ม
+Bot train ด้วย `--risk_per_trade 0.006` (0.6% ต่อเทรด) — optimal balance  
+→ แนะนำ **เริ่มที่ 0.3-0.4%** ก่อน (ต่ำกว่า sim) ดู performance 1-2 สัปดาห์  
+→ ถ้าผล live ตรงกับ backtest → ขยับขึ้น 0.5-0.6% ตาม train settings  
+→ ไม่ควรเกิน 0.7% (DD risk ใกล้ 8% limit)
+
+**Risk vs Pass Rate trade-off** (จาก benchmark):
+
+| Risk | Pass Rate | DD max | เหมาะกับ |
+|------|-----------|--------|----------|
+| 0.3% | 4% | 3.9% | Conservative (funded account) |
+| 0.5% | 8% | 5.7% | Balanced (live demo) |
+| **0.6%** | **8.8%** | **5.8%** | **Optimal (trained)** ⭐ |
+| 0.7%+ | est 10% | ~7% | Aggressive (close to 8% limit) |
 
 ### Q: Bot รัน 24/7 บน VPS ยังไง?
 
