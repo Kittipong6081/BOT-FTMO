@@ -13,6 +13,7 @@
 - [เทรน Model](#-เทรน-model)
 - [เทรดจริง (Live)](#-เทรดจริง-live)
 - [เริ่ม FTMO Challenge ใหม่](#-เริ่ม-ftmo-challenge-ใหม่)
+- [FAQ: NTP Time Sync](#q-vps-ต้อง-sync-เวลา-ntp-ยังไง)
 - [เข้าใจองค์ประกอบ](#-เข้าใจองค์ประกอบ)
 - [โครงสร้างโปรเจค](#-โครงสร้างโปรเจค)
 - [FAQ](#-faq)
@@ -630,6 +631,88 @@ goto START
 
 4. ปิด Windows Update automatic + Sleep mode
 5. Remote Desktop ให้กด **Disconnect** (ไม่ใช่ Shut down/Sign out)
+6. **ตั้ง NTP time sync** (ดูหัวข้อถัดไป ⬇️)
+
+### Q: VPS ต้อง sync เวลา (NTP) ยังไง?
+
+**สำคัญมาก**: VPS clock drift → FTMO time checks ผิดเพี้ยน → **เสี่ยง breach rule**
+
+⚠️ VPS clocks ปกติ drift **0.1-2 วินาที/วัน** ถ้าไม่ sync NTP → สะสม **> 1 นาที/เดือน** → Friday force close (20:45 EET) อาจพลาดเวลา
+
+### 🔧 Setup ครั้งเดียว (บน Windows VPS, Run as Administrator)
+
+```cmd
+REM 1. Start Windows Time service + auto-start
+sc config w32time start=auto
+net start w32time
+
+REM 2. ตั้ง NTP servers (ใช้ Google/Cloudflare — Stratum 1, ต่ำ latency)
+w32tm /config /manualpeerlist:"time.google.com,time.cloudflare.com,pool.ntp.org" /syncfromflags:manual /reliable:yes /update
+
+REM 3. Force sync ทันที
+w32tm /resync /force
+
+REM 4. ตรวจสอบ
+w32tm /query /status
+```
+
+**Expected Output** (ที่สำคัญ):
+```
+Last Successful Sync Time: <เวลาใกล้ปัจจุบัน>
+Source: time.google.com,...
+Stratum: 2-3  (ยิ่งต่ำยิ่งดี)
+Root Dispersion: < 1s  (ยิ่งต่ำยิ่งแม่น)
+Poll Interval: 10 (1024s)  ← auto-sync ทุก 17 นาที
+```
+
+### ✅ Auto-sync ต่อเนื่อง
+
+หลัง setup:
+- Windows จะ sync อัตโนมัติ **ทุก 17 นาที**
+- ไม่ต้อง run คำสั่งเองทุกวัน
+- หลัง VPS reboot → service start อัตโนมัติ
+
+### 📋 Maintenance (Optional)
+
+**Spot check ทุก 1-2 สัปดาห์**:
+```cmd
+w32tm /query /status
+```
+- Last Sync ต้อง **< 30 นาที** ก่อนหน้า
+- Root Dispersion ต้อง **< 1 วินาที**
+
+**ถ้า dispersion สูง / ไม่ sync > 1 ชม.**:
+```cmd
+w32tm /resync /rediscover /force
+```
+
+### 🛡️ Redundant Safety (แนะนำสำหรับ FTMO)
+
+**Task Scheduler** — sync เพิ่มทุกคืนเที่ยงคืน:
+1. Win+R → `taskschd.msc`
+2. Create Basic Task:
+   - Name: `Daily NTP Sync`
+   - Trigger: **Daily at 00:00**
+   - Action: `cmd.exe /c w32tm /resync /force`
+   - ✅ Run whether user is logged on or not
+   - ✅ Run with highest privileges
+
+### ⚠️ Common Issues
+
+| Problem | Solution |
+|---------|----------|
+| `Service has not been started (0x80070426)` | รัน `net start w32time` as Admin |
+| `The computer did not resync because no time data was available` | Service เพิ่ง start → รอ 30 วิ แล้ว `w32tm /resync` ใหม่ |
+| Stratum 5+ | เปลี่ยน NTP เป็น Google/Cloudflare |
+| Dispersion > 5s | รอ 1-2 ชม. ให้ sync หลายรอบ → ลดลงเอง |
+
+### 💡 ทำไมสำคัญ?
+
+**Scenario**: ถ้า VPS clock ช้ากว่า broker 2 นาที
+- Bot คิดว่า Friday **20:43** (ยังปกติ) แต่จริง **20:45** (ถึงเวลา force close)
+- Bot ไม่ปิด position → เกินเวลา → **อาจ breach FTMO weekend rule** ❌
+
+**หลัง NTP sync**: drift **< 1 วินาที** → ปลอดภัย 100% ✅
 
 ### Q: Performance จริงเทียบกับ backtest?
 
