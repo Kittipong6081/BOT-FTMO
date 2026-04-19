@@ -12,6 +12,7 @@
 - [เตรียมข้อมูล](#-เตรียมข้อมูล)
 - [เทรน Model](#-เทรน-model)
 - [เทรดจริง (Live)](#-เทรดจริง-live)
+- [เริ่ม FTMO Challenge ใหม่](#-เริ่ม-ftmo-challenge-ใหม่)
 - [เข้าใจองค์ประกอบ](#-เข้าใจองค์ประกอบ)
 - [โครงสร้างโปรเจค](#-โครงสร้างโปรเจค)
 - [FAQ](#-faq)
@@ -347,6 +348,82 @@ Bot จะ:
 6. ✅ บันทึก log + Discord notification
 
 **ปิด Bot**: กด `Ctrl+C` (bot จะ save state + ปิด position ถ้าจำเป็น)
+
+---
+
+## 🔄 เริ่ม FTMO Challenge ใหม่
+
+Bot เก็บ state ใน `logs/bot_state.json` (initial_balance, DD anchor, state machine, cooldowns)
+→ **เมื่อเริ่ม Challenge ใหม่ ต้อง reset state** เพื่อ anchor ใหม่ถูกต้อง
+
+### 📋 ขั้นตอนเริ่ม Challenge ใหม่
+
+```bash
+# 1. หยุด bot ก่อน (ถ้ารันอยู่)
+#    กด Ctrl+C บน terminal ที่รัน main.py
+
+# 2. Backup state เก่า (ไม่ลบ — กันลืม)
+cd ftmo_trading_bot
+mv logs/bot_state.json logs/bot_state.json.bak_$(date +%s)
+
+# 3. เปลี่ยน MT5 login เป็น account ใหม่ใน .env (ถ้าเป็น account ใหม่)
+#    MT5_LOGIN=xxxxxxx
+#    MT5_PASSWORD="..."
+#    MT5_SERVER="FTMO-Server"
+
+# 4. Start bot — สร้าง state ใหม่อัตโนมัติ
+python main.py
+```
+
+Bot จะแสดง:
+```
+🆕 [Risk Manager] เริ่ม Challenge ใหม่:
+   🔐 MT5 Login: 12345678
+   📅 Start Date: 2026-04-19
+   💰 Initial Balance: $100,000.00
+```
+
+### 🛡️ Safety Validation (v4)
+
+Bot มี 2 การตรวจสอบอัตโนมัติใน `_load_state()`:
+
+**1. MT5 Login mismatch** (ป้องกันใช้ state ผิด account):
+```
+⚠️ MT5 Login เปลี่ยน (saved=11111, now=22222)
+   → บอทคิดว่าเป็น account ใหม่ — reset state
+```
+
+**2. Balance ห่างจาก initial เกิน 20%** (warn เท่านั้น):
+```
+⚠️ Balance ห่างจาก initial มาก (saved=$100,000 vs MT5=$50,000, diff=50.0%)
+   → อาจเป็น Challenge ใหม่ / account ใหม่
+   💡 ถ้าต้องการเริ่ม Challenge ใหม่ ให้ลบไฟล์ logs/bot_state.json
+   → ใช้ state เดิมต่อ (keep integrity — ห้าม reset อัตโนมัติ)
+```
+
+**หมายเหตุ**: Bot **ไม่ reset อัตโนมัติ** เวลา balance เพี้ยน — ต้องลบไฟล์เอง (กันเผลอ reset ช่วง DD)
+
+### ❌ อะไรที่ **ไม่** ควรทำ
+
+- ❌ **ลบ bot_state.json ระหว่าง challenge** — DD anchor จะชนพัง FTMO anchor ผิด
+- ❌ **แก้ `initial_balance` ด้วยมือ** — ทำให้ DD/Profit calc ผิด
+- ❌ **เปลี่ยน MT5 account โดยไม่ reset** — จะ warn แต่ใช้ state เก่า
+
+### 📂 State Fields Reference
+
+| Field | Purpose |
+|-------|---------|
+| `initial_balance` | FTMO anchor — Balance ตอนเริ่ม challenge |
+| `state` | ACTIVE / DAILY_HALT / MAX_DRAWDOWN_HALT / MANUAL_HALT |
+| `highest_balance` | High water mark (max balance เคยถึง) |
+| `current_day` | วันปัจจุบัน (broker time) |
+| `daily_closed_pnl` | P/L วันนี้ (reset ทุกวันใหม่) |
+| `consecutive_losses` | นับแพ้ติด (cooldown trigger) |
+| `halt_until` | Timestamp คืน trade ถ้าโดน cooldown |
+| `daily_pnl_history` | P/L รายวัน (ใช้ FTMO Consistency Rule) |
+| `mt5_login` ⭐ v4 | Login number (validation) |
+| `challenge_start_date` ⭐ v4 | วันเริ่ม challenge |
+| `schema_version` ⭐ v4 | เลข version (ตอนนี้ 4) |
 
 ---
 

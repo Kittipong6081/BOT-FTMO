@@ -91,6 +91,10 @@ class RiskManager:
         # ใช้ตรวจสอบว่า max_day_profit / total_profit ≤ 45%
         self._daily_pnl_history: Dict[str, float] = {}
 
+        # === Challenge Identity (v4) — กัน state หลุดระหว่าง account ===
+        self._mt5_login: Optional[int] = None
+        self._challenge_start_date: Optional[str] = None
+
         # === เส้นทางไฟล์สถานะ ===
         self._state_file = bot_config.paths.state_file
         
@@ -125,7 +129,30 @@ class RiskManager:
         
         # พยายามโหลดสถานะเก่า
         loaded = self._load_state()
-        
+
+        # === Validation (v4): ตรวจสอบความถูกต้องของ state ก่อนใช้ ===
+        if loaded:
+            current_login = account.get("login")
+
+            # 1) MT5 login mismatch → account ต่าง → ต้อง re-init
+            if self._mt5_login is not None and current_login is not None \
+                    and self._mt5_login != current_login:
+                print(f"⚠️ [Risk Manager] MT5 Login เปลี่ยน "
+                      f"(saved={self._mt5_login}, now={current_login})")
+                print("   → บอทคิดว่าเป็น account ใหม่ — reset state")
+                loaded = False
+
+            # 2) Balance ห่างจาก saved initial มาก (>20%) → สงสัย account ใหม่ / balance reset
+            elif self._initial_balance > 0:
+                diff_pct = abs(current_balance - self._initial_balance) / self._initial_balance
+                if diff_pct > 0.20:
+                    print(f"⚠️ [Risk Manager] Balance ห่างจาก initial มาก "
+                          f"(saved=${self._initial_balance:,.2f} vs MT5=${current_balance:,.2f}, "
+                          f"diff={diff_pct*100:.1f}%)")
+                    print("   → อาจเป็น Challenge ใหม่ / account ใหม่")
+                    print("   💡 ถ้าต้องการเริ่ม Challenge ใหม่ ให้ลบไฟล์ logs/bot_state.json")
+                    print("   → ใช้ state เดิมต่อ (keep integrity — ห้าม reset อัตโนมัติ)")
+
         if loaded:
             # ตรวจสอบว่าวันเปลี่ยนหรือยัง (ใช้เวลาโบรกเกอร์ ไม่ใช่เวลาท้องถิ่น)
             broker_today = TimeManager.get_server_time().date()
@@ -133,12 +160,15 @@ class RiskManager:
                 self._on_new_day(current_balance, current_equity)
             else:
                 print(f"📂 [Risk Manager] โหลดสถานะเดิม: สถานะ={self._state.value}")
-                
+                if self._challenge_start_date:
+                    print(f"   📅 Challenge Start: {self._challenge_start_date}")
+                    print(f"   💰 Initial Balance: ${self._initial_balance:,.2f}")
+
                 # ถ้าสถานะเป็น MAX_DRAWDOWN_HALT ต้องหยุดต่อ
                 if self._state == BotState.MAX_DRAWDOWN_HALT:
                     print("🚫 [Risk Manager] ⚠️ Max Drawdown ยังเกินอยู่ — Bot หยุดทำงาน")
                     return True
-                    
+
                 # ถ้าสถานะเป็น DAILY_HALT แต่วันเปลี่ยนแล้ว → รีเซ็ต
                 if self._state == BotState.DAILY_HALT:
                     print("🔒 [Risk Manager] Daily Halt ยังมีผล — รอวันถัดไป")
@@ -152,8 +182,13 @@ class RiskManager:
             self._peak_daily_equity = current_equity
             self._current_day = TimeManager.get_server_time().date()
             self._state = BotState.ACTIVE
-            
-            print(f"🆕 [Risk Manager] เริ่มต้นใหม่:")
+            self._mt5_login = account.get("login")
+            self._challenge_start_date = self._current_day.isoformat()
+
+            print(f"🆕 [Risk Manager] เริ่ม Challenge ใหม่:")
+            print(f"   🔐 MT5 Login: {self._mt5_login}")
+            print(f"   📅 Start Date: {self._challenge_start_date}")
+            print(f"   💰 Initial Balance: ${self._initial_balance:,.2f}")
 
         # แสดงข้อมูลสรุป
         self._print_risk_status(current_balance, current_equity)
@@ -710,6 +745,10 @@ class RiskManager:
             "halt_until": self._halt_until,
             # --- v3: Consistency Rule ---
             "daily_pnl_history": self._daily_pnl_history,
+            # --- v4: Challenge Identity ---
+            "mt5_login": self._mt5_login,
+            "challenge_start_date": self._challenge_start_date,
+            "schema_version": 4,
             "last_updated": datetime.now().isoformat(),
         }
 
@@ -758,12 +797,18 @@ class RiskManager:
             self._halt_until = data.get("halt_until") or None
             # --- v3: Consistency Rule ---
             self._daily_pnl_history = data.get("daily_pnl_history", {}) or {}
-            
+
+            # --- v4: Challenge Identity (fallback สำหรับไฟล์เก่า) ---
+            self._mt5_login = data.get("mt5_login")
+            self._challenge_start_date = data.get("challenge_start_date")
+
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))
             self._current_day = date.fromisoformat(day_str)
-            
-            print(f"📂 [Risk Manager] โหลดสถานะจากไฟล์สำเร็จ (อัพเดทล่าสุด: {data.get('last_updated', 'N/A')})")
+
+            schema_v = data.get("schema_version", 1)
+            print(f"📂 [Risk Manager] โหลดสถานะจากไฟล์สำเร็จ "
+                  f"(schema v{schema_v}, อัพเดทล่าสุด: {data.get('last_updated', 'N/A')})")
             return True
             
         except Exception as e:
