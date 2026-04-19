@@ -67,7 +67,9 @@ class FTMOTradingBot:
         self._risk_manager = RiskManager(self._connector)
         self._position_sizer = PositionSizer(self._connector)
         self._strategy = SMCStrategy(self._connector)
-        self._logger = TradeLogger()
+        # TradeLogger ถูกปิด — ไม่ใช้ ftmo_trades.xlsx แล้ว
+        # Trade history ดึงจาก MT5 history_deals_get() ได้โดยตรง
+        self._logger = None
         self._analyzer = PerformanceAnalyzer(initial_balance=100000.0)
         self._executor = TradeExecutor(
             self._connector, 
@@ -196,17 +198,9 @@ class FTMOTradingBot:
         except Exception as e:
             print(f"⚠️ [Bot] seed analyzer balance ล้มเหลว: {e}")
 
-        # ขั้นตอนที่ 3.6: โหลดประวัติเทรดที่ปิดแล้วเข้า Performance Analyzer
-        #  → เพื่อคง equity curve, DD history, Sharpe/Sortino ระหว่าง restart
-        try:
-            trade_log_path = os.path.join(
-                os.getcwd(), "logs", bot_config.paths.trade_log_file
-            )
-            loaded = self._analyzer.load_from_excel(trade_log_path)
-            if loaded > 0:
-                print(f"📥 [Bot] โหลด {loaded} เทรดจากประวัติเดิมเข้า Analyzer")
-        except Exception as e:
-            print(f"⚠️ [Bot] โหลดประวัติเทรดล้มเหลว (ไม่หยุดการทำงาน): {e}")
+        # ขั้นตอนที่ 3.6: [DISABLED] ไม่ใช้ ftmo_trades.xlsx แล้ว
+        #  → Analyzer เริ่มต้น fresh ทุก session (stats เฉพาะ run ปัจจุบัน)
+        #  → ถ้าต้องการประวัติเทรด → ดูผ่าน MT5 terminal หรือ dashboard (dell MT5 API)
 
         # ขั้นตอนที่ 4: เตรียมกลยุทธ์ SMC
         print("\n" + "━" * 40)

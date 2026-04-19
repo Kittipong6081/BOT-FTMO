@@ -521,8 +521,8 @@ ftmo_trading_bot/
 ├── core/                            # 🛡️ Risk management
 │   └── risk_manager.py              # DD tracking, cooldown
 │
-├── analytics/                       # 📊 Logging
-│   ├── trade_logger.py              # Excel log
+├── analytics/                       # 📊 Analytics
+│   ├── trade_logger.py              # (disabled — ไม่ใช้แล้ว ดึงจาก MT5 แทน)
 │   └── performance.py               # Win rate, Sharpe, etc.
 │
 ├── models/                          # 🧠 Trained AI
@@ -537,7 +537,8 @@ ftmo_trading_bot/
 │
 └── logs/                            # 📝 Logs
     ├── tb_signal_filter/            # TensorBoard
-    └── ftmo_trades.xlsx             # Trade history
+    ├── bot_state.json               # Bot state (FTMO anchor + DD + cooldowns)
+    └── (ftmo_trades.xlsx ไม่ใช้แล้ว — trade history ดึงจาก MT5 API ตรง)
 ```
 
 ---
