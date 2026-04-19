@@ -297,6 +297,15 @@ def evaluate(model, n_episodes: int = 100, vec_normalize_path: str = None,
     profits = []
     win_rates = []
     dds = []
+    daily_dds_max = []
+
+    passed_days = []
+    passed_trades = []
+    survive_profits = []
+    survive_days = []
+    survive_trades = []
+    all_days = []
+    all_trades = []
 
     for _ in range(n_episodes):
         obs = env.reset()
@@ -314,21 +323,31 @@ def evaluate(model, n_episodes: int = 100, vec_normalize_path: str = None,
         rewards.append(ep_reward)
         ep_lengths.append(steps)
 
-        # อ่านจาก episode_summary (มี ณ ตอน done) — ไม่อ่านจาก inner_env
-        # เพราะ DummyVecEnv auto-reset ก่อนเราเข้าถึง inner state
         summary = last_info.get('episode_summary', {})
         take_rates.append(summary.get('take_rate', 0.0))
         balances.append(summary.get('balance', 100_000))
         profits.append(summary.get('profit', 0.0))
         win_rates.append(summary.get('win_rate', 0.0))
         dds.append(summary.get('total_dd_pct', 0.0))
+        daily_dds_max.append(summary.get('max_daily_dd_pct', 0.0))
+
+        days_traded = summary.get('days_traded', 0)
+        total_trades = summary.get('total_trades', 0)
+        ep_profit = summary.get('profit', 0.0)
+        all_days.append(days_traded)
+        all_trades.append(total_trades)
 
         if summary.get('breached', False):
             breaches += 1
         elif summary.get('passed', False):
             passes += 1
+            passed_days.append(days_traded)
+            passed_trades.append(total_trades)
         else:
             survive += 1
+            survive_profits.append(ep_profit)
+            survive_days.append(days_traded)
+            survive_trades.append(total_trades)
 
     print(f"\n{'='*65}")
     print(f" Eval Result ({n_episodes} episodes)")
@@ -342,11 +361,50 @@ def evaluate(model, n_episodes: int = 100, vec_normalize_path: str = None,
     print(f"   Profit (avg):       ${np.mean(profits):>+12,.2f}  ({np.mean(profits)/1000:.2f}%)")
     print(f"   Profit (min/max):   ${np.min(profits):>+12,.2f} / ${np.max(profits):>+12,.2f}")
     print(f"{'='*65}")
-    print(f"   DD (avg):           {np.mean(dds):>8.2%}   (max {np.max(dds):>8.2%})")
+    dds_arr = np.array(dds)
+    dd_daily_arr = np.array(daily_dds_max)
+    print(f"   Total DD:  avg {np.mean(dds_arr):>6.2%}  | p95 {np.percentile(dds_arr, 95):>6.2%}  | "
+          f"p99 {np.percentile(dds_arr, 99):>6.2%}  | max {np.max(dds_arr):>6.2%}")
+    print(f"   Daily DD:  avg {np.mean(dd_daily_arr):>6.2%}  | p95 {np.percentile(dd_daily_arr, 95):>6.2%}  | "
+          f"p99 {np.percentile(dd_daily_arr, 99):>6.2%}  | max {np.max(dd_daily_arr):>6.2%}")
+    total_ratio = np.max(dds_arr) / 0.08 * 100
+    daily_ratio = np.max(dd_daily_arr) / 0.04 * 100
+    print(f"   → Total DD max / 8% limit = {total_ratio:.0f}%  |  Daily DD max / 4% limit = {daily_ratio:.0f}%")
     print(f"   Take Rate (avg):    {np.mean(take_rates):>8.1%}")
     print(f"   Win Rate (avg):     {np.mean(win_rates):>8.1%}")
     print(f"   Ep Length (avg):     {np.mean(ep_lengths):>8.1f}")
     print(f"   Reward (avg):        {np.mean(rewards):>8.2f} (std {np.std(rewards):.2f})")
+    print(f"{'='*65}")
+
+    # === Per-category breakdown: days to target / profit at end ===
+    if all_days:
+        avg_days_all = np.mean(all_days)
+        avg_trades_all = np.mean(all_trades)
+        orders_per_day = avg_trades_all / max(avg_days_all, 1e-9)
+        print(f"\n📊 Episode Breakdown:")
+        print(f"   All eps     — avg days: {avg_days_all:>5.1f} | avg orders: {avg_trades_all:>5.1f} | orders/day: {orders_per_day:.2f}")
+
+    if passed_days:
+        print(f"\n🎯 Passed eps (n={len(passed_days)}) — ใช้กี่วันถึง 10%:")
+        print(f"   Days to target: avg {np.mean(passed_days):>5.1f} | median {np.median(passed_days):>5.1f} | "
+              f"min {np.min(passed_days):>3d} | max {np.max(passed_days):>3d}")
+        print(f"   Trades to target: avg {np.mean(passed_trades):>5.1f} | "
+              f"min {np.min(passed_trades):>3d} | max {np.max(passed_trades):>3d}")
+    else:
+        print(f"\n🎯 Passed eps: 0 (ไม่มี ep ไหน hit 10%)")
+
+    if survive_profits:
+        sp = np.array(survive_profits)
+        sp_pct = sp / 1000.0  # 100k balance → pct
+        print(f"\n⏳ Survive eps (n={len(survive_profits)}) — กำไรเมื่อครบ 45 วัน:")
+        print(f"   Profit: avg ${np.mean(sp):>+9,.2f} ({np.mean(sp_pct):+.2f}%) | "
+              f"median ${np.median(sp):>+9,.2f} ({np.median(sp_pct):+.2f}%)")
+        print(f"   Profit: min ${np.min(sp):>+9,.2f} ({np.min(sp_pct):+.2f}%) | "
+              f"max ${np.max(sp):>+9,.2f} ({np.max(sp_pct):+.2f}%)")
+        print(f"   Days used: avg {np.mean(survive_days):>5.1f} | trades: avg {np.mean(survive_trades):>5.1f}")
+        profitable = int((sp > 0).sum())
+        print(f"   Profitable: {profitable}/{len(sp)} ({profitable/len(sp)*100:.1f}%)")
+
     print(f"{'='*65}")
     return passes / n_episodes
 

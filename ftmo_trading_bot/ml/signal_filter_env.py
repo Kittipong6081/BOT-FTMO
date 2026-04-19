@@ -436,9 +436,6 @@ class FTMOSignalFilterEnv(gym.Env):
             reward = float(np.clip(pnl_norm, -1.0, 3.0))
 
             # ML quality bonus (Option D) — ใช้ ml_score แทน confluence
-            # confluence ไม่มี correlation กับ outcome แต่ ml_score AUC 0.585
-            # → สอนให้ agent "เชื่อ ML" มากกว่า "เชื่อ confluence"
-            # Threshold reference: ml>=0.40 → WR 48% / ml>=0.36 → WR 43% / ml<0.35 → WR ~38%
             if pnl_norm > 0 and ml_score >= 0.40:
                 reward += 0.35           # High-ml + win → reinforce (เชื่อ ML)
             elif pnl_norm > 0 and ml_score >= 0.36:
@@ -446,12 +443,19 @@ class FTMOSignalFilterEnv(gym.Env):
             elif pnl_norm < -0.3 and ml_score < 0.35:
                 reward -= 0.35           # Low-ml + loss → สอนไม่เอา marginal takes
 
-            # Activity nudge: reward เล็ก ๆ ทุก TAKE (ทั้ง 2 phase)
-            # กัน agent collapse ไปเลือก SKIP ทั้งหมด
-            reward += 0.04
-
-            if self.enable_risk_penalty:
-                # Phase 2: DD penalties + clamp signal
+            # Option B (P1 only): Quality-first responsibility shaping
+            # ให้ P1 เรียน "เลือก winner" โดยไม่ต้องพึ่ง DD penalty ของ P2
+            # → แทนที่จะ push กิจกรรม ให้ reward เอียงไปทางคุณภาพ
+            if not self.enable_risk_penalty:
+                # P1: กด activity bonus ลง + เพิ่ม quality shaping
+                reward += 0.02           # activity nudge ลดลงจาก 0.04
+                if pnl_norm > 0.3:
+                    reward += 0.20       # clear winner → bonus quality TAKE
+                elif pnl_norm < -0.3:
+                    reward -= 0.20       # clear loser → responsibility penalty
+            else:
+                # P2: เหมือนเดิม — activity nudge เดิม + DD penalty
+                reward += 0.04
                 reward += self._dd_penalty()
                 if was_clamped:
                     reward -= 0.25
@@ -462,26 +466,24 @@ class FTMOSignalFilterEnv(gym.Env):
             reward = 0.0
 
             # Oracle: agent ไม่เห็น outcome ใน obs แต่ reward ใช้ future info ได้ตอน train
-            # → สอนว่า "SKIP signal แพ้ = ฉลาด, SKIP signal ชนะ = พลาด"
-            # Asymmetric: missed opportunity penalty แรงกว่า avoided loss reward
-            # เพราะ signal เป็น -EV (WR 30%) → ต้องกดดันให้ agent กล้าเทรด winner
-            # Option D: เพิ่ม ml_score modifier แทน confluence
+            # Option B: P1 ลด "missed opportunity penalty" เพื่อไม่ push TAKE มั่ว
+            # P2 คงเดิม (เพราะ DD penalty เป็นตัว enforce quality แล้ว)
+            is_p1 = not self.enable_risk_penalty
             if outcome >= 0.5:
                 # Would win big → missed opportunity
-                reward -= 0.70
+                reward -= 0.30 if is_p1 else 0.70
                 if ml_score >= 0.40:
-                    reward -= 0.40   # Extra: skip a high-ml winner = พลาด obvious signal
+                    reward -= 0.25 if is_p1 else 0.40
                 elif ml_score < 0.35:
-                    reward += 0.15   # Skip winner แต่ ml ต่ำ = lucky winner, skip ถูกเชิงสถิติ
+                    reward += 0.15
             elif outcome >= 0.1:
-                reward -= 0.20       # Small missed win
+                reward -= 0.10 if is_p1 else 0.20
             elif outcome <= -0.5:
-                reward += 0.20       # Would lose → smart skip
+                reward += 0.30 if is_p1 else 0.20  # P1 ให้รางวัล smart skip แรงขึ้น
                 if ml_score < 0.36:
-                    reward += 0.15   # Extra: ML agreed it was risky → skip ยืนยันถูก
+                    reward += 0.15
             elif outcome <= -0.1:
-                reward += 0.06       # Small avoided loss
-            # else outcome ≈ 0 → neutral skip (0.0)
+                reward += 0.10 if is_p1 else 0.06
 
             # Passive SKIP cost — สะสมต่อ step
             # 133 signals/ep × 0.015 = -2.0 ถ้า SKIP ทั้งหมด → ดันออกจาก "do nothing" trap

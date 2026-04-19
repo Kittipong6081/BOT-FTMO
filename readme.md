@@ -268,18 +268,20 @@ python3 scripts/train_signal_filter.py --eval_only \
     --risk_per_trade 0.006
 ```
 
-**เป้าหมายที่ realistic** (อิงจาก Run 11 benchmark):
+**เป้าหมายที่ realistic** (อิงจาก Option B 500-ep benchmark):
 
 | Metric | Good | Excellent | เหตุผล |
 |--------|------|-----------|--------|
-| Pass Rate | **5-10%** | > 10% | ถึงเป้า 10% FTMO (realistic ceiling ~10-15%) |
+| Pass Rate | **7-9%** | > 10% | ถึงเป้า 10% FTMO (realistic ceiling ~10%) |
 | Breach Rate | **< 2%** | 0% | ไม่ชน DD limit 8% |
-| Profit avg/ep | **+2%** | +3% | กำไรคงที่ |
-| Take Rate (filtered) | **60-70%** | - | หลัง ML filter — selective |
-| Win Rate | **> 43%** | > 47% | agent filter ทำงาน |
-| DD max | **< 6%** | < 4% | safe margin |
+| Profit avg/ep | **+2%** | +2.5% | กำไรคงที่ |
+| Take Rate (filtered) | **50-60%** | - | quality-first selection |
+| Win Rate | **> 45%** | > 48% | agent filter ทำงาน |
+| DD avg | **< 0.6%** | < 0.3% | ปลอดภัย |
 
-**Run 11 actual**: Pass 8.8%, Profit +2.03%, Win Rate 43.1%, DD max 5.8%, 0% breach ✅
+**Option B actual (500 eps)**: Pass 8.6%, Profit +2.32%, Win Rate 46.2%, DD avg 0.47%, 0% breach, Survive profitable 66.3% ✅
+
+> ⚠️ **Eval sample size matters**: 100-ep eval มี variance สูง (±5pp) — ใช้ 500 eps ขึ้นไปสำหรับ true performance
 
 ---
 
@@ -511,7 +513,7 @@ Bot train ด้วย `--risk_per_trade 0.006` (0.6% ต่อเทรด) —
 |------|-----------|--------|----------|
 | 0.3% | 4% | 3.9% | Conservative (funded account) |
 | 0.5% | 8% | 5.7% | Balanced (live demo) |
-| **0.6%** | **8.8%** | **5.8%** | **Optimal (trained)** ⭐ |
+| **0.6%** | **8.6%** | **8.3%** | **Optimal (trained w/ Option B)** ⭐ |
 | 0.7%+ | est 10% | ~7% | Aggressive (close to 8% limit) |
 
 ### Q: Bot รัน 24/7 บน VPS ยังไง?

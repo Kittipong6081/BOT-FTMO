@@ -68,7 +68,30 @@
       "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.36)",
       "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 ftmo_trading_bot/scripts/train_signal_filter.py --help)",
       "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.005)",
-      "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.006)"
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.006)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('ftmo_trading_bot/scripts/train_signal_filter.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 ftmo_trading_bot/scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.006)",
+      "Read(//Users/kittipong.n/**)",
+      "Bash(python3 -c \"import sys; print\\(sys.executable\\); print\\(sys.path\\)\")",
+      "Read(//opt/homebrew/lib/python3.13/site-packages/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(conda info *)",
+      "Bash(/usr/local/bin/python3.14 -c \"import numpy; print\\('numpy', numpy.__version__\\)\")",
+      "Bash(/usr/local/bin/python3.14 -c \"import stable_baselines3; import gymnasium; import sklearn; print\\('sb3', stable_baselines3.__version__\\)\")",
+      "Bash(/usr/local/bin/python3.14 ftmo_trading_bot/scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.006)",
+      "Bash(awk '/if take and self._trades_today/,/else:/ {print NR\": \"$0}' ftmo_trading_bot/ml/signal_filter_env.py)",
+      "Bash(/usr/local/bin/python3.14 -c \"import ast; ast.parse\\(open\\('ftmo_trading_bot/ml/signal_filter_env.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(/usr/local/bin/python3.14 ftmo_trading_bot/scripts/train_signal_filter.py --eval_only --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.006 --eval_episodes 500)",
+      "Bash(/usr/local/bin/python3.14 -c ' *)",
+      "Bash(/usr/local/bin/python3.14 -c *)",
+      "Bash(unzip -l ftmo_trading_bot/logs/ftmo_trades.xlsx)",
+      "Bash(unzip -q /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/ftmo_trades.xlsx)",
+      "Bash(unzip -q /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/ftmo_trades.xlsx \"xl/worksheets/sheet2.xml\" -d /tmp)"
+    ],
+    "additionalDirectories": [
+      "/tmp",
+      "/private/tmp/xl"
     ]
   }
 }
