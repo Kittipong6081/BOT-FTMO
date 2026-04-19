@@ -22,11 +22,13 @@
 ## 🎯 โปรเจคนี้ทำอะไร
 
 **FTMO Challenge** คืออะไร?
+
 - สำนักลงทุนให้ทุน $100,000 ถ้าคุณพิสูจน์ได้ว่าเทรดเก่ง
 - เงื่อนไข: ทำกำไร +10% ภายใน ~45 วัน โดย**ห้าม**ขาดทุนเกิน 4% ในวันเดียว หรือ 8% รวม
 - **90%+ ของนักเทรดสอบไม่ผ่าน** เพราะความโลภ/เสียวินัย
 
 **Bot นี้ช่วยอะไร**?
+
 - ใช้กลยุทธ์ **Smart Money Concepts (SMC)** หา setup เทรด
 - ใช้ **Machine Learning** กรอง signal ที่มีโอกาสชนะสูง
 - ใช้ **Reinforcement Learning** ตัดสินใจว่าเทรดเมื่อไร โดยดูทั้งคุณภาพ signal และสถานะบัญชี (DD, progress)
@@ -43,6 +45,7 @@ Bot แบ่งเป็น **3 สมอง** ทำงานกันเป�
 **Smart Money Concepts** คือทฤษฎีที่ว่า "เงินก้อนใหญ่ (ธนาคาร)" ทิ้งร่องรอยในกราฟ ให้เราเดินตามได้
 
 SMC มองหา:
+
 - **Order Blocks (OB)** — โซนที่สถาบันซื้อ/ขาย ปริมาณมาก → ราคามักกลับมาแตะ
 - **Fair Value Gap (FVG)** — ช่องว่างราคาที่ต้องถูกเติม
 - **Liquidity Sweep** — การเด้งกลับหลังราคาไล่ล่า stop loss
@@ -60,8 +63,9 @@ H4 Trend → H1 Structure → M15 Entry (Order Block + Confluence)
 
 เราจึงเพิ่ม **Gradient Boosting Machine (GBM)** — AI ที่ดูจาก **history ของ signal เก่า** แล้วเรียนรู้ว่าแบบไหนมักจะชนะ
 
-**ผลลัพธ์**: 
-- `ml_score > 0.40` → win rate **48%** (จาก 32%) 
+**ผลลัพธ์**:
+
+- `ml_score > 0.40` → win rate **48%** (จาก 32%)
 - `ml_score > 0.45` → win rate **57%**
 - `ml_score > 0.50` → win rate **65%**
 
@@ -72,14 +76,17 @@ ML ให้**คะแนนคุณภาพ** (0-1) ของแต่ละ
 **Reinforcement Learning Agent** คือ AI ที่ฝึกให้ตัดสินใจจาก **สถานการณ์** ไม่ใช่กฎตายตัว
 
 Agent เห็นอะไรบ้าง (obs 24 มิติ):
+
 - **Signal features** (17): confluence, RR, ML score, RSI, ADX, etc.
 - **Portfolio state** (7): DD ปัจจุบัน, progress สู่เป้า, trades วันนี้, win rate ล่าสุด
 
 Agent ตัดสินใจ:
+
 - **TAKE** → เปิด order
 - **SKIP** → ข้าม signal นี้ไป
 
 **ทำไมต้องใช้ RL แทนกฎง่าย ๆ?**
+
 - ML บอกแค่ "signal นี้น่าจะชนะ" แต่ไม่รู้**เวลา**
 - RL เรียนรู้ว่า: ถ้า DD สูง → SKIP ไว้ก่อน, ถ้า progress ดี → เลือกเฉพาะ signal คุณภาพสูง
 
@@ -187,7 +194,7 @@ data/ohlcv/
 
 ใส่ไฟล์ `{SYMBOL}_{TF}.csv` ใน `data/ohlcv/` มีคอลัมน์: `time, open, high, low, close, volume`
 
-**Symbols ที่รองรับ**: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY
+**Symbols ที่รองรับ**: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY,XAUUSD
 
 ---
 
@@ -215,7 +222,8 @@ python3 scripts/train_signal_quality.py
 ```
 
 **เวลา**: ~2-3 นาที  
-**Output**: 
+**Output**:
+
 - `data/signal_quality_model.pkl` (0.7 MB)
 - Pool signals ถูก update `ml_score` อัตโนมัติ
 
@@ -238,10 +246,12 @@ python3 scripts/train_signal_filter.py --fresh \
 
 **เวลา**: ~20-25 นาที
 **Output**:
+
 - `models/ppo_signal_filter.zip` — RL model สุดท้าย
 - `models/vec_normalize_sf.pkl` — Observation normalization stats
 
 **Parameters explained**:
+
 - `--ml_threshold 0.33` — กรอง signals ที่ ml_score < 0.33 ออก (Hybrid ML+RL)
 - `--risk_per_trade 0.006` — ความเสี่ยง 0.6% ต่อเทรด (balance profit/DD)
 - `--outcome_noise 0.02` — Gaussian noise 2% กัน overfit pool
@@ -255,6 +265,7 @@ tensorboard --logdir logs/tb_signal_filter
 เปิด browser ที่ http://localhost:6006
 
 **ดูอะไร**:
+
 - `train/explained_variance` ควรขึ้นไป **> 0.5** (value function เรียนรู้)
 - `ftmo/pass_rate` ควรขึ้นเรื่อย ๆ (passing FTMO challenges)
 - `4_Performance/Take_Rate` ควรอยู่ **60-70%** (หลัง ML filter)
@@ -271,14 +282,14 @@ python3 scripts/train_signal_filter.py --eval_only \
 
 **เป้าหมายที่ realistic** (อิงจาก Option B 500-ep benchmark):
 
-| Metric | Good | Excellent | เหตุผล |
-|--------|------|-----------|--------|
-| Pass Rate | **7-9%** | > 10% | ถึงเป้า 10% FTMO (realistic ceiling ~10%) |
-| Breach Rate | **< 2%** | 0% | ไม่ชน DD limit 8% |
-| Profit avg/ep | **+2%** | +2.5% | กำไรคงที่ |
-| Take Rate (filtered) | **50-60%** | - | quality-first selection |
-| Win Rate | **> 45%** | > 48% | agent filter ทำงาน |
-| DD avg | **< 0.6%** | < 0.3% | ปลอดภัย |
+| Metric               | Good       | Excellent | เหตุผล                                    |
+| -------------------- | ---------- | --------- | ----------------------------------------- |
+| Pass Rate            | **7-9%**   | > 10%     | ถึงเป้า 10% FTMO (realistic ceiling ~10%) |
+| Breach Rate          | **< 2%**   | 0%        | ไม่ชน DD limit 8%                         |
+| Profit avg/ep        | **+2%**    | +2.5%     | กำไรคงที่                                 |
+| Take Rate (filtered) | **50-60%** | -         | quality-first selection                   |
+| Win Rate             | **> 45%**  | > 48%     | agent filter ทำงาน                        |
+| DD avg               | **< 0.6%** | < 0.3%    | ปลอดภัย                                   |
 
 **Option B actual (500 eps)**: Pass 8.6%, Profit +2.32%, Win Rate 46.2%, DD avg 0.47%, 0% breach, Survive profitable 66.3% ✅
 
@@ -309,12 +320,12 @@ MAX     = DEFAULT + 0.001
 
 ### 📊 ตาราง mapping
 
-| Train risk | MIN | DEFAULT | MAX |
-|-----------|-----|---------|-----|
-| 0.003 (0.3%) | 0.002 | 0.003 | 0.004 |
-| 0.005 (0.5%) | 0.003 | 0.005 | 0.006 |
+| Train risk          | MIN       | DEFAULT   | MAX       |
+| ------------------- | --------- | --------- | --------- |
+| 0.003 (0.3%)        | 0.002     | 0.003     | 0.004     |
+| 0.005 (0.5%)        | 0.003     | 0.005     | 0.006     |
 | **0.006 (0.6%)** ⭐ | **0.004** | **0.006** | **0.007** |
-| 0.007 (0.7%) | 0.005 | 0.007 | 0.008 |
+| 0.007 (0.7%)        | 0.005     | 0.007     | 0.008     |
 
 ### ❓ ทำไมต้องแก้?
 
@@ -327,6 +338,7 @@ MAX     = DEFAULT + 0.001
 ## 💰 เทรดจริง (Live)
 
 **ข้อกำหนด**:
+
 - Windows + MT5 ติดตั้ง
 - บัญชี FTMO login อยู่
 - ไฟล์ `.env` ตั้งค่าครบ
@@ -340,6 +352,7 @@ python main.py
 ```
 
 Bot จะ:
+
 1. ✅ เชื่อมต่อ MT5
 2. ✅ โหลด RL Agent + ML Quality Model
 3. ✅ สแกน signal ทุก 5 วินาที (ปรับได้ใน `config/settings.py`)
@@ -376,6 +389,7 @@ python main.py
 ```
 
 Bot จะแสดง:
+
 ```
 🆕 [Risk Manager] เริ่ม Challenge ใหม่:
    🔐 MT5 Login: 12345678
@@ -388,12 +402,14 @@ Bot จะแสดง:
 Bot มี 2 การตรวจสอบอัตโนมัติใน `_load_state()`:
 
 **1. MT5 Login mismatch** (ป้องกันใช้ state ผิด account):
+
 ```
 ⚠️ MT5 Login เปลี่ยน (saved=11111, now=22222)
    → บอทคิดว่าเป็น account ใหม่ — reset state
 ```
 
 **2. Balance ห่างจาก initial เกิน 20%** (warn เท่านั้น):
+
 ```
 ⚠️ Balance ห่างจาก initial มาก (saved=$100,000 vs MT5=$50,000, diff=50.0%)
    → อาจเป็น Challenge ใหม่ / account ใหม่
@@ -411,19 +427,19 @@ Bot มี 2 การตรวจสอบอัตโนมัติใน `_l
 
 ### 📂 State Fields Reference
 
-| Field | Purpose |
-|-------|---------|
-| `initial_balance` | FTMO anchor — Balance ตอนเริ่ม challenge |
-| `state` | ACTIVE / DAILY_HALT / MAX_DRAWDOWN_HALT / MANUAL_HALT |
-| `highest_balance` | High water mark (max balance เคยถึง) |
-| `current_day` | วันปัจจุบัน (broker time) |
-| `daily_closed_pnl` | P/L วันนี้ (reset ทุกวันใหม่) |
-| `consecutive_losses` | นับแพ้ติด (cooldown trigger) |
-| `halt_until` | Timestamp คืน trade ถ้าโดน cooldown |
-| `daily_pnl_history` | P/L รายวัน (ใช้ FTMO Consistency Rule) |
-| `mt5_login` ⭐ v4 | Login number (validation) |
-| `challenge_start_date` ⭐ v4 | วันเริ่ม challenge |
-| `schema_version` ⭐ v4 | เลข version (ตอนนี้ 4) |
+| Field                        | Purpose                                               |
+| ---------------------------- | ----------------------------------------------------- |
+| `initial_balance`            | FTMO anchor — Balance ตอนเริ่ม challenge              |
+| `state`                      | ACTIVE / DAILY_HALT / MAX_DRAWDOWN_HALT / MANUAL_HALT |
+| `highest_balance`            | High water mark (max balance เคยถึง)                  |
+| `current_day`                | วันปัจจุบัน (broker time)                             |
+| `daily_closed_pnl`           | P/L วันนี้ (reset ทุกวันใหม่)                         |
+| `consecutive_losses`         | นับแพ้ติด (cooldown trigger)                          |
+| `halt_until`                 | Timestamp คืน trade ถ้าโดน cooldown                   |
+| `daily_pnl_history`          | P/L รายวัน (ใช้ FTMO Consistency Rule)                |
+| `mt5_login` ⭐ v4            | Login number (validation)                             |
+| `challenge_start_date` ⭐ v4 | วันเริ่ม challenge                                    |
+| `schema_version` ⭐ v4       | เลข version (ตอนนี้ 4)                                |
 
 ---
 
@@ -433,55 +449,58 @@ Bot มี 2 การตรวจสอบอัตโนมัติใน `_l
 
 สิ่งที่ RL Agent เห็นในแต่ละ signal:
 
-| Index | Feature | ช่วงค่า | ความหมาย |
-|-------|---------|---------|----------|
-| **Signal Core (12)** |
-| 0 | confluence_norm | [-1, 1] | คะแนน SMC |
-| 1 | rr_ratio_norm | [0, 1] | Risk:Reward |
-| 2 | direction | ±1 | BUY หรือ SELL |
-| 3 | atr_norm | [-2, 2] | Volatility |
-| 4 | ob_score_norm | [0, 1] | คะแนน Order Block |
-| 5 | bias_alignment | [-1, 1] | ทิศทางตรงกับ H4 ไหม |
-| 6 | sl_atr_ratio | [0, 2] | ระยะ SL กี่ ATR |
-| 7-11 | rsi, macd, trend, ob_size, adx | varies | Momentum + Trend |
-| **Market Regime (4)** |
-| 12-15 | stoch, bb_pctb, atr_change, price_roc | varies | ลักษณะตลาด |
-| **ML Quality (1)** ⭐ |
-| 16 | ml_score_norm | [-1, 1] | GBM ทำนาย P(win) |
+| Index                   | Feature                               | ช่วงค่า | ความหมาย                  |
+| ----------------------- | ------------------------------------- | ------- | ------------------------- |
+| **Signal Core (12)**    |
+| 0                       | confluence_norm                       | [-1, 1] | คะแนน SMC                 |
+| 1                       | rr_ratio_norm                         | [0, 1]  | Risk:Reward               |
+| 2                       | direction                             | ±1      | BUY หรือ SELL             |
+| 3                       | atr_norm                              | [-2, 2] | Volatility                |
+| 4                       | ob_score_norm                         | [0, 1]  | คะแนน Order Block         |
+| 5                       | bias_alignment                        | [-1, 1] | ทิศทางตรงกับ H4 ไหม       |
+| 6                       | sl_atr_ratio                          | [0, 2]  | ระยะ SL กี่ ATR           |
+| 7-11                    | rsi, macd, trend, ob_size, adx        | varies  | Momentum + Trend          |
+| **Market Regime (4)**   |
+| 12-15                   | stoch, bb_pctb, atr_change, price_roc | varies  | ลักษณะตลาด                |
+| **ML Quality (1)** ⭐   |
+| 16                      | ml_score_norm                         | [-1, 1] | GBM ทำนาย P(win)          |
 | **Portfolio State (7)** |
-| 17 | total_dd_norm | [-5, 0] | DD รวม |
-| 18 | daily_dd_norm | [-5, 0] | DD วันนี้ |
-| 19 | progress_norm | [-1, 2] | % ใกล้เป้า 10% |
-| 20 | day_progress | [0, 1] | วันที่ของ challenge |
-| 21 | trades_today | [0, 1] | เทรดวันนี้ไปกี่ครั้ง |
-| 22 | recent_wr_norm | [-1, 1] | Win rate 10 trades ล่าสุด |
-| 23 | consec_losses | [0, 1] | แพ้ติดกันกี่ครั้ง |
+| 17                      | total_dd_norm                         | [-5, 0] | DD รวม                    |
+| 18                      | daily_dd_norm                         | [-5, 0] | DD วันนี้                 |
+| 19                      | progress_norm                         | [-1, 2] | % ใกล้เป้า 10%            |
+| 20                      | day_progress                          | [0, 1]  | วันที่ของ challenge       |
+| 21                      | trades_today                          | [0, 1]  | เทรดวันนี้ไปกี่ครั้ง      |
+| 22                      | recent_wr_norm                        | [-1, 1] | Win rate 10 trades ล่าสุด |
+| 23                      | consec_losses                         | [0, 1]  | แพ้ติดกันกี่ครั้ง         |
 
 ### 🎓 2-Phase Curriculum Training
 
 **ทำไมต้องแบ่ง 2 phase?**
+
 - ถ้าสอนอะไรหลายอย่างพร้อมกัน → agent งง → เรียนช้า
 - แบ่งให้เรียนทีละเรื่อง → เก่งขึ้นเร็วกว่า
 
 **Phase 1 (Alpha)**: เรียน "อ่านกราฟ + ทำกำไร"
+
 - `enable_risk_penalty=False` — ไม่มี DD penalty
 - มี **Oracle SKIP reward** — agent รู้ outcome ล่วงหน้า (training only)
 - **Bonus**: เทรดถูก + confluence สูง → +0.25 reward
 
 **Phase 2 (Risk)**: เพิ่ม "จัดการ DD"
+
 - `enable_risk_penalty=True` — DD penalty active
 - Exponential penalty ยิ่งใกล้ 10% ยิ่งแรง
 - Inherit weights จาก Phase 1 → ไม่ต้องเริ่มใหม่
 
 ### 🎯 FTMO Rules
 
-| กฎ | ค่า | Bot ทำอะไร |
-|----|------|-----------|
-| เป้ากำไร | 10% ($10,000 จาก $100,000) | RL มี target bonus |
-| Daily DD | 4% max ($4,000) | Risk guard + DD penalty |
-| Total DD | 8% max ($8,000) | Risk guard + DD penalty |
-| ระยะเวลา | 45 วัน | Episode length |
-| วันเทรดขั้นต่ำ | 4 วัน | Auto-satisfied |
+| กฎ             | ค่า                        | Bot ทำอะไร              |
+| -------------- | -------------------------- | ----------------------- |
+| เป้ากำไร       | 10% ($10,000 จาก $100,000) | RL มี target bonus      |
+| Daily DD       | 4% max ($4,000)            | Risk guard + DD penalty |
+| Total DD       | 8% max ($8,000)            | Risk guard + DD penalty |
+| ระยะเวลา       | 45 วัน                     | Episode length          |
+| วันเทรดขั้นต่ำ | 4 วัน                      | Auto-satisfied          |
 
 ---
 
@@ -547,20 +566,20 @@ ftmo_trading_bot/
 
 ### Q: ต้องรัน macOS/Windows?
 
-| งาน | macOS/Linux | Windows |
-|------|-------------|---------|
-| เทรน model | ✅ | ✅ |
-| Backtest | ✅ | ✅ |
-| เทรดจริงบน MT5 | ❌ (MT5 library ไม่มี) | ✅ |
+| งาน            | macOS/Linux            | Windows |
+| -------------- | ---------------------- | ------- |
+| เทรน model     | ✅                     | ✅      |
+| Backtest       | ✅                     | ✅      |
+| เทรดจริงบน MT5 | ❌ (MT5 library ไม่มี) | ✅      |
 
 ### Q: ใช้เวลาเทรนนานแค่ไหน?
 
-| ขั้นตอน | เวลา (M-series Mac, 8 workers) |
-|---------|-------------------------------|
-| Build signal pool | ~8 นาที |
-| Train ML (GBM) | ~2-3 นาที |
-| Train RL (15M steps) | ~20-25 นาที |
-| **รวม** | **~30-35 นาที** |
+| ขั้นตอน              | เวลา (M-series Mac, 8 workers) |
+| -------------------- | ------------------------------ |
+| Build signal pool    | ~8 นาที                        |
+| Train ML (GBM)       | ~2-3 นาที                      |
+| Train RL (15M steps) | ~20-25 นาที                    |
+| **รวม**              | **~30-35 นาที**                |
 
 ### Q: Model เก่าใช้ต่อได้ไหม หลัง update?
 
@@ -570,6 +589,7 @@ ftmo_trading_bot/
 ### Q: ถ้า ML model พัง/หายไปล่ะ?
 
 Bot มี **graceful fallback**:
+
 - RL agent ใส่ `ml_score = 0.5` (neutral) → agent ยังทำงานได้
 - แต่ performance ลดลงเพราะขาดข้อมูลคุณภาพ signal
 
@@ -587,12 +607,12 @@ Bot train ด้วย `--risk_per_trade 0.006` (0.6% ต่อเทรด) —
 
 **Risk vs Pass Rate trade-off** (จาก benchmark):
 
-| Risk | Pass Rate | DD max | เหมาะกับ |
-|------|-----------|--------|----------|
-| 0.3% | 4% | 3.9% | Conservative (funded account) |
-| 0.5% | 8% | 5.7% | Balanced (live demo) |
-| **0.6%** | **8.6%** | **8.3%** | **Optimal (trained w/ Option B)** ⭐ |
-| 0.7%+ | est 10% | ~7% | Aggressive (close to 8% limit) |
+| Risk     | Pass Rate | DD max   | เหมาะกับ                             |
+| -------- | --------- | -------- | ------------------------------------ |
+| 0.3%     | 4%        | 3.9%     | Conservative (funded account)        |
+| 0.5%     | 8%        | 5.7%     | Balanced (live demo)                 |
+| **0.6%** | **8.6%**  | **8.3%** | **Optimal (trained w/ Option B)** ⭐ |
+| 0.7%+    | est 10%   | ~7%      | Aggressive (close to 8% limit)       |
 
 ### Q: Bot รัน 24/7 บน VPS ยังไง?
 

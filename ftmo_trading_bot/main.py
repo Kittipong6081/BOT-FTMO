@@ -591,6 +591,16 @@ class FTMOTradingBot:
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
 
+                # === Weekend Sleep (Saturday/Sunday) — market closed ===
+                # ปิดตลาด Forex วันเสาร์อาทิตย์ → sleep นาน + ไม่ต้อง scan
+                if TimeManager.is_weekend(current_server_time):
+                    if self._loop_count % 120 == 0:  # print ทุก 10 นาที
+                        print(f"🌙 [Bot] Weekend Sleep — ตลาดปิด ({current_server_time.strftime('%a %H:%M EET')}) — รอจันทร์...")
+                    # Sleep นานกว่าปกติ (60s แทน 5s) เพื่อไม่ spam CPU
+                    time_module.sleep(60)
+                    self._loop_count += 1
+                    continue
+
                 # Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิด position ก่อนข้ามวัน
                 # ต้องรัน manage_all_positions() ก่อน skip เพื่อให้ TradeManager ปิดทัน
                 if TimeManager.is_daily_close_time(current_server_time):
