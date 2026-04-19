@@ -49,8 +49,21 @@ class TimeManager:
             tick = mt5.symbol_info_tick(symbol)
             if tick is not None and tick.time > 0:
                 # MT5 ให้เวลาในรูปแบบ Timestamp (UTC)
-                # เราใช้ datetime.fromtimestamp ซึ่งต้องจัดการ timezone
                 server_time = datetime.fromtimestamp(tick.time, tz=cls.BROKER_TIMEZONE)
+
+                # === Stale tick fallback (SAFE version) ===
+                # ปัญหา: weekend/holiday ตลาดปิด → tick.time ค้าง (Fri close)
+                #        → display เพี้ยน (แสดง Sat 02:54 ทั้ง weekend)
+                #
+                # Fix: fall back local time **เฉพาะเมื่อ local ยืนยัน weekend**
+                #      → weekday (Mon-Fri) จะใช้ tick เสมอ (ปลอดภัย — ไม่ตื่นมาเทรด
+                #        ก่อน market เปิดจริง Mon 01:00 EEST)
+                local_now = datetime.now(cls.BROKER_TIMEZONE)
+                age_seconds = (local_now - server_time).total_seconds()
+                if age_seconds > 600 and local_now.weekday() in (5, 6):
+                    # Stale + Local weekend → safe to use local time for display
+                    return local_now
+                # อื่นๆ (tick fresh / weekday) → trust broker tick
                 return server_time
 
         # กรณีหาค่าไม่ได้ หรือ Mock Mode (นำเวลา Local มาบิดเป็นเวลา Broker)

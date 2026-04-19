@@ -610,11 +610,16 @@ class FTMOTradingBot:
                 # === ขั้นตอนที่ 1.5: ตรวจสอบระดับการจัดการเวลาเซิร์ฟเวอร์แบบเข้มงวด (FTMO Compliance) ===
                 current_server_time = TimeManager.get_server_time()
 
-                # หากเลยเวลา Friday 20:45 ระบบจะบังคับตัวเองไม่ให้เทรดอีกต่อไปจนกว่าจะสัปดาห์หน้า
+                # หากเลยเวลา Friday 20:45 EET ระบบจะบังคับปิดทุก position + หยุดเทรดจนสัปดาห์หน้า
                 if TimeManager.is_friday_close_time(current_server_time):
                     if self._loop_count % 60 == 0:
-                        print(f"🛑 [Bot] Weekend Halt — บังคับหยุดเทรดวันศุกร์เพื่อปฏิบัติตามกฎสุดสัปดาห์! (ปิดออเดอร์เกลี้ยงแล้ว)")
-                    self._trade_manager.manage_all_positions() # เพื่อให้มั่นใจว่าปิดหมดจริง
+                        print(f"🛑 [Bot] Friday Force Close (20:45 EET) — ปิดทุก position + หยุดสุดสัปดาห์")
+                    # 🚨 FORCE CLOSE: check_session_close() มี logic ปิดทุก position ตอน Friday
+                    closed = self._trade_manager.check_session_close()
+                    if closed > 0:
+                        print(f"🚨 [Bot] Friday Force Close — ปิด {closed} positions สำเร็จ")
+                    # manage_all_positions() สำหรับ position ที่ปิดไม่สำเร็จ (retry ผ่าน trailing)
+                    self._trade_manager.manage_all_positions()
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
 
@@ -630,12 +635,15 @@ class FTMOTradingBot:
                     time_module.sleep(60)
                     continue
 
-                # Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิด position ก่อนข้ามวัน
-                # ต้องรัน manage_all_positions() ก่อน skip เพื่อให้ TradeManager ปิดทัน
+                # Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิดทุก position ก่อนข้ามวัน
                 if TimeManager.is_daily_close_time(current_server_time):
                     if self._loop_count % 30 == 0:
-                        print(f"🌙 [Bot] Daily Close — ปิด position ประจำวัน ({current_server_time.strftime('%H:%M:%S')} EET)")
-                    self._trade_manager.manage_all_positions()
+                        print(f"🌙 [Bot] Daily Close (23:30 EET) — ปิดทุก position ก่อนข้ามวัน")
+                    # 🚨 FORCE CLOSE: check_session_close() มี logic Daily Overnight Close
+                    closed = self._trade_manager.check_session_close()
+                    if closed > 0:
+                        print(f"🌙 [Bot] Daily Overnight Close — ปิด {closed} positions สำเร็จ")
+                    self._trade_manager.manage_all_positions()  # retry สำหรับที่ปิดไม่สำเร็จ
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
 
