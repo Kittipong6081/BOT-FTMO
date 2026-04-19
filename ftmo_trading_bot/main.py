@@ -518,13 +518,23 @@ class FTMOTradingBot:
         print("\n" + "━" * 40)
         print("⚙️ สรุปการตั้งค่า")
         print("━" * 40)
-        print(f"   📊 คู่เงิน:          {', '.join(bot_config.symbols.symbols)}")
-        print(f"   ⏱️ Timeframe:        {bot_config.symbols.primary_timeframe} (Entry), {bot_config.symbols.higher_timeframe} (Trend)")
-        print(f"   🛡️ Daily Stop:       {bot_config.ftmo.DAILY_LOSS_HARD_STOP_PCT:.0%}")
-        print(f"   🛡️ Max Drawdown:     {bot_config.ftmo.MAX_DRAWDOWN_HARD_STOP_PCT:.0%}")
-        print(f"   💰 Risk/Trade:       {bot_config.ftmo.MIN_RISK_PER_TRADE_PCT:.1%} - {bot_config.ftmo.MAX_RISK_PER_TRADE_PCT:.1%}")
-        print(f"   🎯 Min R:R:          1:{bot_config.ftmo.MIN_RISK_REWARD_RATIO}")
-        print(f"   📋 Max Positions:    {bot_config.ftmo.MAX_OPEN_POSITIONS}")
+        sym = bot_config.symbols
+        ftmo = bot_config.ftmo
+        print(f"   📊 คู่เงิน ({len(sym.symbols)}):     {', '.join(sym.symbols)}")
+        print(f"   ⏱️ Timeframes:       {sym.primary_timeframe} (Entry) + "
+              f"{sym.structure_timeframe} (Structure) + {sym.higher_timeframe} (Trend)")
+        print(f"   🛡️ Daily Stop:       {ftmo.DAILY_LOSS_HARD_STOP_PCT:.0%} "
+              f"(FTMO 5% — buffer 1%)")
+        print(f"   🛡️ Max Drawdown:     {ftmo.MAX_DRAWDOWN_HARD_STOP_PCT:.0%} "
+              f"(FTMO 10% — buffer 2%)")
+        print(f"   💰 Risk/Trade:       {ftmo.MIN_RISK_PER_TRADE_PCT:.1%} - "
+              f"{ftmo.MAX_RISK_PER_TRADE_PCT:.1%}  "
+              f"(default {ftmo.DEFAULT_RISK_PER_TRADE_PCT:.1%})")
+        print(f"   🎯 R:R:              Dynamic 1.5 / 2.0 / 2.5 (by ADX trend strength) "
+              f"— min 1:{ftmo.MIN_RISK_REWARD_RATIO}")
+        print(f"   📋 Max Positions:    {ftmo.MAX_OPEN_POSITIONS}")
+        print(f"   🎯 Profit Target:    {ftmo.PROFIT_TARGET_PCT:.0%}  "
+              f"(FTMO Challenge)")
         print(f"   🔁 Loop Interval:    {bot_config.main_loop_interval}s")
 
     # =========================================================================
@@ -549,6 +559,23 @@ class FTMOTradingBot:
 
         print("\n" + "=" * 70)
         print("🚀 [Bot] เริ่มต้น Main Loop — กด Ctrl+C เพื่อหยุด")
+        print("=" * 70)
+
+        # แสดง market status ตอน start เพื่อให้ผู้ใช้รู้ว่าบอทจะ sleep หรือ active
+        try:
+            _srv_time = TimeManager.get_server_time()
+            _weekday = _srv_time.weekday()
+            _weekday_th = ['จันทร์','อังคาร','พุธ','พฤหัส','ศุกร์','เสาร์','อาทิตย์'][_weekday]
+            print(f"🕐 [Bot] เวลาโบรกเกอร์: วัน{_weekday_th} {_srv_time.strftime('%Y-%m-%d %H:%M:%S')} EET")
+            if _weekday in (5, 6):
+                print(f"🌙 [Bot] ตลาด Forex ปิด (เสาร์-อาทิตย์) → เข้าโหมด Weekend Sleep")
+                print(f"          จะตื่นอัตโนมัติเมื่อ Monday 00:00 EET (Sydney session เปิด)")
+            elif _weekday == 4 and _srv_time.time() >= bot_config.sessions.friday_force_close:
+                print(f"🛑 [Bot] หลัง Friday 20:45 EET → Weekend Halt (ปิด position + รอ Monday)")
+            else:
+                print(f"✅ [Bot] ตลาดเปิด — พร้อมสแกนสัญญาณ")
+        except Exception as _e:
+            print(f"⚠️ [Bot] ไม่สามารถตรวจสถานะตลาด: {_e}")
         print("=" * 70 + "\n")
 
         while self._running:
@@ -594,11 +621,13 @@ class FTMOTradingBot:
                 # === Weekend Sleep (Saturday/Sunday) — market closed ===
                 # ปิดตลาด Forex วันเสาร์อาทิตย์ → sleep นาน + ไม่ต้อง scan
                 if TimeManager.is_weekend(current_server_time):
-                    if self._loop_count % 120 == 0:  # print ทุก 10 นาที
-                        print(f"🌙 [Bot] Weekend Sleep — ตลาดปิด ({current_server_time.strftime('%a %H:%M EET')}) — รอจันทร์...")
+                    # พิมพ์ครั้งแรกทันที (loop=1) + ทุก 10 นาที (loop % 10 == 0 @ sleep 60s)
+                    if self._loop_count == 1 or self._loop_count % 10 == 0:
+                        weekday_th = ['จันทร์','อังคาร','พุธ','พฤหัส','ศุกร์','เสาร์','อาทิตย์'][current_server_time.weekday()]
+                        print(f"🌙 [Bot] Weekend Sleep — ตลาดปิดวัน{weekday_th} "
+                              f"({current_server_time.strftime('%H:%M')} EET) — รอจันทร์ 00:00 EET...")
                     # Sleep นานกว่าปกติ (60s แทน 5s) เพื่อไม่ spam CPU
                     time_module.sleep(60)
-                    self._loop_count += 1
                     continue
 
                 # Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิด position ก่อนข้ามวัน
