@@ -222,11 +222,6 @@ class OrderBlockDetector:
         self._check_mitigation(df)
         self._score_order_blocks(df)
         
-        if bot_config.debug_mode:
-            active_bull = sum(1 for ob in self._bullish_obs if ob.is_active)
-            active_bear = sum(1 for ob in self._bearish_obs if ob.is_active)
-            print(f"📦 [Order Blocks] Bullish OB: {active_bull} (Active), Bearish OB: {active_bear} (Active)")
-
         return df
 
     # =========================================================================

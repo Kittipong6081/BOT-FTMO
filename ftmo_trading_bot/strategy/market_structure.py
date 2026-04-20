@@ -190,9 +190,6 @@ class MarketStructure:
         df['swing_high'] = swing_high
         df['swing_low'] = swing_low
         df['swing_type'] = swing_type
-        
-        if bot_config.debug_mode:
-            print(f"🔍 [Market Structure] พบ {len(self._swing_highs)} Swing Highs, {len(self._swing_lows)} Swing Lows")
 
         return df
 
@@ -341,13 +338,6 @@ class MarketStructure:
         df['structure_event'] = structure_event
         df['market_bias'] = market_bias
         
-        if bot_config.debug_mode:
-            bos_count = sum(1 for e in self._events if e.is_bos)
-            choch_count = len(self._events) - bos_count
-            bias_label = {1: "BULLISH ↑", -1: "BEARISH ↓", 0: "NEUTRAL ↔"}
-            print(f"💥 [Market Structure] พบ {bos_count} BOS, {choch_count} CHoCH")
-            print(f"   📊 Market Bias ปัจจุบัน: {bias_label.get(self._current_bias, 'UNKNOWN')}")
-
         return df
 
     # =========================================================================
