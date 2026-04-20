@@ -796,6 +796,47 @@ class MT5Connector:
 
         return result
 
+    def get_deals_by_position(self, position_ticket: int) -> List[Dict]:
+        """
+        ดึง Deals ของ position ตาม ticket โดยตรง (ไม่ต้องสแกน 7 วัน)
+
+        ใช้ MT5 API: mt5.history_deals_get(position=ticket) — O(1) lookup
+        เหมาะกับ sync_with_mt5 ที่ต้องหา PnL ของ position ที่เพิ่งปิด
+
+        Args:
+            position_ticket: หมายเลข position ที่ต้องการ
+
+        Returns:
+            List[Dict]: รายการ deals ของ position นี้ (deal entry IN + OUT)
+        """
+        if not MT5_AVAILABLE or not self.is_connected():
+            return []
+
+        deals = mt5.history_deals_get(position=position_ticket)
+        if deals is None or len(deals) == 0:
+            return []
+
+        result = []
+        for deal in deals:
+            pos_id = getattr(deal, "position_id", None) or getattr(deal, "position", None)
+            result.append({
+                "ticket": deal.ticket,
+                "order": deal.order,
+                "position": pos_id,
+                "entry": deal.entry,   # 0 = IN (เปิด), 1 = OUT (ปิด)
+                "time": datetime.fromtimestamp(deal.time),
+                "symbol": deal.symbol,
+                "type": "BUY" if deal.type == 0 else "SELL",
+                "volume": deal.volume,
+                "price": deal.price,
+                "profit": deal.profit,
+                "swap": deal.swap,
+                "commission": deal.commission,
+                "comment": deal.comment,
+                "magic": deal.magic,
+            })
+        return result
+
     def get_today_closed_pnl(self) -> float:
         """
         คำนวณ P/L ของ Position ที่ปิดไปแล้ววันนี้

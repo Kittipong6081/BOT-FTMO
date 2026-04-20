@@ -760,29 +760,28 @@ class TradeExecutor:
 
         for ticket in closed_tickets:
             trade = self._active_trades[ticket]
-            # ดึง History 7 วัน (เดิม 1 วันทำให้ข้อมูลหายถ้า bot restart)
-            history = self._connector.get_trade_history(days=7)
+            # ดึง deals ของ position นี้โดยตรง (O(1) แทนสแกน 7 วัน)
+            # รวม commission+swap+profit จาก **ทุก deals** ของ position (IN + OUT + partials)
+            deals = self._connector.get_deals_by_position(ticket)
             actual_profit = 0.0
             actual_close_price = 0.0
             matched = False
 
-            for h in history:
-                # ⚠️ Match ด้วย deal.position == position_ticket (ไม่ใช่ order/ticket)
-                # เพราะ deal.ticket = deal ID, deal.order = order ID เปิด, deal.position = position ticket
-                if h.get("position") == ticket:
-                    actual_profit = (h.get("profit", 0) or 0) \
-                                  + (h.get("swap", 0) or 0) \
-                                  + (h.get("commission", 0) or 0)
-                    actual_close_price = h.get("price", 0) or 0
-                    matched = True
-                    break
+            for d in deals:
+                actual_profit += (d.get("profit", 0) or 0) \
+                              + (d.get("swap", 0) or 0) \
+                              + (d.get("commission", 0) or 0)
+                # close price จาก deal entry = 1 (OUT) ไม้สุดท้าย
+                if d.get("entry") == 1:
+                    actual_close_price = d.get("price", 0) or 0
+                    matched = True  # ต้องมี OUT deal เท่านั้นถึงจะถือว่าปิดจริง
 
             # ถ้า match ไม่เจอ → ข้าม record_external_close รอบนี้
             # profit=0.0 placeholder จะถูก Risk Manager ตีความเป็น loss (pnl <= 0)
             # ทำให้ consecutive_losses เพิ่มผิด → DAILY_HALT ผิด
             # Retry ใน cycle ถัดไปแทน (sync_with_mt5 ถูกเรียกทุก tick)
             if not matched:
-                print(f"⚠️ [Executor] Ticket {ticket} ไม่พบใน deal history 7 วัน — รอ retry cycle ถัดไป")
+                print(f"⚠️ [Executor] Ticket {ticket} ไม่พบใน deal history — รอ retry cycle ถัดไป")
                 continue
 
             # ถ้าราคาไม่มี → ประมาณจากราคาปัจจุบัน (profit มาจาก history แล้ว ใช้ต่อได้)
