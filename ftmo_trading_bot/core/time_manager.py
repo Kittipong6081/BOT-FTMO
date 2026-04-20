@@ -32,42 +32,63 @@ class TimeManager:
     BROKER_TIMEZONE = pytz.timezone("Europe/Bucharest")
 
     @classmethod
-    def get_server_time(cls, symbol: str = "EURUSD") -> datetime:
+    def get_server_time(cls, symbol: str = "EURUSD") -> datetime:  # noqa: ARG003
         """
-        ดึงเวลาปัจจุบันของโบรกเกอร์จาก Tick ล่าสุดของ MT5
-        
-        หาก MT5 มีปัญหาไม่ได้เชื่อมต่อ จะยอมใช้เวลาปัจจุบันของ Local (VPS) 
-        และแปลงเป็น Broker Timezone แทนชั่วคราว
-        
+        คืนเวลาของโบรกเกอร์ (EET/EEST) จาก VPS local clock ที่ sync ผ่าน NTP
+
+        ทำไมไม่ใช้ mt5.symbol_info_tick().time?
+            MT5 brokers (รวม FTMO-Demo) มี quirk: ส่ง tick.time เป็น broker-local
+            epoch (EEST/EET) แทน UTC epoch มาตรฐาน → datetime.fromtimestamp(tick.time,
+            tz=Bucharest) จะ double-add timezone offset → display ล่วงหน้า 2-3 ชั่วโมง
+            (ผล: Friday/Daily close trigger ผิดเวลา)
+
+        Solution:
+            ใช้ datetime.now(Europe/Bucharest) ซึ่งอิงกับ VPS system clock
+            (sync NTP → แม่นยำระดับวินาที) + pytz แปลง EET/EEST + DST อัตโนมัติ
+            UTC moment ตรงกับ FTMO server เสมอ (ทั้งคู่ sync NTP เดียวกัน)
+
+        Precondition:
+            VPS ต้อง sync NTP (ดู readme.md: "FAQ: NTP Time Sync")
+
         Args:
-            symbol (str): คู่เงินตัวแทนที่ใช้ดึง Tick
-            
+            symbol: ไม่ใช้แล้ว — รักษาไว้เพื่อ backward compatibility
+
         Returns:
-            datetime: เวลาของโบรกเกอร์ (Server Time)
+            datetime: เวลาโบรกเกอร์ (Europe/Bucharest — EET/EEST)
         """
-        if MT5_AVAILABLE:
-            tick = mt5.symbol_info_tick(symbol)
-            if tick is not None and tick.time > 0:
-                # MT5 ให้เวลาในรูปแบบ Timestamp (UTC)
-                server_time = datetime.fromtimestamp(tick.time, tz=cls.BROKER_TIMEZONE)
-
-                # === Stale tick fallback (SAFE version) ===
-                # ปัญหา: weekend/holiday ตลาดปิด → tick.time ค้าง (Fri close)
-                #        → display เพี้ยน (แสดง Sat 02:54 ทั้ง weekend)
-                #
-                # Fix: fall back local time **เฉพาะเมื่อ local ยืนยัน weekend**
-                #      → weekday (Mon-Fri) จะใช้ tick เสมอ (ปลอดภัย — ไม่ตื่นมาเทรด
-                #        ก่อน market เปิดจริง Mon 01:00 EEST)
-                local_now = datetime.now(cls.BROKER_TIMEZONE)
-                age_seconds = (local_now - server_time).total_seconds()
-                if age_seconds > 600 and local_now.weekday() in (5, 6):
-                    # Stale + Local weekend → safe to use local time for display
-                    return local_now
-                # อื่นๆ (tick fresh / weekday) → trust broker tick
-                return server_time
-
-        # กรณีหาค่าไม่ได้ หรือ Mock Mode (นำเวลา Local มาบิดเป็นเวลา Broker)
         return datetime.now(cls.BROKER_TIMEZONE)
+
+    @classmethod
+    def is_tick_fresh(cls, symbol: str = "EURUSD", max_age_s: int = 600) -> bool:
+        """
+        ตรวจว่า broker tick ล่าสุดยังสดอยู่ไหม (market open + broker online)
+
+        ใช้สำหรับ: market activity detection, dashboard status
+        *ไม่* ใช้เป็น source of truth สำหรับ wall-clock time
+
+        Handles MT5 tick.time quirk: broker อาจส่งเป็น UTC หรือ broker-local epoch
+        → ลอง interpret ทั้ง 3 offsets (UTC / +2h EET / +3h EEST) เลือกที่ใกล้ now ที่สุด
+
+        Args:
+            symbol: คู่เงินตัวแทน
+            max_age_s: ถือว่า stale ถ้า tick เก่ากว่านี้ (default 10 นาที)
+
+        Returns:
+            bool: True ถ้า tick สด (market active)
+        """
+        if not MT5_AVAILABLE:
+            return False
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None or tick.time <= 0:
+            return False
+
+        import time as _t
+        now_utc = _t.time()
+        # Try 3 interpretations of tick.time
+        age_as_utc = abs(now_utc - tick.time)
+        age_as_eest = abs(now_utc - (tick.time - 10800))  # subtract +3h
+        age_as_eet = abs(now_utc - (tick.time - 7200))    # subtract +2h
+        return min(age_as_utc, age_as_eest, age_as_eet) <= max_age_s
 
     @classmethod
     def is_rollover_period(cls, current_server_time: datetime) -> bool:
