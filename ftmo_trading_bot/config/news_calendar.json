@@ -1,0 +1,97 @@
+{
+  "_comment": "Imported from ForexFactory ff_calendar_thisweek.csv — 2026-04-19 to 2026-04-25 (UTC)",
+  "_how_to_update": [
+    "1. https://www.forexfactory.com/calendar — ตั้ง Time Zone = UTC",
+    "2. Filter: Impact = High only",
+    "3. Export CSV → รัน: python scripts/import_forexfactory_csv.py path/to/ff_calendar.csv",
+    "4. หรือ paste CSV ให้ AI แปลงให้"
+  ],
+  "updated_at": "2026-04-20T15:30:00Z",
+  "valid_until": "2026-04-26T23:59:59Z",
+  "events": [
+    {
+      "datetime_utc": "2026-04-20T12:30:00Z",
+      "currency": "CAD",
+      "name": "CPI m/m",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-20T12:30:00Z",
+      "currency": "CAD",
+      "name": "Median CPI y/y",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-20T12:30:00Z",
+      "currency": "CAD",
+      "name": "Trimmed CPI y/y",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-20T22:45:00Z",
+      "currency": "NZD",
+      "name": "CPI q/q",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-21T06:00:00Z",
+      "currency": "GBP",
+      "name": "Claimant Count Change",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-21T12:30:00Z",
+      "currency": "USD",
+      "name": "Core Retail Sales m/m",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-21T12:30:00Z",
+      "currency": "USD",
+      "name": "Retail Sales m/m",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-21T14:00:00Z",
+      "currency": "USD",
+      "name": "Fed Chairman-Designate Warsh Testifies",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-22T06:00:00Z",
+      "currency": "GBP",
+      "name": "CPI y/y",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-23T07:30:00Z",
+      "currency": "EUR",
+      "name": "German Flash Manufacturing PMI",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-23T07:30:00Z",
+      "currency": "EUR",
+      "name": "German Flash Services PMI",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-23T08:30:00Z",
+      "currency": "GBP",
+      "name": "Flash Manufacturing PMI",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-23T08:30:00Z",
+      "currency": "GBP",
+      "name": "Flash Services PMI",
+      "impact": "high"
+    },
+    {
+      "datetime_utc": "2026-04-24T06:00:00Z",
+      "currency": "GBP",
+      "name": "Retail Sales m/m",
+      "impact": "high"
+    }
+  ]
+}

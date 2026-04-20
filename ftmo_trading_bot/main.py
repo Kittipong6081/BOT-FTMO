@@ -33,6 +33,7 @@ from analytics.trade_logger import TradeLogger
 from analytics.performance import PerformanceAnalyzer
 from core.time_manager import TimeManager
 from core.notifier import DiscordNotifier
+from core.news_scheduler import NewsCalendarScheduler
 
 try:
     from ml.rl_agent import SelfLearningAgent
@@ -110,6 +111,14 @@ class FTMOTradingBot:
         except Exception as e:
             print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
         
+        # === News Calendar Auto-Scheduler (อัพเดททุกอาทิตย์ 23:30 EET) ===
+        _project_root = os.path.dirname(os.path.abspath(__file__))
+        self._news_scheduler = NewsCalendarScheduler(
+            inbox_dir=os.path.join(_project_root, "config", "news_inbox"),
+            output_json=os.path.join(_project_root, "config", "news_calendar.json"),
+            state_file=os.path.join(_project_root, "logs", "news_scheduler_state.json"),
+        )
+
         # === ตัวแปรสถิติ ===
         self._loop_count = 0
         self._start_time = None
@@ -581,7 +590,11 @@ class FTMOTradingBot:
         while self._running:
             try:
                 self._loop_count += 1
-                
+
+                # === ขั้นตอนที่ 0: News Calendar Auto-Import (Sunday 23:30 EET) ===
+                # Exception-safe: ไม่ block main loop แม้ scheduler พัง
+                self._news_scheduler.check_and_run()
+
                 # === ขั้นตอนที่ 1: ตรวจสอบความเสี่ยง (สำคัญที่สุด) ===
                 bot_state = self._risk_manager.check_risk()
                 

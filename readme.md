@@ -12,6 +12,7 @@
 - [เตรียมข้อมูล](#-เตรียมข้อมูล)
 - [เทรน Model](#-เทรน-model)
 - [เทรดจริง (Live)](#-เทรดจริง-live)
+- [อัพเดทปฏิทินข่าว (Weekly)](#-อัพเดทปฏิทินข่าว-weekly)
 - [เริ่ม FTMO Challenge ใหม่](#-เริ่ม-ftmo-challenge-ใหม่)
 - [FAQ: NTP Time Sync](#q-vps-ต้อง-sync-เวลา-ntp-ยังไง)
 - [เข้าใจองค์ประกอบ](#-เข้าใจองค์ประกอบ)
@@ -363,6 +364,84 @@ Bot จะ:
 6. ✅ บันทึก log + Discord notification
 
 **ปิด Bot**: กด `Ctrl+C` (bot จะ save state + ปิด position ถ้าจำเป็น)
+
+---
+
+## 📅 อัพเดทปฏิทินข่าว (Weekly)
+
+Bot block signal ช่วงข่าวแรง (NFP, CPI, FOMC, ECB, BoE, PMI ฯลฯ) เพื่อกัน spread กว้าง + whipsaw
+
+### วิธีทำงาน (2-tier)
+
+1. **Priority 1: JSON calendar** — `config/news_calendar.json` (ความแม่น ~95-98%)
+2. **Priority 2: Fallback hardcoded** — ใน `config/news_events.py` (ความแม่น ~40-50%, ใช้เมื่อไฟล์ JSON หาย/หมดอายุ)
+
+### 🤖 Auto-Import (แนะนำ — drop-in ง่ายสุด)
+
+Bot มี **NewsCalendarScheduler** รัน auto ทุกวันอาทิตย์ **23:30 EET**
+
+**ขั้นตอน:**
+
+1. ดาวน์โหลด CSV จาก <https://www.forexfactory.com/calendar>
+   - ⚙️ (ขวาบน) → Time Zone = **GMT/UTC**
+   - Filter → Impact = **High only** + currencies (USD/EUR/GBP/JPY/AUD/CAD/CHF/NZD)
+   - เลือก **Next Week** → กด Export
+
+2. วางไฟล์ CSV ใน `config/news_inbox/` (ชื่อไฟล์อะไรก็ได้)
+
+3. ไม่ต้องทำอะไรต่อ — bot จะ auto-import เมื่อถึงอาทิตย์ 23:30 EET:
+   - Parse CSV → เขียนทับ `config/news_calendar.json`
+   - Move CSV → `config/news_inbox/processed/YYYY-MM-DD_filename.csv`
+   - Log: `✅ [NewsScheduler] Import เสร็จ: N events`
+
+> 💡 Bot ยังรันอยู่ 24/5 บน VPS → scheduler จะเจอ CSV วันอาทิตย์เย็นพอดี ก่อนตลาดจันทร์เปิด
+
+### 🛠️ Manual Import (ถ้าต้องการ update ทันที)
+
+```bash
+cd ftmo_trading_bot
+python scripts/import_forexfactory_csv.py ~/Downloads/ff_calendar_thisweek.csv
+```
+
+### ตรวจ log ตอนรัน bot
+
+ครั้งแรกหลัง update จะเห็น:
+
+```text
+📅 [NewsFilter] โหลด N events จาก news_calendar.json (valid_until=...)
+```
+
+### JSON Schema
+
+```json
+{
+  "updated_at": "2026-04-19T20:00:00Z",
+  "valid_until": "2026-04-26T23:59:59Z",
+  "events": [
+    {
+      "datetime_utc": "2026-04-21T12:30:00Z",
+      "currency": "USD",
+      "name": "Core Retail Sales m/m",
+      "impact": "high"
+    }
+  ]
+}
+```
+
+### ถ้าลืม update
+
+- ไฟล์หมดอายุ (`valid_until` ผ่านไปแล้ว) → bot log warning + fallback ไปใช้ hardcoded events (NFP/CPI/FOMC ที่ประมาณการ)
+- Bot ยังทำงานได้ แต่ความแม่นลดลง เหลือ ~40-50%
+- แนะนำให้ update ทุกอาทิตย์ก่อนเริ่มสัปดาห์เทรด
+
+### ปรับหน้าต่าง block
+
+ใน `config/settings.py`:
+
+```python
+no_trade_before_news_minutes: int = 30   # block ล่วงหน้า (นาที)
+no_trade_after_news_minutes: int = 15    # block หลังข่าว (นาที)
+```
 
 ---
 

@@ -14,8 +14,10 @@ Sources: economic calendar ForexFactory/Investing (high-impact recurring events)
 ===============================================================================
 """
 
+import json
+import os
 from datetime import datetime, time, timedelta
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 import pytz
 
@@ -111,14 +113,109 @@ _CURRENCY_TO_SYMBOLS = {
 }
 
 
+# =============================================================================
+# 📅 JSON Calendar Loader (ความแม่นยำสูง — อัพเดทจาก ForexFactory ทุกสัปดาห์)
+# =============================================================================
+@dataclass
+class ScheduledNewsEvent:
+    """ข่าวเฉพาะเจาะจง (exact datetime) จาก JSON calendar"""
+    datetime_utc: datetime          # เวลาข่าวจริง (tz-naive UTC)
+    currency: str                   # USD, EUR, GBP, JPY, ...
+    name: str                       # e.g. "Retail Sales m/m"
+    impact: str = "high"            # high, medium, low
+
+
+_CALENDAR_JSON_PATH = os.path.join(
+    os.path.dirname(__file__), "news_calendar.json"
+)
+_scheduled_cache: Optional[List[ScheduledNewsEvent]] = None
+_cache_file_mtime: Optional[float] = None
+_cache_valid_until: Optional[datetime] = None
+
+
+def _load_json_calendar() -> List[ScheduledNewsEvent]:
+    """
+    Load news_calendar.json (cached by file mtime)
+
+    Returns:
+        List of events ถ้า load สำเร็จและยังไม่หมดอายุ, [] ถ้า fallback จำเป็น
+    """
+    global _scheduled_cache, _cache_file_mtime, _cache_valid_until
+
+    if not os.path.exists(_CALENDAR_JSON_PATH):
+        return []
+
+    mtime = os.path.getmtime(_CALENDAR_JSON_PATH)
+    # Cache hit — file ไม่ได้ถูกแก้
+    if _scheduled_cache is not None and _cache_file_mtime == mtime:
+        # ตรวจหมดอายุ
+        if _cache_valid_until and datetime.utcnow() > _cache_valid_until:
+            print(f"⚠️ [NewsFilter] news_calendar.json หมดอายุ (valid_until={_cache_valid_until.isoformat()}) — fallback hardcoded")
+            return []
+        return _scheduled_cache
+
+    # โหลดใหม่
+    try:
+        with open(_CALENDAR_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"⚠️ [NewsFilter] อ่าน news_calendar.json ไม่สำเร็จ: {e} — fallback hardcoded")
+        return []
+
+    # Parse valid_until
+    valid_until = None
+    if "valid_until" in data:
+        try:
+            vu = data["valid_until"].replace("Z", "+00:00")
+            valid_until = datetime.fromisoformat(vu)
+            if valid_until.tzinfo is not None:
+                valid_until = valid_until.astimezone(pytz.UTC).replace(tzinfo=None)
+            if datetime.utcnow() > valid_until:
+                print(f"⚠️ [NewsFilter] news_calendar.json หมดอายุ ({data['valid_until']}) — fallback hardcoded")
+                _scheduled_cache = []
+                _cache_file_mtime = mtime
+                _cache_valid_until = valid_until
+                return []
+        except ValueError:
+            print(f"⚠️ [NewsFilter] valid_until parse ไม่ได้: {data.get('valid_until')}")
+
+    # Parse events
+    events: List[ScheduledNewsEvent] = []
+    for ev in data.get("events", []):
+        try:
+            dt_str = ev["datetime_utc"].replace("Z", "+00:00")
+            dt = datetime.fromisoformat(dt_str)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(pytz.UTC).replace(tzinfo=None)
+            events.append(ScheduledNewsEvent(
+                datetime_utc=dt,
+                currency=ev["currency"].upper(),
+                name=ev.get("name", "Unknown"),
+                impact=ev.get("impact", "high"),
+            ))
+        except (KeyError, ValueError) as e:
+            print(f"⚠️ [NewsFilter] ข้าม event ที่ parse ไม่ได้: {ev} ({e})")
+            continue
+
+    _scheduled_cache = events
+    _cache_file_mtime = mtime
+    _cache_valid_until = valid_until
+    print(f"📅 [NewsFilter] โหลด {len(events)} events จาก news_calendar.json (valid_until={data.get('valid_until', 'N/A')})")
+    return events
+
+
 def is_near_high_impact_news(
     symbol: str,
     now_utc: datetime,
     window_minutes_before: int = 30,
     window_minutes_after: int = 30,
-) -> tuple[bool, str]:
+) -> Tuple[bool, str]:
     """
     ตรวจว่า symbol กำลังจะชน/เพิ่งชนข่าวแรงหรือไม่
+
+    Priority:
+    1. JSON calendar (news_calendar.json) — ข่าวจริงที่ user update weekly
+    2. Fallback: hardcoded recurring patterns — ถ้าไฟล์หาย/หมดอายุ
 
     Args:
         symbol: คู่เงิน เช่น "EURUSD"
@@ -133,6 +230,23 @@ def is_near_high_impact_news(
     if now_utc.tzinfo is not None:
         now_utc = now_utc.astimezone(pytz.UTC).replace(tzinfo=None)
 
+    # ── Priority 1: JSON calendar ───────────────────────────────
+    scheduled = _load_json_calendar()
+    if scheduled:
+        for ev in scheduled:
+            impacted = _CURRENCY_TO_SYMBOLS.get(ev.currency, set())
+            if symbol not in impacted:
+                continue
+            start = ev.datetime_utc - timedelta(minutes=window_minutes_before)
+            end = ev.datetime_utc + timedelta(minutes=window_minutes_after)
+            if start <= now_utc <= end:
+                delta_min = (ev.datetime_utc - now_utc).total_seconds() / 60.0
+                when = f"{abs(delta_min):.0f} นาที{'ก่อน' if delta_min > 0 else 'หลัง'}"
+                return (True, f"⚠️ {ev.name} [{ev.currency}] ({when}) — block signal {symbol}")
+        # โหลด JSON ได้และไม่ติด window → ไม่ต้อง fallback
+        return (False, "")
+
+    # ── Priority 2: Fallback hardcoded recurring events ─────────
     # วันที่สำหรับตรวจ: วันนี้ + พรุ่งนี้ (เผื่อข่าวเที่ยงคืน UTC)
     dates_to_check = [now_utc.date(), (now_utc + timedelta(days=1)).date()]
 
@@ -153,6 +267,6 @@ def is_near_high_impact_news(
             if start <= now_utc <= end:
                 delta_min = (event_dt - now_utc).total_seconds() / 60.0
                 when = f"{abs(delta_min):.0f} นาที{'ก่อน' if delta_min > 0 else 'หลัง'}"
-                return (True, f"⚠️ {event.name} ({when}) — block signal {symbol}")
+                return (True, f"⚠️ {event.name} ({when}) — block signal {symbol} [fallback]")
 
     return (False, "")
