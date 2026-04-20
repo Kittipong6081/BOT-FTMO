@@ -857,9 +857,16 @@ class RiskManager:
 
         if pnl > 0:
             self._consecutive_losses = 0
+            self._halt_until = None  # clear pause เมื่อ win reset counter
             return
 
-        # pnl <= 0
+        # pnl <= 0 — ข้าม noise-level loss (เช่น tick/spread noise ที่ไม่ใช่ decision error)
+        if self._daily_start_equity > 0:
+            min_pct = getattr(self._config, "MIN_LOSS_TO_COUNT_PCT", 0.0005)
+            loss_pct = abs(pnl) / self._daily_start_equity
+            if loss_pct < min_pct:
+                return
+
         self._consecutive_losses += 1
         if symbol:
             self._last_loss_time_per_symbol[symbol] = now_iso

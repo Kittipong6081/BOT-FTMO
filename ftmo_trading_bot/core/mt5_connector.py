@@ -14,7 +14,7 @@ FTMO Trading Bot — โมดูลเชื่อมต่อ MetaTrader 5
 
 import sys
 import time as time_module
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
 
 import numpy as np
@@ -756,9 +756,13 @@ class MT5Connector:
         if not self.is_connected():
             return []
 
-        # กำหนดช่วงเวลา
-        date_from = datetime.now() - timedelta(days=days)
-        date_to = datetime.now()
+        # กำหนดช่วงเวลา (ใช้ UTC explicit + buffer)
+        # MT5 history_deals_get interpret naive datetime เป็น UTC → ถ้าใช้ datetime.now()
+        # บนเครื่องที่ไม่ใช่ UTC (เช่น ICT/EET) range จะคลาดเคลื่อน → match position ticket ไม่เจอ
+        # Buffer +1 day/+1 hour กัน clock drift และ deal ที่เพิ่งปิดสด ๆ
+        now_utc = datetime.now(timezone.utc)
+        date_from = now_utc - timedelta(days=days + 1)
+        date_to = now_utc + timedelta(hours=1)
 
         # ดึงประวัติ Deals
         deals = mt5.history_deals_get(date_from, date_to)

@@ -777,14 +777,19 @@ class TradeExecutor:
                     matched = True
                     break
 
-            # ถ้าหาไม่เจอใน History → ประมาณจากราคาปัจจุบัน
+            # ถ้า match ไม่เจอ → ข้าม record_external_close รอบนี้
+            # profit=0.0 placeholder จะถูก Risk Manager ตีความเป็น loss (pnl <= 0)
+            # ทำให้ consecutive_losses เพิ่มผิด → DAILY_HALT ผิด
+            # Retry ใน cycle ถัดไปแทน (sync_with_mt5 ถูกเรียกทุก tick)
+            if not matched:
+                print(f"⚠️ [Executor] Ticket {ticket} ไม่พบใน deal history 7 วัน — รอ retry cycle ถัดไป")
+                continue
+
+            # ถ้าราคาไม่มี → ประมาณจากราคาปัจจุบัน (profit มาจาก history แล้ว ใช้ต่อได้)
             if actual_close_price == 0:
                 price_info = self._connector.get_current_price(trade.symbol)
                 if price_info:
                     actual_close_price = price_info["bid"] if trade.trade_type == "BUY" else price_info["ask"]
-
-            if not matched:
-                print(f"⚠️ [Executor] Ticket {ticket} ไม่พบใน deal history 7 วัน — PnL อาจไม่ถูกต้อง")
 
             self.record_external_close(
                 ticket=ticket,

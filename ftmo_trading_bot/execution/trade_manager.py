@@ -50,15 +50,15 @@ class TradeManager:
 
     ลำดับการจัดการ (ทุก Tick):
     1. ซิงค์กับ MT5 (ตรวจ SL/TP Hit)
-    2. ตรวจสอบ Break-Even Move (กำไร >= 1:1 → SL → Entry + 1 pip)
+    2. ตรวจสอบ Break-Even Move (กำไร >= 1:1 → SL → Entry)
     3. ตรวจสอบ Partial Close (กำไร >= 1:1 → ปิด 50%)
     4. ตรวจสอบ Trailing Stop (ราคาใหม่ดีกว่าเดิม → เลื่อน SL)
     5. ตรวจสอบ Session End (ใกล้หมด Session → ปิดทุก Position)
     """
 
     # === ค่าคงที่สำหรับการจัดการ ===
-    BE_TRIGGER_RR: float = 0.5          # เลื่อน SL มา Entry เมื่อกำไรถึง RR 0.5:1
-    BE_OFFSET_PIPS: float = 1.0         # เลื่อน SL เลย Entry + 1 pip (ไม่ใช่แค่ Entry)
+    BE_TRIGGER_RR: float = 1.0          # เลื่อน SL มา Entry เมื่อกำไรถึง RR 1:1
+    BE_OFFSET_PIPS: float = 0.0         # เลื่อน SL มา Entry พอดี (ไม่มี offset)
     PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ TP1 Hit
     PARTIAL_TRIGGER_RR: float = 1.0     # ปิดบางส่วนเมื่อกำไรถึง RR 1:1
     TRAIL_ACTIVATION_RR: float = 1.5    # เริ่ม Trail เมื่อกำไรถึง RR 1.5:1
@@ -207,11 +207,11 @@ class TradeManager:
         price_info: Dict
     ):
         """
-        เลื่อน SL มาที่ Entry Price + offset เมื่อกำไรถึง RR 1:1
+        เลื่อน SL มาที่ Entry Price + offset เมื่อกำไรถึง BE_TRIGGER_RR
 
-        ผลลัพธ์:
-        - BUY: SL = Entry + 1 pip (ไม่ขาดทุนแล้ว)
-        - SELL: SL = Entry - 1 pip
+        ผลลัพธ์ (ค่า default offset = 0 → ล็อกที่ entry พอดี):
+        - BUY: SL = Entry
+        - SELL: SL = Entry
 
         Args:
             trade: ข้อมูลเทรด
@@ -237,8 +237,9 @@ class TradeManager:
             state.current_sl = new_sl
             state.breakeven_moved = True
             digits = 5 if state.pip_size <= 0.0001 else 3
+            offset_desc = "Entry" if self.BE_OFFSET_PIPS == 0 else f"Entry+{self.BE_OFFSET_PIPS} pip"
             print(f"🔒 [Trade Manager] เลื่อน SL มา Break-Even: Ticket {trade.ticket} "
-                  f"SL={new_sl:.{digits}f} (Entry+{self.BE_OFFSET_PIPS} pip)")
+                  f"SL={new_sl:.{digits}f} ({offset_desc})")
 
     # =========================================================================
     # ✂️ Partial Close (ปิดบางส่วน)

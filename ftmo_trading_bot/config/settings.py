@@ -109,6 +109,10 @@ class FTMOConfig:
     CONSECUTIVE_LOSS_PAUSE_MIN: int = 60
     # ถ้าแพ้ติดกันกี่ครั้งให้ halt ทั้งวัน
     CONSECUTIVE_LOSS_HALT_COUNT: int = 3
+    # Loss ขนาดเล็ก (< X% ของ daily start equity) ไม่นับเป็น consecutive loss
+    # เหตุผล: tick/spread noise ไม่ใช่ decision error → ไม่ควร trigger anti-revenge
+    # ค่า 0.0005 = 0.05% = $5 บน $10K
+    MIN_LOSS_TO_COUNT_PCT: float = 0.0005
 
 
 # =============================================================================
