@@ -294,6 +294,8 @@ python3 scripts/train_signal_filter.py --eval_only \
 
 **Option B actual (500 eps)**: Pass 8.6%, Profit +2.32%, Win Rate 46.2%, DD avg 0.47%, 0% breach, Survive profitable 66.3% ✅
 
+**Risk 0.7% Deployment (verified 5000 eps, 2026-04-20)**: Pass **12.5%**, Profit **+2.59%**, WR 46.2%, DD max 8.50%, Breach 0%, Days to pass avg 29.5 ⭐
+
 > ⚠️ **Eval sample size matters**: 100-ep eval มี variance สูง (±5pp) — ใช้ 500 eps ขึ้นไปสำหรับ true performance
 
 ---
@@ -302,31 +304,30 @@ python3 scripts/train_signal_filter.py --eval_only \
 
 ### ⚠️ ต้องแก้ `config/settings.py` ให้ตรงกับ train
 
-หลัง train ด้วย `--risk_per_trade 0.006` ต้องไปแก้ค่า **3 ตัว** ใน `FTMOConfig`:
+ค่าปัจจุบัน (หลัง verified risk 0.7% ที่ 5000 eps — 2026-04-20):
 
 ```python
-# config/settings.py line 71-73
-MIN_RISK_PER_TRADE_PCT: float = 0.004      # 0.4% floor
-MAX_RISK_PER_TRADE_PCT: float = 0.007      # 0.7% cap
-DEFAULT_RISK_PER_TRADE_PCT: float = 0.006  # 0.6% ← ตรงกับ train
+# config/settings.py line 73-75
+MIN_RISK_PER_TRADE_PCT: float = 0.005      # 0.5% floor
+MAX_RISK_PER_TRADE_PCT: float = 0.008      # 0.8% cap
+DEFAULT_RISK_PER_TRADE_PCT: float = 0.007  # 0.7% ⭐ verified optimal
 ```
 
 ### 🧮 Rule of Thumb
 
 ```
-DEFAULT = --risk_per_trade ตอน train
+DEFAULT = risk ที่ verified (สูงกว่า train 0.6% ได้ แต่ต้อง verify)
 MIN     = DEFAULT − 0.002
 MAX     = DEFAULT + 0.001
 ```
 
-### 📊 ตาราง mapping
+### 📊 ตาราง mapping (Verified Results)
 
-| Train risk          | MIN       | DEFAULT   | MAX       |
-| ------------------- | --------- | --------- | --------- |
-| 0.003 (0.3%)        | 0.002     | 0.003     | 0.004     |
-| 0.005 (0.5%)        | 0.003     | 0.005     | 0.006     |
-| **0.006 (0.6%)** ⭐ | **0.004** | **0.006** | **0.007** |
-| 0.007 (0.7%)        | 0.005     | 0.007     | 0.008     |
+| Risk (DEFAULT)      | Pass Rate (5000 eps) | Profit avg | Breach | MIN / MAX |
+| ------------------- | :---: | :---: | :---: | :---: |
+| 0.006 (0.6%) train  | 8.8%  | +2.34% | 0% | 0.004 / 0.007 |
+| **0.007 (0.7%)** ⭐ | **12.5%** | **+2.59%** | **0%** | **0.005 / 0.008** |
+| 0.008 (0.8%) ⚠️     | 14.0% (n=1000) | +2.53% (↓) | 0% | 0.006 / 0.009 |
 
 ### ❓ ทำไมต้องแก้?
 
