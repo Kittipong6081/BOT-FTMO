@@ -1,0 +1,78 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.manifest
+*.spec
+
+# ============================================================
+# Virtual Environments
+# ============================================================
+.venv/
+venv/
+env/
+ENV/
+
+# ============================================================
+# IDE / Editor
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# FTMO Project — Artifacts (ไม่ควร track เข้า git)
+# ============================================================
+
+# PPO intermediate checkpoints (track เฉพาะ final model)
+ftmo_trading_bot/models/checkpoints_sf/
+
+# Backup files auto-generated
+*.bak_*
+*.pkl.bak*
+*.zip.bak*
+
+# TensorBoard logs
+ftmo_trading_bot/logs/tb_*/
+tfevents*
+events.out.*
+
+# Trade logs (contains trade history — privacy)
+ftmo_trading_bot/logs/*.xlsx
+ftmo_trading_bot/logs/*.log
+*.log
+
+# News cache (auto-downloaded)
+ftmo_trading_bot/config/news_inbox/*.json
+!ftmo_trading_bot/config/news_inbox/README.md
+
+# State files (per-machine runtime state)
+ftmo_trading_bot/data/bot_state.json
+
+# ============================================================
+# Environment / Secrets
+# ============================================================
+.env
+.env.local
+*.pem
+*.key
+
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
