@@ -48,7 +48,7 @@ class ExecutedTrade:
     entry_price: float              # ราคาที่เปิดจริง (อาจต่างจาก Signal เล็กน้อย)
     sl_price: float                 # Stop Loss
     tp_price: float                 # Take Profit
-    lot_size: float                 # ขนาด Lot ที่เปิด
+    lot_size: float                 # ขนาด Lot ปัจจุบัน (ลดลงหลัง partial close)
     risk_amount: float              # จำนวนเงินที่เสี่ยง (USD)
     risk_pct: float                 # เปอร์เซ็นต์ความเสี่ยง
     rr_ratio: float                 # Risk:Reward Ratio
@@ -79,6 +79,10 @@ class ExecutedTrade:
     mfe: float = 0.0                        # Max Favorable Excursion (price)
     time_in_trade: int = 0                  # seconds
     exit_path: str = ""                     # SL / TP / Trail / BE / Manual / Friday / SessionEnd
+
+    # === Partial close tracking ===
+    original_lot_size: float = 0.0          # Lot ตอนเปิด (immutable — ใช้คำนวณ partial pct)
+    partial_close_count: int = 0            # จำนวนครั้งที่ปิดบางส่วนไปแล้ว
 
     def to_dict(self) -> Dict:
         """แปลงเป็น Dictionary สำหรับ Excel Logging"""
@@ -294,6 +298,8 @@ class TradeExecutor:
             risk_amount=risk_amount,
             sl_distance_pips=lot_result["sl_pips"],
             rr_ratio=signal.rr_ratio,
+            direction=signal.signal_type.value,
+            atr=signal.atr_value,
         )
 
         if not allowed:
@@ -412,6 +418,8 @@ class TradeExecutor:
             volatility_regime=entry_ctx["volatility_regime"],
             consec_loss_before=getattr(self._risk_manager, "_consecutive_losses", 0),
             dd_at_entry_pct=entry_ctx["dd_pct"],
+            # --- Partial close tracking ---
+            original_lot_size=lot_size,
         )
 
         # เก็บใน Active Trades
@@ -680,7 +688,13 @@ class TradeExecutor:
             del self._active_trades[ticket]
 
             # แจ้ง Risk Manager
-            self._risk_manager.update_daily_pnl(trade.profit, symbol=trade.symbol)
+            # reason_code=-1 → fallback ใช้ pnl sign; direction+close_price ช่วย post-TP lock ทำงานเมื่อ bot ปิดที่ TP level
+            self._risk_manager.update_daily_pnl(
+                trade.profit,
+                symbol=trade.symbol,
+                direction=trade.trade_type,
+                close_price=trade.close_price,
+            )
 
             if self._logger:
                 self._logger.log_trade_closed(trade.to_dict())
@@ -731,7 +745,13 @@ class TradeExecutor:
             self._closed_trades.append(trade)
             del self._active_trades[ticket]
 
-            self._risk_manager.update_daily_pnl(profit, symbol=trade.symbol, reason_code=reason_code)
+            self._risk_manager.update_daily_pnl(
+                profit,
+                symbol=trade.symbol,
+                reason_code=reason_code,
+                direction=trade.trade_type,
+                close_price=close_price,
+            )
 
             if self._logger:
                 self._logger.log_trade_closed(trade.to_dict())

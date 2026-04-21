@@ -276,13 +276,66 @@ class TradeManager:
             return
 
         # ส่งคำสั่งปิดบางส่วน
-        if self._partial_close_position(trade.ticket, trade.symbol, trade.trade_type, close_volume):
+        fill_price = self._partial_close_position(
+            trade.ticket, trade.symbol, trade.trade_type, close_volume
+        )
+        if fill_price is not None:
             state.partial_closed = True
             trade.lot_size = remaining  # อัพเดท Volume ที่เหลือ
+            trade.partial_close_count += 1
+
+            # === คำนวณ realized P/L ของ partial (USD) ===
+            realized_pnl = self._compute_partial_pnl(
+                trade=trade,
+                closed_volume=close_volume,
+                close_price=fill_price,
+            )
+
             print(f"✂️ [Trade Manager] ปิดบางส่วน Ticket {trade.ticket}: "
-                  f"ปิด {close_volume:.2f} lot, เหลือ {remaining:.2f} lot")
+                  f"ปิด {close_volume:.2f} lot @ {fill_price}, เหลือ {remaining:.2f} lot, "
+                  f"realized P/L ≈ ${realized_pnl:+,.2f}")
+
+            # === แจ้งเตือน Discord (ใช้ notifier ของ executor) ===
+            notifier = getattr(self._executor, "_notifier", None)
+            if notifier is not None:
+                notifier.send_trade_partial_close(
+                    trade_dict=trade.to_dict(),
+                    closed_volume=close_volume,
+                    remaining_volume=remaining,
+                    fill_price=fill_price,
+                    realized_pnl=realized_pnl,
+                )
         else:
             print(f"⚠️ [Trade Manager] ปิดบางส่วน Ticket {trade.ticket} ล้มเหลว")
+
+    def _compute_partial_pnl(
+        self,
+        trade: ExecutedTrade,
+        closed_volume: float,
+        close_price: float,
+    ) -> float:
+        """
+        ประมาณ realized P/L ของ partial close (USD)
+
+        สูตร:
+        - BUY:  pnl = (close − entry) × volume × contract_size
+        - SELL: pnl = (entry − close) × volume × contract_size
+        - ถ้า quote currency ≠ USD → หารด้วย close price เพื่อแปลงเป็น USD
+        """
+        symbol_info = self._connector.get_symbol_info(trade.symbol)
+        contract_size = (symbol_info.get("trade_contract_size") if symbol_info else None) or 100000
+        if trade.trade_type == "BUY":
+            price_diff = close_price - trade.entry_price
+        else:
+            price_diff = trade.entry_price - close_price
+
+        raw = price_diff * closed_volume * contract_size
+        quote_ccy = trade.symbol[3:6].upper() if len(trade.symbol) >= 6 else "USD"
+        if quote_ccy == "USD":
+            return raw
+        if close_price > 0:
+            return raw / close_price
+        return raw
 
     def _partial_close_position(
         self,
@@ -290,7 +343,7 @@ class TradeManager:
         symbol: str,
         trade_type: str,
         volume: float
-    ) -> bool:
+    ) -> Optional[float]:
         """
         ส่งคำสั่งปิดบางส่วนของ Position
 
@@ -301,15 +354,20 @@ class TradeManager:
             volume: Volume ที่ต้องการปิด
 
         Returns:
-            bool: สำเร็จหรือไม่
+            Optional[float]: fill price ถ้าสำเร็จ, None ถ้าล้มเหลว
         """
         if not MT5_AVAILABLE:
-            print(f"📝 [MOCK] จำลองปิดบางส่วน Ticket {ticket}: {volume:.2f} lot")
-            return True
+            # Mock: ใช้ราคาปัจจุบันเป็น fill price โดยประมาณ
+            price_info = self._connector.get_current_price(symbol)
+            mock_price = 0.0
+            if price_info:
+                mock_price = price_info["bid"] if trade_type == "BUY" else price_info["ask"]
+            print(f"📝 [MOCK] จำลองปิดบางส่วน Ticket {ticket}: {volume:.2f} lot @ {mock_price}")
+            return mock_price
 
         price_info = self._connector.get_current_price(symbol)
         if price_info is None:
-            return False
+            return None
 
         if trade_type == "BUY":
             close_type = mt5.ORDER_TYPE_SELL
@@ -333,7 +391,11 @@ class TradeManager:
         }
 
         result = mt5.order_send(request)
-        return result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            return None
+        # result.price = fill price จริง (ถ้า 0 fallback เป็นราคาที่ส่ง)
+        fill_price = getattr(result, "price", 0) or price
+        return fill_price
 
     # =========================================================================
     # 📏 Trailing Stop (เลื่อน SL ตามราคา)

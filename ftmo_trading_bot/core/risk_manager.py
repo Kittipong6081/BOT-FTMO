@@ -86,6 +86,11 @@ class RiskManager:
         # global halt-until timestamp (ISO) — ใช้ตอนแพ้ติดกันครบ threshold
         self._halt_until: Optional[str] = None
 
+        # === Post-TP Pullback Lock State (v5) ===
+        # key = "SYMBOL|DIRECTION" (เช่น "XAUUSD|SELL"), value = {"tp_price": float, "tp_time": iso}
+        # หลัง TP hit lock การเข้าทิศเดิม symbol เดิม จนกว่า pullback จะผ่าน
+        self._last_tp_per_symbol_dir: Dict[str, Dict] = {}
+
         # === FTMO Consistency Rule (v3) ===
         # เก็บกำไร/ขาดทุนที่ปิดแล้วรายวัน (date_iso → USD)
         # ใช้ตรวจสอบว่า max_day_profit / total_profit ≤ 45%
@@ -232,6 +237,11 @@ class RiskManager:
             print(f"🧊 [Risk Manager] Reset consecutive_losses ({self._consecutive_losses} → 0) ข้ามวันใหม่")
         self._consecutive_losses = 0
         self._halt_until = None
+
+        # Reset post-TP pullback locks ข้ามวัน — structure ของวันใหม่ไม่เกี่ยวกับ TP วันก่อน
+        if self._last_tp_per_symbol_dir:
+            print(f"🔓 [Risk Manager] Reset post-TP locks ({len(self._last_tp_per_symbol_dir)} entries) ข้ามวันใหม่")
+        self._last_tp_per_symbol_dir = {}
 
         # อัพเดท High Water Mark
         if current_balance > self._highest_balance:
@@ -427,7 +437,9 @@ class RiskManager:
         symbol: str,
         risk_amount: float,
         sl_distance_pips: float,
-        rr_ratio: float
+        rr_ratio: float,
+        direction: Optional[str] = None,
+        atr: Optional[float] = None,
     ) -> Tuple[bool, str]:
         """
         ตรวจสอบว่าสามารถเปิดออเดอร์ใหม่ได้หรือไม่
@@ -462,9 +474,18 @@ class RiskManager:
         if in_cd:
             return (False, f"🧊 {cd_msg}")
 
+        # === ตรวจสอบที่ 1.3: Post-TP Pullback Lock (ห้ามเข้าทิศเดิมหลัง TP ทันที) ===
+        # ป้องกัน "ไล่จับก้นเหว" — หลัง TP ราคา extended แล้ว entry ใหม่มักโดน SL
+        # ปลดล็อกเมื่อ: (a) price เด้ง ≥ ATR buffer จาก TP หรือ (b) EMA20 M15 touched หรือ (c) TTL หมด
+        if direction:
+            locked, lock_msg = self._is_post_tp_locked(symbol, direction, atr)
+            if locked:
+                return (False, f"🔒 {lock_msg}")
+
         # === ตรวจสอบที่ 1.3: Max Trades Per Day (Anti-Overtrading) ===
+        # None = ปิด cap (filter ชั้นอื่น: cooldown, post-TP lock, consecutive-loss halt, DD halt ยังคุมอยู่)
         max_per_day = getattr(self._config, "MAX_TRADES_PER_DAY", 5)
-        if self._daily_trades_count >= max_per_day:
+        if max_per_day is not None and self._daily_trades_count >= max_per_day:
             return (False, f"🚫 เทรดครบ {max_per_day} ครั้งวันนี้แล้ว — หยุดเพื่อไม่ over-trade")
 
         # === ตรวจสอบที่ 2: จำนวน Position ===
@@ -748,7 +769,9 @@ class RiskManager:
             # --- v4: Challenge Identity ---
             "mt5_login": self._mt5_login,
             "challenge_start_date": self._challenge_start_date,
-            "schema_version": 4,
+            # --- v5: Post-TP Pullback Lock ---
+            "last_tp_per_symbol_dir": self._last_tp_per_symbol_dir,
+            "schema_version": 5,
             "last_updated": datetime.now().isoformat(),
         }
 
@@ -802,6 +825,9 @@ class RiskManager:
             self._mt5_login = data.get("mt5_login")
             self._challenge_start_date = data.get("challenge_start_date")
 
+            # --- v5: Post-TP Pullback Lock (fallback สำหรับไฟล์เก่า) ---
+            self._last_tp_per_symbol_dir = data.get("last_tp_per_symbol_dir", {}) or {}
+
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))
             self._current_day = date.fromisoformat(day_str)
@@ -820,6 +846,8 @@ class RiskManager:
         trade_pnl: float,
         symbol: Optional[str] = None,
         reason_code: int = -1,
+        direction: Optional[str] = None,
+        close_price: Optional[float] = None,
     ):
         """
         อัพเดท P/L ที่ปิดไปแล้ววันนี้ (เรียกหลังจาก Position ปิด)
@@ -829,6 +857,8 @@ class RiskManager:
             symbol: คู่เงิน (ใช้ track cooldown)
             reason_code: MT5 DEAL_REASON code (4=SL, 5=TP, 6=SO, 3=EXPERT, 0-2=Manual).
                          -1 = ไม่ทราบ → fallback ใช้ pnl sign
+            direction: "BUY" | "SELL" — ใช้ track post-TP lock per symbol+direction
+            close_price: ราคาปิดจริง — ใช้เก็บเป็น reference TP price สำหรับ pullback lock
         """
         self._daily_closed_pnl += trade_pnl
         self._daily_trades_count += 1
@@ -838,8 +868,8 @@ class RiskManager:
         if current_balance > self._highest_balance:
             self._highest_balance = current_balance
 
-        # === Cooldown / Revenge-Trading Tracking ===
-        self._record_trade_outcome(symbol, trade_pnl, reason_code)
+        # === Cooldown / Revenge-Trading Tracking + Post-TP Lock ===
+        self._record_trade_outcome(symbol, trade_pnl, reason_code, direction, close_price)
 
         self._save_state()
 
@@ -864,6 +894,8 @@ class RiskManager:
         symbol: Optional[str],
         pnl: float,
         reason_code: int = -1,
+        direction: Optional[str] = None,
+        close_price: Optional[float] = None,
     ):
         """
         บันทึกผลเทรดเพื่อคำนวณ cooldown (ใช้ MT5 DEAL_REASON ตัดสิน)
@@ -872,6 +904,7 @@ class RiskManager:
         - Stop-out (DR_SO) → DAILY_HALT ทันที (disaster recovery)
         - Manual close (DR_CLIENT/MOBILE/WEB) → no-op (user intervention ไม่นับ)
         - TP hit (DR_TP) หรือ ชนะ (pnl>0) → clear cooldown ของ symbol นั้น + reset consecutive
+                                             + set post-TP lock (symbol+direction)
         - SL hit / ขาดทุนอื่น → set cooldown, เพิ่ม consecutive, อาจ pause/halt
         - Loss ขนาดเล็ก (< MIN_LOSS_TO_COUNT_PCT) → ไม่นับเป็น decision error (noise)
 
@@ -890,12 +923,22 @@ class RiskManager:
         if reason_code in (self._DR_CLIENT, self._DR_MOBILE, self._DR_WEB):
             return
 
-        # === TP hit หรือ ชนะด้วยวิธีอื่น → clear cooldown + reset ===
+        # === TP hit หรือ ชนะด้วยวิธีอื่น → clear cooldown + reset + set post-TP lock ===
         if reason_code == self._DR_TP or pnl > 0:
             self._consecutive_losses = 0
             self._halt_until = None  # clear global pause
             if symbol:
                 self._last_loss_time_per_symbol.pop(symbol, None)  # clear symbol cooldown
+            # Set post-TP lock (ป้องกันเข้าทิศเดิมซ้ำทันที)
+            # เงื่อนไข: มี symbol + direction + close_price (ไม่ใช่ partial close หรือ manual)
+            if symbol and direction and close_price and close_price > 0:
+                key = f"{symbol}|{direction}"
+                self._last_tp_per_symbol_dir[key] = {
+                    "tp_price": close_price,
+                    "tp_time": now_iso,
+                }
+                print(f"🔒 [Risk Manager] Post-TP lock: {symbol} {direction} "
+                      f"@ {close_price} (รอ pullback)")
             return
 
         # === pnl <= 0 (SL hit หรือ bot-close ขาดทุน) ===
@@ -953,6 +996,126 @@ class RiskManager:
             remaining = cd_min - elapsed
             return (True, f"Cooldown {symbol}: เหลือ {remaining:.1f} นาที")
         return (False, "")
+
+    def _is_post_tp_locked(
+        self,
+        symbol: str,
+        direction: str,
+        atr: Optional[float],
+    ) -> Tuple[bool, str]:
+        """
+        ตรวจ post-TP lock สำหรับ (symbol, direction)
+
+        ปลดล็อกเมื่อ OR condition ข้อใดข้อหนึ่ง:
+        (A) price_pullback: สำหรับ SELL lock — current ask > tp + ATR_buffer × ATR
+                           สำหรับ BUY lock  — current bid < tp − ATR_buffer × ATR
+        (B) ema_touched:    EMA20 M15 อยู่ในช่วง (low, high) ของ bar ใดบาร์หนึ่งในช่วง lookback
+        (C) ttl_expired:    elapsed > POST_TP_LOCK_TTL_MIN → ลบ entry และปลดล็อก
+        ถ้าปลดล็อกด้วย A หรือ B ให้ลบ entry ออกเพื่อไม่เช็คซ้ำ
+
+        Returns:
+            (is_locked, reason_str)
+        """
+        key = f"{symbol}|{direction}"
+        entry = self._last_tp_per_symbol_dir.get(key)
+        if not entry:
+            return (False, "")
+
+        tp_price = entry.get("tp_price", 0)
+        tp_time_iso = entry.get("tp_time", "")
+        if tp_price <= 0 or not tp_time_iso:
+            self._last_tp_per_symbol_dir.pop(key, None)
+            return (False, "")
+
+        # === (C) TTL expired ===
+        try:
+            tp_time = datetime.fromisoformat(tp_time_iso)
+        except Exception:
+            self._last_tp_per_symbol_dir.pop(key, None)
+            return (False, "")
+
+        now = TimeManager.get_server_time()
+        if tp_time.tzinfo is None:
+            tp_time = tp_time.replace(tzinfo=now.tzinfo)
+        ttl_min = getattr(self._config, "POST_TP_LOCK_TTL_MIN", 60)
+        elapsed_min = (now - tp_time).total_seconds() / 60.0
+        if elapsed_min >= ttl_min:
+            self._last_tp_per_symbol_dir.pop(key, None)
+            return (False, "")
+
+        # === (A) Price pullback with ATR buffer ===
+        atr_buffer_mult = getattr(self._config, "POST_TP_ATR_BUFFER", 0.3)
+        atr_buf = (atr or 0.0) * atr_buffer_mult  # 0 ถ้าไม่รู้ ATR → เท่ากับ no buffer
+
+        price_info = self._connector.get_current_price(symbol)
+        if price_info is None:
+            # ดึงราคาไม่ได้ → fail-safe คงล็อกไว้ (ดีกว่ายอมเปิด)
+            return (True, f"Post-TP Lock {symbol} {direction}: ดึงราคาไม่ได้")
+
+        bid = price_info.get("bid", 0)
+        ask = price_info.get("ask", 0)
+
+        price_ok = False
+        if direction == "SELL":
+            # ต้องการ pullback ขึ้น: ask > tp + buffer
+            price_ok = ask > (tp_price + atr_buf)
+        elif direction == "BUY":
+            # ต้องการ pullback ลง: bid < tp − buffer
+            price_ok = bid < (tp_price - atr_buf)
+
+        if price_ok:
+            self._last_tp_per_symbol_dir.pop(key, None)
+            return (False, "")
+
+        # === (B) EMA20 M15 touched in last N bars ===
+        if self._ema_touched_recently(symbol):
+            self._last_tp_per_symbol_dir.pop(key, None)
+            return (False, "")
+
+        # ยังล็อกอยู่ — สร้างข้อความอธิบายให้ user
+        remaining_min = ttl_min - elapsed_min
+        if direction == "SELL":
+            need = f"ask > {tp_price + atr_buf:.5f} (ปัจจุบัน {ask:.5f})"
+        else:
+            need = f"bid < {tp_price - atr_buf:.5f} (ปัจจุบัน {bid:.5f})"
+        return (
+            True,
+            f"Post-TP Lock {symbol} {direction}: รอ {need} หรือ EMA20 touch "
+            f"(TTL เหลือ {remaining_min:.1f} นาที)"
+        )
+
+    def _ema_touched_recently(self, symbol: str) -> bool:
+        """
+        เช็คว่า EMA20 (config: POST_TP_EMA_PERIOD) บน timeframe M15 ถูก "สัมผัส"
+        ใน N bars ล่าสุด (lookback จาก config) หรือไม่
+
+        นิยาม "touched": EMA value อยู่ในช่วง [low, high] ของ bar นั้น
+        — ใช้ได้ทั้ง SELL lock (price below EMA, rally ขึ้นแตะ) และ BUY lock (price above EMA, ย่อลงแตะ)
+
+        Returns:
+            True = EMA ถูกแตะในช่วง lookback (ปลดล็อก), False = ยังไม่ถูกแตะหรือดึงข้อมูลไม่ได้
+        """
+        tf = getattr(self._config, "POST_TP_EMA_TIMEFRAME", "M15")
+        period = getattr(self._config, "POST_TP_EMA_PERIOD", 20)
+        lookback = getattr(self._config, "POST_TP_EMA_LOOKBACK_BARS", 3)
+        # ต้องการ bars พอสำหรับ EMA warm-up + lookback
+        count = max(period * 3, 60)
+
+        df = self._connector.get_historical_data(symbol, tf, count)
+        if df is None or len(df) < period + lookback:
+            return False  # ดึงไม่ได้ → ไม่ปลดล็อก (fail-safe)
+
+        try:
+            ema = df["close"].ewm(span=period, adjust=False).mean()
+            recent_ema = ema.tail(lookback).values
+            recent_low = df["low"].tail(lookback).values
+            recent_high = df["high"].tail(lookback).values
+            for i in range(len(recent_ema)):
+                if recent_low[i] <= recent_ema[i] <= recent_high[i]:
+                    return True
+            return False
+        except Exception:
+            return False
 
     def is_global_halted(self) -> Tuple[bool, str]:
         """ตรวจ global halt_until (จาก consecutive losses pause)"""

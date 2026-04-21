@@ -219,6 +219,51 @@ class DiscordNotifier:
         }
         self._send_payload(payload)
 
+    def send_trade_partial_close(
+        self,
+        trade_dict: dict,
+        closed_volume: float,
+        remaining_volume: float,
+        fill_price: float,
+        realized_pnl: float,
+    ):
+        """
+        แจ้งเตือนเมื่อบอทปิด Position บางส่วน (partial close)
+
+        Args:
+            trade_dict: trade ที่แปลงเป็น dict (มี symbol, type, ticket, entry_price, ...)
+            closed_volume: lot ที่ปิด (partial)
+            remaining_volume: lot ที่เหลืออยู่
+            fill_price: ราคาที่ปิดจริง
+            realized_pnl: P/L realized จาก partial นี้ (USD, ประมาณ)
+        """
+        pnl_sign = "+" if realized_pnl >= 0 else ""
+        original_lot = float(trade_dict.get("lot_size") or 0) + closed_volume
+        pct_closed = (closed_volume / original_lot * 100) if original_lot > 0 else 0.0
+        color = 3447003  # Blue — partial ไม่ใช่เขียว/แดงเต็ม
+
+        payload = {
+            "username": "FTMO Bot",
+            "embeds": [{
+                "title": f"✂️ PARTIAL CLOSE: {trade_dict.get('type')} {trade_dict.get('symbol')}",
+                "description": (
+                    f"**Realized P/L: {pnl_sign}${realized_pnl:,.2f}** "
+                    f"(ปิด {pct_closed:.0f}% ของ position)"
+                ),
+                "color": color,
+                "fields": [
+                    {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
+                    {"name": "Entry", "value": self._fmt_price(trade_dict.get("entry_price")), "inline": True},
+                    {"name": "Partial Fill", "value": self._fmt_price(fill_price), "inline": True},
+                    {"name": "Closed Lot", "value": f"{closed_volume:.2f}", "inline": True},
+                    {"name": "Remaining Lot", "value": f"{remaining_volume:.2f}", "inline": True},
+                    {"name": "TP (final)", "value": self._fmt_price(trade_dict.get("tp_price")), "inline": True},
+                ],
+                "timestamp": datetime.utcnow().isoformat()
+            }]
+        }
+        self._send_payload(payload)
+
     def send_risk_alert(self, title: str, message: str):
         """แจ้งเตือนความเสี่ยงฉุกเฉิน (เช่น Daily Limit)"""
         payload = {

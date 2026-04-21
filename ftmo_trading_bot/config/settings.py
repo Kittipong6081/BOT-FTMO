@@ -11,7 +11,7 @@ FTMO Trading Bot — การตั้งค่าระบบทั้งห�
 
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import time
 from dotenv import load_dotenv
 
@@ -90,7 +90,7 @@ class FTMOConfig:
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน
 
     # === Anti-Overtrading Guardrails ===
-    MAX_TRADES_PER_DAY: int = 5                 # ยิงได้สูงสุด 5 ออเดอร์/วัน
+    MAX_TRADES_PER_DAY: Optional[int] = None    # None = ปิด cap (ใช้ filter ชั้นอื่นคุม); revert: ใส่เลขกลับ (เช่น 5)
     MAX_CORRELATED_POSITIONS: int = 1           # 1 ตำแหน่งต่อกลุ่ม correlation
     MIN_CONFLUENCE_SCORE: float = 70.0          # เกณฑ์ confluence ขั้นต่ำ (ปรับได้ runtime)
 
@@ -118,6 +118,16 @@ class FTMOConfig:
     # เหตุผล: tick/spread noise ไม่ใช่ decision error → ไม่ควร trigger anti-revenge
     # ค่า 0.0005 = 0.05% = $5 บน $10K
     MIN_LOSS_TO_COUNT_PCT: float = 0.0005
+
+    # === Post-TP Pullback Lock ===
+    # หลัง TP hit บน (symbol, direction) ใดก็ตาม block การเข้าทิศเดิมใน symbol นั้น
+    # จนกว่า price เด้งกลับ (เกิน TP + ATR buffer) หรือแตะ EMA20 M15 หรือ TTL หมด
+    # เหตุผล: หลัง TP ราคา extended แล้ว เข้าทิศเดิมทันที = ไล่จับก้นเหว
+    POST_TP_LOCK_TTL_MIN: int = 60                # TTL 60 นาทีหลัง TP hit
+    POST_TP_ATR_BUFFER: float = 0.3               # ต้อง pullback ≥ 0.3×ATR จาก TP price
+    POST_TP_EMA_PERIOD: int = 20                  # EMA20 (คำนวณบน M15)
+    POST_TP_EMA_TIMEFRAME: str = "M15"
+    POST_TP_EMA_LOOKBACK_BARS: int = 3            # เช็ค EMA touch ใน 3 bars ล่าสุด (~45 นาที)
 
 
 # =============================================================================
