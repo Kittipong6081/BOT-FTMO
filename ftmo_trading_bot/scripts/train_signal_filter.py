@@ -273,7 +273,7 @@ def ensure_signal_pool(data_dir, pool_size, max_days, workers):
     return pool_path
 
 
-def evaluate(model, n_episodes: int = 100, vec_normalize_path: str = None,
+def evaluate(model, n_episodes: int = 5000, vec_normalize_path: str = None,
              signal_pool_path: str = None, ml_filter_threshold: float = 0.0,
              risk_per_trade: float = None):
     # Pass all training params so eval matches training distribution
@@ -473,7 +473,7 @@ def main():
         eval_pool = os.path.join(ROOT, "data", f"signal_pool_{args.pool_size}.pkl")
         if not os.path.exists(eval_pool):
             eval_pool = None
-        evaluate(model, n_episodes=100, vec_normalize_path=vec_norm_final,
+        evaluate(model, n_episodes=5000, vec_normalize_path=vec_norm_final,
                  signal_pool_path=eval_pool,
                  ml_filter_threshold=args.ml_threshold,
                  risk_per_trade=args.risk_per_trade)
@@ -635,10 +635,10 @@ def main():
     # Final Evaluation
     # ═════════════════════════════════════════════════════════════
     print(f"\n{'='*65}")
-    print(f" Final Evaluation (100 episodes)")
+    print(f" Final Evaluation (5000 episodes)")
     print(f"   Total training time: {(elapsed_p1 + elapsed_p2)/60:.1f} min")
     print(f"{'='*65}")
-    evaluate(model_p2, n_episodes=100, vec_normalize_path=vec_norm_final,
+    evaluate(model_p2, n_episodes=5000, vec_normalize_path=vec_norm_final,
              signal_pool_path=pool_path,
              ml_filter_threshold=args.ml_threshold,
              risk_per_trade=args.risk_per_trade)
