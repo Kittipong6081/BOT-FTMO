@@ -834,6 +834,7 @@ class MT5Connector:
                 "commission": deal.commission,
                 "comment": deal.comment,
                 "magic": deal.magic,
+                "reason": getattr(deal, "reason", 0),  # DEAL_REASON: 4=SL, 5=TP, 6=SO, 3=EXPERT, 0-2=Manual
             })
         return result
 

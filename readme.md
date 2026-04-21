@@ -243,7 +243,7 @@ python3 scripts/train_signal_filter.py --fresh \
     --pool_size 3000 \
     --outcome_noise 0.02 \
     --ml_threshold 0.33 \
-    --risk_per_trade 0.006
+    --risk_per_trade 0.007
 ```
 
 **เวลา**: ~20-25 นาที

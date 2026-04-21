@@ -815,13 +815,20 @@ class RiskManager:
             print(f"⚠️ [Risk Manager] โหลดสถานะล้มเหลว: {e}")
             return False
 
-    def update_daily_pnl(self, trade_pnl: float, symbol: Optional[str] = None):
+    def update_daily_pnl(
+        self,
+        trade_pnl: float,
+        symbol: Optional[str] = None,
+        reason_code: int = -1,
+    ):
         """
         อัพเดท P/L ที่ปิดไปแล้ววันนี้ (เรียกหลังจาก Position ปิด)
 
         Args:
             trade_pnl: กำไร/ขาดทุนของเทรดที่ปิด (USD)
             symbol: คู่เงิน (ใช้ track cooldown)
+            reason_code: MT5 DEAL_REASON code (4=SL, 5=TP, 6=SO, 3=EXPERT, 0-2=Manual).
+                         -1 = ไม่ทราบ → fallback ใช้ pnl sign
         """
         self._daily_closed_pnl += trade_pnl
         self._daily_trades_count += 1
@@ -832,7 +839,7 @@ class RiskManager:
             self._highest_balance = current_balance
 
         # === Cooldown / Revenge-Trading Tracking ===
-        self._record_trade_outcome(symbol, trade_pnl)
+        self._record_trade_outcome(symbol, trade_pnl, reason_code)
 
         self._save_state()
 
@@ -843,24 +850,56 @@ class RiskManager:
     # 🧊 Cooldown / Anti-Revenge-Trading
     # =========================================================================
 
-    def _record_trade_outcome(self, symbol: Optional[str], pnl: float):
-        """
-        บันทึกผลเทรดเพื่อคำนวณ cooldown
+    # === MT5 DEAL_REASON codes (ต้องตรงกับ trade_executor._DEAL_REASON_MAP) ===
+    _DR_CLIENT = 0
+    _DR_MOBILE = 1
+    _DR_WEB = 2
+    _DR_EXPERT = 3
+    _DR_SL = 4
+    _DR_TP = 5
+    _DR_SO = 6  # Stop-out (margin call)
 
-        Logic:
-        - ชนะ (pnl > 0): reset consecutive_losses
-        - แพ้ (pnl <= 0): เพิ่ม consecutive_losses, บันทึก last_loss_time_per_symbol
-        - แพ้ติด N ครั้ง → pause global halt_until
-        - แพ้ติด M ครั้ง → DAILY_HALT
+    def _record_trade_outcome(
+        self,
+        symbol: Optional[str],
+        pnl: float,
+        reason_code: int = -1,
+    ):
+        """
+        บันทึกผลเทรดเพื่อคำนวณ cooldown (ใช้ MT5 DEAL_REASON ตัดสิน)
+
+        Policy:
+        - Stop-out (DR_SO) → DAILY_HALT ทันที (disaster recovery)
+        - Manual close (DR_CLIENT/MOBILE/WEB) → no-op (user intervention ไม่นับ)
+        - TP hit (DR_TP) หรือ ชนะ (pnl>0) → clear cooldown ของ symbol นั้น + reset consecutive
+        - SL hit / ขาดทุนอื่น → set cooldown, เพิ่ม consecutive, อาจ pause/halt
+        - Loss ขนาดเล็ก (< MIN_LOSS_TO_COUNT_PCT) → ไม่นับเป็น decision error (noise)
+
+        reason_code = -1 (ไม่ทราบ) → fallback ใช้ pnl sign เหมือนเดิม
         """
         now_iso = TimeManager.get_server_time().isoformat()
 
-        if pnl > 0:
-            self._consecutive_losses = 0
-            self._halt_until = None  # clear pause เมื่อ win reset counter
+        # === Stop-out = DAILY_HALT ทันที (ข้ามชั้น consecutive) ===
+        if reason_code == self._DR_SO:
+            print(f"🆘 [Risk Manager] Stop-out detected บน {symbol} (P/L=${pnl:,.2f}) → DAILY_HALT")
+            self._state = BotState.DAILY_HALT
+            self._halt_until = None
             return
 
-        # pnl <= 0 — ข้าม noise-level loss (เช่น tick/spread noise ที่ไม่ใช่ decision error)
+        # === Manual close = no-op (user ปิดเอง ไม่ใช่ decision error ของ bot) ===
+        if reason_code in (self._DR_CLIENT, self._DR_MOBILE, self._DR_WEB):
+            return
+
+        # === TP hit หรือ ชนะด้วยวิธีอื่น → clear cooldown + reset ===
+        if reason_code == self._DR_TP or pnl > 0:
+            self._consecutive_losses = 0
+            self._halt_until = None  # clear global pause
+            if symbol:
+                self._last_loss_time_per_symbol.pop(symbol, None)  # clear symbol cooldown
+            return
+
+        # === pnl <= 0 (SL hit หรือ bot-close ขาดทุน) ===
+        # ข้าม noise-level loss (tick/spread noise ที่ไม่ใช่ decision error)
         if self._daily_start_equity > 0:
             min_pct = getattr(self._config, "MIN_LOSS_TO_COUNT_PCT", 0.0005)
             loss_pct = abs(pnl) / self._daily_start_equity
@@ -902,6 +941,9 @@ class RiskManager:
             return (False, "")
 
         cd_min = getattr(self._config, "COOLDOWN_AFTER_LOSS_MIN", 30)
+        # Per-symbol override (เช่น XAUUSD ใช้ cooldown นานกว่า)
+        overrides = getattr(self._config, "COOLDOWN_OVERRIDE_MIN", {})
+        cd_min = overrides.get(symbol, cd_min)
         now = TimeManager.get_server_time()
         # Legacy state (pre-fix) เก็บเป็น naive → ถือว่าเป็น server time
         if last_loss.tzinfo is None:

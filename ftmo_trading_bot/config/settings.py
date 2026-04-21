@@ -104,6 +104,11 @@ class FTMOConfig:
     # === Cooldown / Anti-Revenge-Trading ===
     # หลังโดน SL บนคู่เงินใดคู่เงินหนึ่ง ต้องรอกี่นาทีก่อนเปิดคู่เดิมอีกครั้ง
     COOLDOWN_AFTER_LOSS_MIN: int = 30
+    # Per-symbol override — สัญลักษณ์ที่มี whipsaw/spread สูงใช้ cooldown นานกว่า
+    # ทอง (XAUUSD): 30 นาที เพราะหลัง stop-run มักเกิด reversal ลึกกว่า forex
+    COOLDOWN_OVERRIDE_MIN: Dict[str, int] = field(default_factory=lambda: {
+        "XAUUSD": 30,
+    })
     # ถ้าแพ้ติดกันกี่ครั้งให้ pause ทั้งระบบ
     CONSECUTIVE_LOSS_PAUSE_COUNT: int = 2
     CONSECUTIVE_LOSS_PAUSE_MIN: int = 60

@@ -143,6 +143,21 @@ class TradeExecutor:
     # Magic Number สำหรับระบุว่าเป็นคำสั่งจาก Bot
     MAGIC_NUMBER = 123456
 
+    # === MT5 DEAL_REASON → human-readable string ===
+    # ใช้ตัดสินใจ cooldown policy ใน RiskManager ด้วย (อย่าเปลี่ยน code โดยไม่อัพเดททั้งสองฝั่ง)
+    _DEAL_REASON_MAP = {
+        0: "Manual Close",
+        1: "Manual Close (Mobile)",
+        2: "Manual Close (Web)",
+        3: "Bot Close",
+        4: "🔴 SL Hit",
+        5: "🟢 TP Hit",
+        6: "🆘 Stop-out",
+        7: "Rollover",
+        8: "Variation Margin",
+        9: "Split",
+    }
+
     # === Correlation Groups ===
     # กลุ่มเดียวกัน = exposure ด้านเดียวกัน (ทั้ง BUY/SELL ต้องดูทิศ USD/JPY ไม่ใช่ order direction)
     # EURUSD BUY = USD อ่อน, USDCHF SELL = USD อ่อน → exposure เดียวกัน
@@ -685,7 +700,8 @@ class TradeExecutor:
         ticket: int,
         close_price: float,
         profit: float,
-        reason: str = "TP/SL Hit"
+        reason: str = "TP/SL Hit",
+        reason_code: int = -1
     ):
         """
         บันทึกเทรดที่ปิดจากภายนอก (SL/TP Hit โดย MT5)
@@ -696,7 +712,9 @@ class TradeExecutor:
             ticket: หมายเลข Ticket
             close_price: ราคาปิด
             profit: กำไร/ขาดทุน
-            reason: เหตุผล
+            reason: เหตุผล (human-readable string สำหรับ log/Excel)
+            reason_code: MT5 DEAL_REASON code (4=SL, 5=TP, 6=SO, 3=EXPERT, 0-2=Manual).
+                         -1 = ไม่ทราบ (จะ fallback ใช้ pnl sign ใน risk manager)
         """
         if ticket in self._active_trades:
             trade = self._active_trades[ticket]
@@ -713,7 +731,7 @@ class TradeExecutor:
             self._closed_trades.append(trade)
             del self._active_trades[ticket]
 
-            self._risk_manager.update_daily_pnl(profit, symbol=trade.symbol)
+            self._risk_manager.update_daily_pnl(profit, symbol=trade.symbol, reason_code=reason_code)
 
             if self._logger:
                 self._logger.log_trade_closed(trade.to_dict())
@@ -765,15 +783,17 @@ class TradeExecutor:
             deals = self._connector.get_deals_by_position(ticket)
             actual_profit = 0.0
             actual_close_price = 0.0
+            out_reason_code = -1  # -1 = ยังไม่ทราบ (จะ fallback ใช้ pnl sign ใน risk manager)
             matched = False
 
             for d in deals:
                 actual_profit += (d.get("profit", 0) or 0) \
                               + (d.get("swap", 0) or 0) \
                               + (d.get("commission", 0) or 0)
-                # close price จาก deal entry = 1 (OUT) ไม้สุดท้าย
+                # close price + reason จาก deal entry = 1 (OUT) ไม้สุดท้าย
                 if d.get("entry") == 1:
                     actual_close_price = d.get("price", 0) or 0
+                    out_reason_code = d.get("reason", -1)
                     matched = True  # ต้องมี OUT deal เท่านั้นถึงจะถือว่าปิดจริง
 
             # ถ้า match ไม่เจอ → ข้าม record_external_close รอบนี้
@@ -790,11 +810,16 @@ class TradeExecutor:
                 if price_info:
                     actual_close_price = price_info["bid"] if trade.trade_type == "BUY" else price_info["ask"]
 
+            reason_str = self._DEAL_REASON_MAP.get(
+                out_reason_code,
+                f"Close (reason={out_reason_code})"
+            )
             self.record_external_close(
                 ticket=ticket,
                 close_price=actual_close_price,
                 profit=actual_profit,
-                reason="SL/TP Hit (synced)"
+                reason=reason_str,
+                reason_code=out_reason_code
             )
 
     # =========================================================================
