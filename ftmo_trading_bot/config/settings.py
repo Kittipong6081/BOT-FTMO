@@ -177,6 +177,29 @@ class SymbolConfig:
         "XAUUSD": 80,   # Gold spread ~50-80 points (0.5-0.8 USD)
     })
 
+    # === Per-Symbol Overrides (v6, 2026-04-22) ===
+    # ปรับพฤติกรรมต่อ symbol สำหรับคู่ volatile/spread กว้าง (เช่น GBPJPY)
+    # อ่านผ่าน helper get_symbol_config(symbol, key, default)
+    symbol_overrides: Dict[str, Dict] = field(default_factory=lambda: {
+        "GBPJPY": {
+            "atr_floor_pips": 20,            # จาก default 8 — GBPJPY volatile, ต้องใหญ่พอคุ้ม spread
+            "min_confidence": 0.65,          # จาก default 0.55 — เข้มขึ้นกัน false signal
+            "spread_atr_ratio_max": 0.5,     # skip signal ถ้า spread/ATR > 0.5
+            "max_trades_per_day": 3,         # จาก default 5-6 — ลด whipsaw
+            "flip_lock_retrace_mult": 0.7,   # จาก default 0.5 — require retrace มากกว่า
+        },
+        "EURJPY": {
+            "atr_floor_pips": 15,
+            "spread_atr_ratio_max": 0.6,
+            "flip_lock_retrace_mult": 0.6,
+        },
+        "XAUUSD": {
+            "atr_floor_pips": 100,           # Gold ticks (0.01)
+            "spread_atr_ratio_max": 0.7,
+            "flip_lock_retrace_mult": 0.6,
+        },
+    })
+
 
 # =============================================================================
 # ⏰ การตั้งค่าช่วงเวลาเทรด (Trading Sessions)
@@ -349,6 +372,25 @@ bot_config = BotConfig()
 import os as _os
 if _os.environ.get("SMC_QUIET", "0") == "1":
     bot_config.debug_mode = False
+
+
+def get_symbol_config(symbol: str, key: str, default):
+    """
+    ดึงค่า config ที่ override เฉพาะ symbol
+
+    ใช้ใน strategy / risk_manager สำหรับคู่ volatile (GBPJPY, EURJPY, XAUUSD)
+    ที่ต้องมีเงื่อนไขเข้มกว่าคู่ทั่วไป
+
+    Args:
+        symbol: ชื่อคู่เงิน เช่น "GBPJPY"
+        key: ชื่อ config เช่น "atr_floor_pips", "max_trades_per_day"
+        default: ค่า fallback ถ้าไม่มี override
+
+    Returns:
+        ค่า override ถ้ามี, ไม่งั้น default
+    """
+    overrides = bot_config.symbols.symbol_overrides.get(symbol, {})
+    return overrides.get(key, default)
 
 
 # =============================================================================

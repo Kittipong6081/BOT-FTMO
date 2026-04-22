@@ -22,7 +22,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Tuple
 from enum import Enum
 
-from config.settings import bot_config
+from config.settings import bot_config, get_symbol_config
 from core.mt5_connector import MT5Connector
 from core.time_manager import TimeManager
 
@@ -90,6 +90,12 @@ class RiskManager:
         # key = "SYMBOL|DIRECTION" (เช่น "XAUUSD|SELL"), value = {"tp_price": float, "tp_time": iso}
         # หลัง TP hit lock การเข้าทิศเดิม symbol เดิม จนกว่า pullback จะผ่าน
         self._last_tp_per_symbol_dir: Dict[str, Dict] = {}
+
+        # === Directional Flip-Lock State (v6) — กัน whipsaw BUY↔SELL flip ===
+        # key = symbol, value = {closed_direction, close_price, atr_at_close,
+        #                         unlock_threshold, min_unlock_time (iso)}
+        # หลังปิดไม้ใดๆ (TP/SL) → lock opposite direction จนกว่าราคาจะ retrace ≥ K×ATR
+        self._flip_lock: Dict[str, Dict] = {}
 
         # === FTMO Consistency Rule (v3) ===
         # เก็บกำไร/ขาดทุนที่ปิดแล้วรายวัน (date_iso → USD)
@@ -482,11 +488,21 @@ class RiskManager:
             if locked:
                 return (False, f"🔒 {lock_msg}")
 
+        # === ตรวจสอบที่ 1.4: Flip-Lock (กัน whipsaw BUY↔SELL) ===
+        # ห้ามเปิดทิศตรงข้ามทันทีหลังปิดไม้ล่าสุด จนกว่าราคาจะ retrace ≥ K×ATR
+        if direction:
+            flip_locked, flip_msg = self.is_flip_locked(symbol, direction)
+            if flip_locked:
+                return (False, f"🔄 {flip_msg}")
+
         # === ตรวจสอบที่ 1.3: Max Trades Per Day (Anti-Overtrading) ===
         # None = ปิด cap (filter ชั้นอื่น: cooldown, post-TP lock, consecutive-loss halt, DD halt ยังคุมอยู่)
-        max_per_day = getattr(self._config, "MAX_TRADES_PER_DAY", 5)
+        # Per-symbol override (เช่น GBPJPY=3) สำคัญสำหรับคู่ volatile — แต่ track เป็น total count
+        # ใช้ symbol override ถ้ามี (เพราะคู่ volatile กินงบเทรดทั้งวันเอง)
+        default_max = getattr(self._config, "MAX_TRADES_PER_DAY", 5)
+        max_per_day = get_symbol_config(symbol, "max_trades_per_day", default_max)
         if max_per_day is not None and self._daily_trades_count >= max_per_day:
-            return (False, f"🚫 เทรดครบ {max_per_day} ครั้งวันนี้แล้ว — หยุดเพื่อไม่ over-trade")
+            return (False, f"🚫 {symbol}: เทรดครบ {max_per_day} ครั้งวันนี้แล้ว — หยุดเพื่อไม่ over-trade")
 
         # === ตรวจสอบที่ 2: จำนวน Position ===
         current_positions = self._connector.get_positions_count()
@@ -771,7 +787,9 @@ class RiskManager:
             "challenge_start_date": self._challenge_start_date,
             # --- v5: Post-TP Pullback Lock ---
             "last_tp_per_symbol_dir": self._last_tp_per_symbol_dir,
-            "schema_version": 5,
+            # --- v6: Directional Flip-Lock (anti-whipsaw) ---
+            "flip_lock": self._flip_lock,
+            "schema_version": 6,
             "last_updated": datetime.now().isoformat(),
         }
 
@@ -827,6 +845,9 @@ class RiskManager:
 
             # --- v5: Post-TP Pullback Lock (fallback สำหรับไฟล์เก่า) ---
             self._last_tp_per_symbol_dir = data.get("last_tp_per_symbol_dir", {}) or {}
+
+            # --- v6: Directional Flip-Lock (fallback สำหรับไฟล์เก่า) ---
+            self._flip_lock = data.get("flip_lock", {}) or {}
 
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))
@@ -939,6 +960,9 @@ class RiskManager:
                 }
                 print(f"🔒 [Risk Manager] Post-TP lock: {symbol} {direction} "
                       f"@ {close_price} (รอ pullback)")
+                # Flip-lock (กัน opposite direction whipsaw) — ใช้ ATR ล่าสุดถ้ามี
+                atr_hint = self._get_recent_atr(symbol)
+                self.register_flip_lock(symbol, direction, close_price, atr_hint, self._DR_TP)
             return
 
         # === pnl <= 0 (SL hit หรือ bot-close ขาดทุน) ===
@@ -952,6 +976,11 @@ class RiskManager:
         self._consecutive_losses += 1
         if symbol:
             self._last_loss_time_per_symbol[symbol] = now_iso
+
+        # Flip-lock หลัง SL (กันเปิด opposite direction ทันที)
+        if symbol and direction and close_price and close_price > 0:
+            atr_hint = self._get_recent_atr(symbol)
+            self.register_flip_lock(symbol, direction, close_price, atr_hint, self._DR_SL)
 
         halt_cnt = getattr(self._config, "CONSECUTIVE_LOSS_HALT_COUNT", 3)
         pause_cnt = getattr(self._config, "CONSECUTIVE_LOSS_PAUSE_COUNT", 2)
@@ -1084,6 +1113,30 @@ class RiskManager:
             f"(TTL เหลือ {remaining_min:.1f} นาที)"
         )
 
+    def _get_recent_atr(self, symbol: str, period: int = 14) -> Optional[float]:
+        """
+        ดึง ATR ล่าสุดของ symbol บน M15 (ใช้สำหรับ flip-lock threshold)
+
+        Returns:
+            ATR value (float) หรือ None ถ้าดึงไม่ได้
+        """
+        try:
+            count = max(period * 3, 60)
+            df = self._connector.get_historical_data(symbol, "M15", count)
+            if df is None or len(df) < period + 1:
+                return None
+            high = df["high"]
+            low = df["low"]
+            close = df["close"]
+            prev_close = close.shift(1)
+            tr = (high - low).combine((high - prev_close).abs(), max).combine(
+                (low - prev_close).abs(), max
+            )
+            atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+            return float(atr.iloc[-1])
+        except Exception:
+            return None
+
     def _ema_touched_recently(self, symbol: str) -> bool:
         """
         เช็คว่า EMA20 (config: POST_TP_EMA_PERIOD) บน timeframe M15 ถูก "สัมผัส"
@@ -1116,6 +1169,129 @@ class RiskManager:
             return False
         except Exception:
             return False
+
+    # =========================================================================
+    # 🔄 Directional Flip-Lock (v6) — กัน whipsaw BUY↔SELL
+    # =========================================================================
+
+    def register_flip_lock(
+        self,
+        symbol: str,
+        closed_direction: str,
+        close_price: float,
+        atr: Optional[float],
+        reason_code: int,
+    ):
+        """
+        ลงทะเบียน flip-lock หลังไม้ของ symbol ถูกปิด (TP/SL/bot-close)
+
+        หลังปิด BUY → lock ห้ามเปิด SELL จนกว่าราคาจะ retrace ลง K×ATR
+        หลังปิด SELL → lock ห้ามเปิด BUY จนกว่าราคาจะ retrace ขึ้น K×ATR
+        K default = 0.5 (TP) / 0.7 (SL) — per-symbol override ได้ผ่าน settings
+        """
+        if not symbol or not closed_direction or not close_price or close_price <= 0:
+            return
+
+        # K multiplier — SL ให้ retrace มากกว่า TP (SL = overshoot, TP = profit taken ตามแผน)
+        if reason_code == self._DR_SL:
+            retrace_mult = 0.7
+        else:
+            retrace_mult = 0.5
+
+        # Per-symbol override (เช่น GBPJPY = 0.7)
+        retrace_mult = float(get_symbol_config(symbol, "flip_lock_retrace_mult", retrace_mult))
+
+        atr_val = atr if atr and atr > 0 else 0.0
+        if closed_direction == "BUY":
+            # ปิด BUY → จะเปิด SELL ได้ต่อเมื่อราคาลง K×ATR
+            threshold = close_price - retrace_mult * atr_val
+        else:  # SELL
+            threshold = close_price + retrace_mult * atr_val
+
+        min_unlock_min = getattr(self._config, "FLIP_LOCK_MIN_MINUTES", 5)
+        now = TimeManager.get_server_time()
+        min_unlock_time = (now + timedelta(minutes=min_unlock_min)).isoformat()
+
+        self._flip_lock[symbol] = {
+            "closed_direction": closed_direction,
+            "close_price": float(close_price),
+            "atr_at_close": float(atr_val),
+            "unlock_threshold": float(threshold),
+            "min_unlock_time": min_unlock_time,
+        }
+        print(f"🔄 [Risk Manager] Flip-lock set: {symbol} {closed_direction} closed @ {close_price} "
+              f"→ opposite dir lock until price retraces {retrace_mult}×ATR "
+              f"(threshold={threshold:.5f}, min_time={min_unlock_min}m)")
+
+    def is_flip_locked(
+        self,
+        symbol: str,
+        proposed_direction: str,
+    ) -> Tuple[bool, str]:
+        """
+        ตรวจว่าทิศ `proposed_direction` ถูก lock จาก flip ล่าสุดหรือไม่
+
+        ปลดล็อกเมื่อ:
+        (A) ราคา retrace ผ่าน unlock_threshold และ
+        (B) เลย min_unlock_time แล้ว
+
+        Returns:
+            (is_locked, reason_str)
+        """
+        lock = self._flip_lock.get(symbol)
+        if not lock:
+            return (False, "")
+
+        closed_dir = lock.get("closed_direction", "")
+        if closed_dir == proposed_direction:
+            # same direction → ใช้ _is_post_tp_locked แทน, flip-lock ไม่เกี่ยวข้อง
+            return (False, "")
+
+        # === Min unlock time (safety floor) ===
+        try:
+            min_unlock = datetime.fromisoformat(lock.get("min_unlock_time", ""))
+        except Exception:
+            # broken state — clear and pass
+            self._flip_lock.pop(symbol, None)
+            return (False, "")
+
+        now = TimeManager.get_server_time()
+        if min_unlock.tzinfo is None:
+            min_unlock = min_unlock.replace(tzinfo=now.tzinfo)
+        if now < min_unlock:
+            remaining_s = int((min_unlock - now).total_seconds())
+            return (True, f"Flip-lock {symbol}: เพิ่งปิด {closed_dir} — รอ {remaining_s}s")
+
+        # === Price retrace check ===
+        threshold = lock.get("unlock_threshold", 0.0)
+        price_info = self._connector.get_current_price(symbol)
+        if price_info is None:
+            # ดึงราคาไม่ได้ → fail-safe คงล็อก
+            return (True, f"Flip-lock {symbol}: ดึงราคาไม่ได้ (fail-safe)")
+
+        bid = price_info.get("bid", 0)
+        ask = price_info.get("ask", 0)
+
+        if proposed_direction == "SELL":
+            # ปิด BUY แล้วจะ SELL → ต้องรอราคา "ลงต่ำกว่า" threshold
+            if bid > threshold:
+                return (
+                    True,
+                    f"Flip-lock {symbol}: เพิ่งปิด BUY @ {lock['close_price']:.5f} "
+                    f"— รอ bid < {threshold:.5f} (ปัจจุบัน {bid:.5f})"
+                )
+        else:  # BUY
+            # ปิด SELL แล้วจะ BUY → ต้องรอราคา "ขึ้นสูงกว่า" threshold
+            if ask < threshold:
+                return (
+                    True,
+                    f"Flip-lock {symbol}: เพิ่งปิด SELL @ {lock['close_price']:.5f} "
+                    f"— รอ ask > {threshold:.5f} (ปัจจุบัน {ask:.5f})"
+                )
+
+        # Retrace ผ่านแล้ว — ปลดล็อก
+        self._flip_lock.pop(symbol, None)
+        return (False, "")
 
     def is_global_halted(self) -> Tuple[bool, str]:
         """ตรวจ global halt_until (จาก consecutive losses pause)"""

@@ -125,9 +125,11 @@ class FTMOSignalFilterEnv(gym.Env):
         if not self._seq_symbols:
             raise RuntimeError("No symbols with enough data for sequential episode")
 
-        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio = 24
+        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf = 27
+        # v6 (2026-04-22): เพิ่ม spread_pct_of_atr, has_opposite_recently_closed, htf_trend_alignment
+        # เพื่อให้ agent เห็นต้นทุน spread + flip-lock context + HTF trend sync กับ P1 filter
         self.observation_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(24,), dtype=np.float32
+            low=-5.0, high=5.0, shape=(27,), dtype=np.float32
         )
 
         # Action: 1 dim continuous — >0 = TAKE, ≤0 = SKIP
@@ -166,6 +168,9 @@ class FTMOSignalFilterEnv(gym.Env):
         self._consecutive_losses = 0
         self._total_takes = 0
         self._total_skips = 0
+        # v6: track last closed trade direction for flip-lock feature
+        self._last_closed_direction: float = 0.0  # +1 BUY / -1 SELL / 0 none
+        self._last_closed_signal_step: int = -999
 
     def _pick_episode(self, rng: np.random.Generator):
         symbol = self._seq_symbols[int(rng.integers(0, len(self._seq_symbols)))]
@@ -180,7 +185,7 @@ class FTMOSignalFilterEnv(gym.Env):
 
     def _get_obs(self) -> np.ndarray:
         if self._signal_idx >= len(self._signals):
-            return np.zeros(24, dtype=np.float32)
+            return np.zeros(27, dtype=np.float32)
 
         sig = self._signals[self._signal_idx]
 
@@ -225,6 +230,29 @@ class FTMOSignalFilterEnv(gym.Env):
             recent_wr_norm = 0.0
         consec_norm = min(self._consecutive_losses, 5) / 5.0
 
+        # ─── v6: Cost / Flip / HTF (3) ────────────────────────
+        # [24] spread_pct_of_atr — normalize ต้นทุน spread เทียบ volatility
+        #      GBPJPY จะเห็นค่าสูง (~1.0-2.0) → agent เรียนหลีกเลี่ยง setup RR ต่ำ
+        spread_pips = sig.get('spread_pips', 0.0)
+        spread_pct_of_atr = spread_pips / max(atr_pips, 1e-6) if atr_pips > 0 else 0.0
+
+        # [25] has_opposite_recently_closed — flip-lock context
+        #      1.0 ถ้ามี trade ตรงข้ามปิดภายใน last signal (sync กับ flip-lock P0)
+        # ใช้ _last_closed_direction_step ที่เพิ่มใน __init__ (track step # at close)
+        last_closed_dir = getattr(self, '_last_closed_direction', 0)
+        last_closed_step = getattr(self, '_last_closed_signal_step', -999)
+        # ถือว่า "recent" = ภายใน 3 signals
+        recent_opposite = 0.0
+        if last_closed_dir != 0 and last_closed_dir != direction:
+            gap = self._signal_idx - last_closed_step
+            if gap >= 0 and gap <= 3:
+                recent_opposite = 1.0
+
+        # [26] htf_trend_alignment — สรุป H1 EMA200 + D1 bias vs signal direction
+        # ใช้ bias_alignment ของ signal (มีอยู่แล้ว) ผสมกับ adx
+        # sig['htf_trend_alignment'] ถ้ามีใน pool (backtester v2) ไม่งั้น fallback = bias_align * sign(adx_norm-0.2)
+        htf_align = sig.get('htf_trend_alignment', bias_align)
+
         obs = np.array([
             # Signal core [0-11]
             float(np.clip(confluence_norm, -1.0, 1.0)),
@@ -254,6 +282,10 @@ class FTMOSignalFilterEnv(gym.Env):
             float(np.clip(trades_today_n, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
             float(np.clip(consec_norm, 0.0, 1.0)),
+            # v6 Cost/Flip/HTF [24-26]
+            float(np.clip(spread_pct_of_atr, 0.0, 3.0)),
+            float(recent_opposite),
+            float(np.clip(htf_align, -1.0, 1.0)),
         ], dtype=np.float32)
         return obs
 
@@ -410,6 +442,10 @@ class FTMOSignalFilterEnv(gym.Env):
             self._trade_results.append(pnl)
             self._total_takes += 1
 
+            # v6: track last closed direction + step for flip-lock observation
+            self._last_closed_direction = float(sig.get('direction', 0.0))
+            self._last_closed_signal_step = int(self._signal_idx)
+
             if pnl > 0:
                 self._consecutive_losses = 0
             else:
@@ -433,6 +469,16 @@ class FTMOSignalFilterEnv(gym.Env):
             # Base: PnL in risk units (asymmetric: win กว้างกว่า loss
             # เพราะ signal เป็น -EV → ต้องให้ winner คุ้มกับ loser ถึงจะกล้าเทรด)
             pnl_norm = pnl / max(risk_amount, 1.0)
+
+            # v6: หัก spread cost เป็น R units → agent เรียนหลีกเลี่ยง cost สูง
+            # GBPJPY: spread 30 / SL 50 = 0.6R × 0.5 weight = 0.3R deduction
+            spread_pips_trade = sig.get('spread_pips', 0.0)
+            sl_pips_trade = sig.get('sl_distance_pips', 0.0)
+            if sl_pips_trade > 0 and spread_pips_trade > 0:
+                spread_cost_R = spread_pips_trade / sl_pips_trade
+                # Weight 0.5 — spread affects entry/exit แต่ TP distance ดูดกลับบางส่วน
+                pnl_norm -= spread_cost_R * 0.5
+
             reward = float(np.clip(pnl_norm, -1.0, 3.0))
 
             # ML quality bonus (Option D) — ใช้ ml_score แทน confluence

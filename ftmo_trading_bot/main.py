@@ -519,8 +519,42 @@ class FTMOTradingBot:
             float(np.clip(trades_today_n, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
             float(np.clip(consec_losses / 5.0, 0.0, 1.0)),
+            # v6 Cost/Flip/HTF [24-26] — match FTMOSignalFilterEnv
+            float(np.clip(self._build_spread_pct_of_atr(sig, atr_pips), 0.0, 3.0)),
+            float(self._has_opposite_recently_closed(sig)),
+            float(np.clip(bias_align, -1.0, 1.0)),  # htf_trend_alignment — ใช้ bias_align เป็น proxy
         ], dtype=np.float32)
         return obs
+
+    def _build_spread_pct_of_atr(self, sig, atr_pips: float) -> float:
+        """spread_pips / atr_pips — normalize ต้นทุน spread (v6)"""
+        try:
+            price_info = self._connector.get_current_price(sig.symbol)
+            if price_info is None:
+                return 0.0
+            symbol_info = self._connector.get_symbol_info(sig.symbol)
+            if symbol_info is None:
+                return 0.0
+            pip_size = 0.01 if symbol_info["digits"] <= 3 else 0.0001
+            spread_pips = price_info["spread"] / (pip_size / symbol_info["point"])
+            return spread_pips / max(atr_pips, 1e-6) if atr_pips > 0 else 0.0
+        except Exception:
+            return 0.0
+
+    def _has_opposite_recently_closed(self, sig) -> float:
+        """1.0 ถ้ามี trade ตรงข้ามปิดภายใน 30 นาที (flip-lock context, v6)"""
+        try:
+            flip_lock = getattr(self._risk_manager, '_flip_lock', {})
+            lock = flip_lock.get(sig.symbol)
+            if not lock:
+                return 0.0
+            closed_dir = lock.get("closed_direction", "")
+            signal_dir = sig.signal_type.value
+            if closed_dir and closed_dir != signal_dir:
+                return 1.0
+            return 0.0
+        except Exception:
+            return 0.0
 
     def _print_config_summary(self):
         """แสดงสรุปการตั้งค่าทั้งหมด"""

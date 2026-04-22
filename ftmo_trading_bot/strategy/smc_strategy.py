@@ -34,7 +34,7 @@ import pandas as pd
 import numpy as np
 import pytz
 
-from config.settings import bot_config
+from config.settings import bot_config, get_symbol_config
 from config.news_events import is_near_high_impact_news
 from core.mt5_connector import MT5Connector
 from core.time_manager import TimeManager
@@ -160,8 +160,51 @@ class SMCStrategy:
         
         # HTF Bias
         self._htf_bias: int = 0  # 1=Bullish, -1=Bearish, 0=Neutral
-        
+
+        # D1 bias cache (symbol -> {"bias": int, "time": float timestamp})
+        # D1 เปลี่ยนช้า → cache ได้ 1 ชั่วโมง เพื่อประหยัด MT5 calls
+        self._d1_bias_cache: Dict[str, Dict] = {}
+
         print("🎯 [SMC Strategy] เริ่มต้นกลยุทธ์ Smart Money Concepts")
+
+    # =========================================================================
+    # 🗓️ D1 Bias Helper (Daily Trend Overlay)
+    # =========================================================================
+
+    def _get_d1_bias(self, symbol: str) -> int:
+        """
+        คำนวณ D1 bias จากราคาเทียบ EMA50 บน Daily chart
+
+        ใช้ buffer 0.5% กัน noise → neutral ถ้าราคาใกล้ EMA50 มาก
+
+        Returns:
+            +1 bullish / -1 bearish / 0 neutral (หรือดึงข้อมูลไม่ได้)
+        """
+        import time as _t
+        now_ts = _t.time()
+        cached = self._d1_bias_cache.get(symbol)
+        if cached and (now_ts - cached.get("time", 0)) < 3600:
+            return int(cached.get("bias", 0))
+
+        try:
+            d1_df = self._connector.get_ohlcv(symbol, "D1", 80)
+            if d1_df is None or len(d1_df) < 50:
+                return 0
+            ema50 = d1_df["close"].ewm(span=50, adjust=False).mean()
+            current_close = float(d1_df["close"].iloc[-1])
+            ema50_last = float(ema50.iloc[-1])
+            if ema50_last <= 0:
+                return 0
+            if current_close > ema50_last * 1.005:
+                bias = 1
+            elif current_close < ema50_last * 0.995:
+                bias = -1
+            else:
+                bias = 0
+            self._d1_bias_cache[symbol] = {"bias": bias, "time": now_ts}
+            return bias
+        except Exception:
+            return 0
 
     # =========================================================================
     # 🔄 วิเคราะห์สัญญาณ (Main Analysis)
@@ -451,10 +494,10 @@ class SMCStrategy:
         pip_size = 0.0001 if symbol_info and symbol_info["digits"] >= 4 else 0.01
         atr_pips = atr_value / pip_size if pip_size > 0 else 0
 
-        # A. Volatility floor — gold-aware (Gold ticks × 100 vs Forex pips)
-        # Forex: 8 pips = meaningful / Gold: 8 ticks = $0.08 noise → raise to 100 ticks ($1)
+        # A. Volatility floor — gold-aware + per-symbol override (GBPJPY=20, EURJPY=15)
         is_metal = "XAU" in symbol.upper() or "XAG" in symbol.upper()
-        min_atr_pips = 100.0 if is_metal else 8.0
+        default_floor = 100.0 if is_metal else 8.0
+        min_atr_pips = float(get_symbol_config(symbol, "atr_floor_pips", default_floor))
         if atr_pips < min_atr_pips:
             no_signal.confluence_score = 0
             no_signal.reasons = [f"❌ [REJECT] ATR {atr_pips:.1f} pips < {min_atr_pips:.0f} (volatility ต่ำ)"]
@@ -473,6 +516,33 @@ class SMCStrategy:
             no_signal.confluence_score = 0
             no_signal.reasons = ["❌ [REJECT] HTF+MTF bearish ทั้งคู่ — ห้าม BUY counter-trend"]
             return no_signal
+
+        # D. EMA200 alignment (H1) — hard veto counter-trend เชิง intraday
+        #    H1 EMA200 = "fair value line" ระยะกลาง → ซื้อใต้เส้น = กินมีด
+        if self._mtf_data is not None and "ema_slow" in self._mtf_data.columns:
+            ema200_h1 = float(self._mtf_data["ema_slow"].iloc[-1])
+            if ema200_h1 > 0 and current_price < ema200_h1:
+                no_signal.confluence_score = 0
+                no_signal.reasons = [
+                    f"❌ [REJECT] BUY below H1 EMA200 "
+                    f"(price={current_price:.5f}, EMA200={ema200_h1:.5f})"
+                ]
+                return no_signal
+
+        # E. ADX(H1) ≥ 20 — skip ranging market (whipsaw บ่อย)
+        if self._mtf_data is not None and "adx" in self._mtf_data.columns:
+            adx_h1 = float(self._mtf_data["adx"].iloc[-1])
+            if adx_h1 < 20.0:
+                no_signal.confluence_score = 0
+                no_signal.reasons = [f"❌ [REJECT] ADX(H1) {adx_h1:.1f} < 20 — ranging market"]
+                return no_signal
+
+        # F. D1 bias overlay — counter-D1 → require confluence สูงขึ้น (soft veto)
+        d1_bias = self._get_d1_bias(symbol)
+        counter_d1_conf_bonus = 0  # used later to raise threshold
+        if d1_bias == -1:
+            counter_d1_conf_bonus = 15  # BUY counter D1 bearish → ต้องเก่งกว่า 15 คะแนน
+            reasons.append(f"⚠️ counter-D1 (D1 bearish) → ต้อง confluence สูงกว่าปกติ +15")
 
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == 1:
@@ -590,10 +660,13 @@ class SMCStrategy:
         # === Cap score ที่ 100 ===
         score = min(score, 100.0)
 
-        # === ตรวจสอบว่าผ่านเกณฑ์หรือไม่ ===
-        if score < self.MIN_CONFLUENCE_SCORE:
+        # === ตรวจสอบว่าผ่านเกณฑ์หรือไม่ (counter-D1 → threshold สูงขึ้น) ===
+        required_score = self.MIN_CONFLUENCE_SCORE + counter_d1_conf_bonus
+        if score < required_score:
             no_signal.confluence_score = score
-            no_signal.reasons = reasons
+            no_signal.reasons = reasons + [
+                f"❌ Score {score:.0f} < required {required_score:.0f} (counter-D1 bonus={counter_d1_conf_bonus})"
+            ] if counter_d1_conf_bonus > 0 else reasons
             return no_signal
 
         # === คำนวณ Entry, SL, TP ===
@@ -731,6 +804,32 @@ class SMCStrategy:
             no_signal.reasons = ["❌ [REJECT] HTF+MTF bullish ทั้งคู่ — ห้าม SELL counter-trend"]
             return no_signal
 
+        # D. EMA200 alignment (H1) — hard veto: ขายเหนือเส้น = ยืนขวางรถไฟ
+        if self._mtf_data is not None and "ema_slow" in self._mtf_data.columns:
+            ema200_h1 = float(self._mtf_data["ema_slow"].iloc[-1])
+            if ema200_h1 > 0 and current_price > ema200_h1:
+                no_signal.confluence_score = 0
+                no_signal.reasons = [
+                    f"❌ [REJECT] SELL above H1 EMA200 "
+                    f"(price={current_price:.5f}, EMA200={ema200_h1:.5f})"
+                ]
+                return no_signal
+
+        # E. ADX(H1) ≥ 20 — skip ranging market
+        if self._mtf_data is not None and "adx" in self._mtf_data.columns:
+            adx_h1 = float(self._mtf_data["adx"].iloc[-1])
+            if adx_h1 < 20.0:
+                no_signal.confluence_score = 0
+                no_signal.reasons = [f"❌ [REJECT] ADX(H1) {adx_h1:.1f} < 20 — ranging market"]
+                return no_signal
+
+        # F. D1 bias overlay — counter-D1 (D1 bullish) → require confluence สูงขึ้น
+        d1_bias = self._get_d1_bias(symbol)
+        counter_d1_conf_bonus = 0
+        if d1_bias == 1:
+            counter_d1_conf_bonus = 15
+            reasons.append(f"⚠️ counter-D1 (D1 bullish) → ต้อง confluence สูงกว่าปกติ +15")
+
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == -1:
             score += 25
@@ -845,10 +944,13 @@ class SMCStrategy:
         # === Cap score ที่ 100 ===
         score = min(score, 100.0)
 
-        # === ตรวจสอบเกณฑ์ ===
-        if score < self.MIN_CONFLUENCE_SCORE:
+        # === ตรวจสอบเกณฑ์ (counter-D1 → threshold สูงขึ้น) ===
+        required_score = self.MIN_CONFLUENCE_SCORE + counter_d1_conf_bonus
+        if score < required_score:
             no_signal.confluence_score = score
-            no_signal.reasons = reasons
+            no_signal.reasons = reasons + [
+                f"❌ Score {score:.0f} < required {required_score:.0f} (counter-D1 bonus={counter_d1_conf_bonus})"
+            ] if counter_d1_conf_bonus > 0 else reasons
             return no_signal
 
         # === คำนวณ Entry, SL, TP ===

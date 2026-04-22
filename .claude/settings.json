@@ -87,7 +87,15 @@
       "Bash(/usr/local/bin/python3.14 -c *)",
       "Bash(unzip -l ftmo_trading_bot/logs/ftmo_trades.xlsx)",
       "Bash(unzip -q /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/ftmo_trades.xlsx)",
-      "Bash(unzip -q /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/ftmo_trades.xlsx \"xl/worksheets/sheet2.xml\" -d /tmp)"
+      "Bash(unzip -q /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/ftmo_trades.xlsx \"xl/worksheets/sheet2.xml\" -d /tmp)",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(sort -k6,7)",
+      "Bash(.venv/bin/python /tmp/tb_summary.py)",
+      "Bash(.venv/bin/python /tmp/test_backtest_1ep.py)",
+      "Bash(.venv/bin/python scripts/build_signal_pool.py --pool_size 100 --workers 4)",
+      "Bash(.venv/bin/python scripts/build_signal_pool.py --pool_size 3000 --workers 8)",
+      "Bash(.venv/bin/python3 scripts/train_signal_quality.py)",
+      "Bash(.venv/bin/python /tmp/tb_phase1.py)"
     ],
     "additionalDirectories": [
       "/tmp",

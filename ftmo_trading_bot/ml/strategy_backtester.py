@@ -78,6 +78,15 @@ class StrategyBacktester:
     MIN_H1_BARS = 500
     MIN_H4_BARS = 300
 
+    # v6 (2026-04-22): Typical spread per symbol (pips) — ใช้ simulate cost ใน reward
+    # ประมาณการจาก retail broker live feed — JPY crosses กว้างกว่า, Gold กว้างสุด
+    _TYPICAL_SPREAD_PIPS: Dict[str, float] = {
+        "EURUSD": 1.0, "GBPUSD": 1.5, "USDJPY": 1.2, "AUDUSD": 1.5,
+        "USDCAD": 2.0, "USDCHF": 2.0, "NZDUSD": 2.5,
+        "EURJPY": 2.5, "GBPJPY": 5.0,
+        "XAUUSD": 35.0,
+    }
+
     def __init__(self, data_dir: str, symbols: Optional[List[str]] = None,
                  ml_model_path: Optional[str] = None):
         self.symbols = symbols or [
@@ -188,6 +197,8 @@ class StrategyBacktester:
         self._strategy._mtf_data = None
         self._strategy._ltf_data = None
         self._strategy._htf_bias = 0
+        # v6: D1 bias cache — backtester ไม่มี live connector → bias จะ return 0 เสมอ
+        self._strategy._d1_bias_cache = {}
 
         from config.settings import bot_config
         self._strategy.MIN_CONFLUENCE_SCORE = getattr(
@@ -699,8 +710,20 @@ class StrategyBacktester:
                 if signal.ob_high is not None and signal.ob_low is not None:
                     ob_range = abs(signal.ob_high - signal.ob_low)
 
+                # v6 (2026-04-22): Typical spread per symbol — used for RL cost deduction
+                # ตัวเลขประมาณการจาก retail broker live feed ล่าสุด
+                typical_spread_pips = self._TYPICAL_SPREAD_PIPS.get(symbol, 1.5)
+
+                # sl distance in pips (จาก signal object — signal เก็บ sl_distance เป็นราคา)
+                sl_distance_pips = signal.sl_distance / pip_size if pip_size > 0 else 0.0
+
+                # htf_trend_alignment: direction vs market_bias (same as bias_alignment)
+                # Pool ใหม่จะเก็บชัดเจนเพื่อ agent เรียน sync กับ P1 filter
+                htf_trend_alignment = direction * signal.market_bias
+
                 signals.append({
                     'day': day,
+                    'symbol': symbol,
                     'signal_type': signal.signal_type.value,
                     'confluence_score': signal.confluence_score,
                     'rr_ratio': dynamic_rr,
@@ -712,6 +735,7 @@ class StrategyBacktester:
                     'direction': direction,
                     'bias_alignment': bias_alignment,
                     'sl_distance_atr': sl_distance_atr,
+                    'sl_distance_pips': float(sl_distance_pips),
                     'outcome_pnl_ratio': float(trade_pnl),
                     'pip_size': pip_size,
                     'rsi_value': signal.rsi_value,
@@ -723,6 +747,9 @@ class StrategyBacktester:
                     'bb_pctb': signal.bb_pctb,
                     'atr_change_ratio': signal.atr_change_ratio,
                     'price_roc': signal.price_roc,
+                    # v6: cost/flip/htf features สำหรับ RL obs [24-26]
+                    'spread_pips': float(typical_spread_pips),
+                    'htf_trend_alignment': float(htf_trend_alignment),
                 })
 
         self._strategy.MIN_CONFLUENCE_SCORE = saved_confluence
