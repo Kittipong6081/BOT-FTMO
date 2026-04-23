@@ -95,9 +95,10 @@ class FTMOConfig:
     MIN_CONFLUENCE_SCORE: float = 70.0          # เกณฑ์ confluence ขั้นต่ำ (ปรับได้ runtime)
 
     # === FTMO Consistency Rule ===
-    # FTMO Swing: วันที่มีกำไรสูงสุดห้ามเกิน 50% ของ total profit
-    # ใช้ buffer 45% เพื่อกันความคลาดเคลื่อน + ความผันผวนของ trade ที่ยังไม่ปิด
-    CONSISTENCY_RULE_THRESHOLD: float = 0.45    # max_day / total_profit ≤ 45%
+    # FTMO 2-step Standard: ไม่มีกฎนี้ → ตั้ง 1.0 เพื่อปิด check (ratio จะไม่เกิน 100% ตลอด)
+    # FTMO Swing/Pro: มีกฎ max day ≤ 50% ของ total profit → ใช้ 0.45 (buffer)
+    # หากย้าย program ในอนาคต — เปลี่ยนค่านี้ให้ตรงกับ program จริง
+    CONSISTENCY_RULE_THRESHOLD: float = 1.0     # 2-step Standard ไม่มีกฎนี้
     # เริ่มบังคับใช้เมื่อ total_profit ≥ 2% ของ initial (ต่ำกว่านี้ข้าม เพื่อไม่ block วันแรกๆ)
     CONSISTENCY_MIN_PROFIT_PCT: float = 0.02
 
