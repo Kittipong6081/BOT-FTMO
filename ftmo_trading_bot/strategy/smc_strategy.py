@@ -681,6 +681,13 @@ class SMCStrategy:
             if 0 < ob_sl_distance < sl_distance * 1.5:  # ไม่ไกลเกิน 1.5 เท่าของ ATR SL
                 sl_distance = ob_sl_distance
 
+        # v6.2: MIN_SL guard — ป้องกัน SL แคบเกินไป (เช่น EURUSD SL 5 pips ที่เจอ 23 Apr)
+        # spread จะกิน % ของ SL สูงเกินไป → RR ไม่คุ้ม
+        min_sl_pips = get_symbol_config(symbol, "min_sl_pips", 10)
+        min_sl_distance = min_sl_pips * pip_size
+        if sl_distance < min_sl_distance:
+            sl_distance = min_sl_distance
+
         sl_price = entry_price - sl_distance
 
         # TP: Dynamic RR ตาม ADX (align กับ backtester rr distribution)
@@ -962,7 +969,13 @@ class SMCStrategy:
             ob_sl_distance = bearish_ob.high - entry_price + (2 * pip_size)
             if 0 < ob_sl_distance < sl_distance * 1.5:
                 sl_distance = ob_sl_distance
-        
+
+        # v6.2: MIN_SL guard — ป้องกัน SL แคบเกินไป (mirror ของ BUY)
+        min_sl_pips = get_symbol_config(symbol, "min_sl_pips", 10)
+        min_sl_distance = min_sl_pips * pip_size
+        if sl_distance < min_sl_distance:
+            sl_distance = min_sl_distance
+
         sl_price = entry_price + sl_distance
         # TP: Dynamic RR ตาม ADX (align กับ backtester rr distribution)
         adx_current = float(ltf_df['adx'].iloc[-1]) if 'adx' in ltf_df.columns else 0.0

@@ -100,7 +100,9 @@
       "Bash(md5 ftmo_trading_bot/models/ppo_signal_filter.zip)",
       "Bash(.venv/bin/python /tmp/atr_analysis.py)",
       "Bash(.venv/bin/python /tmp/atr_rec.py)",
-      "Bash(.venv/bin/python /tmp/atr_tune.py)"
+      "Bash(.venv/bin/python /tmp/atr_tune.py)",
+      "Bash(awk '{print $NF}')",
+      "Bash(grep \"\\\\.py$\")"
     ],
     "additionalDirectories": [
       "/tmp",

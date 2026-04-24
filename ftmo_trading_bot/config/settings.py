@@ -176,27 +176,30 @@ class SymbolConfig:
         "XAUUSD": 80,   # Gold spread ~50-80 points (0.5-0.8 USD)
     })
 
-    # === Per-Symbol Overrides (v6.1, 2026-04-23 — ATR floor re-calibrated) ===
-    # ATR floor คำนวณจาก historical data: ≈ 50-60% ของ recent median ATR M15
-    # เป้าหมาย: block ~5-15% ของเวลา (ช่วง dead market) ไม่ block normal session
-    # ค่าเดิม (8/15/20/100) สูงเกินไป → block 68-100% ของเวลา → bot ไม่เทรดหลายคู่
+    # === Per-Symbol Overrides (v6.2, 2026-04-23 — ATR floor + MIN_SL guard) ===
+    # atr_floor_pips: signal accepted เมื่อ ATR ≥ floor (กันช่วง dead market)
+    # min_sl_pips: SL guard — ไม่ให้ SL แคบเกินไปจน spread กิน > 15% ของ SL
+    #   (ป้องกัน EURUSD SL 5 pips แบบที่เจอ 23 Apr 2026)
+    # spread_atr_ratio_max: skip signal ถ้า spread/ATR > ratio
     symbol_overrides: Dict[str, Dict] = field(default_factory=lambda: {
         # === Major FX (pip = 0.0001) ===
-        "EURUSD": {"atr_floor_pips": 4},
-        "GBPUSD": {"atr_floor_pips": 4},
-        "AUDUSD": {"atr_floor_pips": 4},
-        "USDCAD": {"atr_floor_pips": 3},
-        "USDCHF": {"atr_floor_pips": 3},
-        "NZDUSD": {"atr_floor_pips": 3},
+        "EURUSD": {"atr_floor_pips": 4, "min_sl_pips": 10},
+        "GBPUSD": {"atr_floor_pips": 4, "min_sl_pips": 12},
+        "AUDUSD": {"atr_floor_pips": 4, "min_sl_pips": 10},
+        "USDCAD": {"atr_floor_pips": 3, "min_sl_pips": 12},
+        "USDCHF": {"atr_floor_pips": 3, "min_sl_pips": 12},
+        "NZDUSD": {"atr_floor_pips": 3, "min_sl_pips": 12},
         # === JPY pairs (pip = 0.01) ===
-        "USDJPY": {"atr_floor_pips": 5},
+        "USDJPY": {"atr_floor_pips": 5, "min_sl_pips": 10},
         "EURJPY": {
             "atr_floor_pips": 6,
+            "min_sl_pips": 15,
             "spread_atr_ratio_max": 0.6,
             "flip_lock_retrace_mult": 0.6,
         },
         "GBPJPY": {
             "atr_floor_pips": 8,             # recent median 9.9 pips → filter 15-20% ของเวลา
+            "min_sl_pips": 20,               # spread 5 = 25% of SL 20 (acceptable)
             "min_confidence": 0.65,
             "spread_atr_ratio_max": 0.5,
             "max_trades_per_day": 3,
@@ -205,6 +208,7 @@ class SymbolConfig:
         # === Metals (pip = 0.01, ticks) ===
         "XAUUSD": {
             "atr_floor_pips": 500,           # recent median 892 ticks → filter ช่วง Gold เงียบ
+            "min_sl_pips": 300,              # 300 ticks = $3 SL min (spread 35 = 12%)
             "spread_atr_ratio_max": 0.7,
             "flip_lock_retrace_mult": 0.6,
         },
