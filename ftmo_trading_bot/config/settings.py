@@ -104,12 +104,10 @@ class FTMOConfig:
 
     # === Cooldown / Anti-Revenge-Trading ===
     # หลังโดน SL บนคู่เงินใดคู่เงินหนึ่ง ต้องรอกี่นาทีก่อนเปิดคู่เดิมอีกครั้ง
-    COOLDOWN_AFTER_LOSS_MIN: int = 30
-    # Per-symbol override — สัญลักษณ์ที่มี whipsaw/spread สูงใช้ cooldown นานกว่า
-    # ทอง (XAUUSD): 30 นาที เพราะหลัง stop-run มักเกิด reversal ลึกกว่า forex
-    COOLDOWN_OVERRIDE_MIN: Dict[str, int] = field(default_factory=lambda: {
-        "XAUUSD": 30,
-    })
+    # ตั้ง 60 นาที (2026-04-23): กัน "BUY→SL→BUY อีก 1 ชม." pattern ที่เจอใน USDJPY
+    COOLDOWN_AFTER_LOSS_MIN: int = 60
+    # Per-symbol override — ถ้าต้องการให้บางคู่ cooldown นานกว่า 60 นาที
+    COOLDOWN_OVERRIDE_MIN: Dict[str, int] = field(default_factory=lambda: {})
     # ถ้าแพ้ติดกันกี่ครั้งให้ pause ทั้งระบบ
     CONSECUTIVE_LOSS_PAUSE_COUNT: int = 2
     CONSECUTIVE_LOSS_PAUSE_MIN: int = 60
@@ -178,24 +176,35 @@ class SymbolConfig:
         "XAUUSD": 80,   # Gold spread ~50-80 points (0.5-0.8 USD)
     })
 
-    # === Per-Symbol Overrides (v6, 2026-04-22) ===
-    # ปรับพฤติกรรมต่อ symbol สำหรับคู่ volatile/spread กว้าง (เช่น GBPJPY)
-    # อ่านผ่าน helper get_symbol_config(symbol, key, default)
+    # === Per-Symbol Overrides (v6.1, 2026-04-23 — ATR floor re-calibrated) ===
+    # ATR floor คำนวณจาก historical data: ≈ 50-60% ของ recent median ATR M15
+    # เป้าหมาย: block ~5-15% ของเวลา (ช่วง dead market) ไม่ block normal session
+    # ค่าเดิม (8/15/20/100) สูงเกินไป → block 68-100% ของเวลา → bot ไม่เทรดหลายคู่
     symbol_overrides: Dict[str, Dict] = field(default_factory=lambda: {
-        "GBPJPY": {
-            "atr_floor_pips": 20,            # จาก default 8 — GBPJPY volatile, ต้องใหญ่พอคุ้ม spread
-            "min_confidence": 0.65,          # จาก default 0.55 — เข้มขึ้นกัน false signal
-            "spread_atr_ratio_max": 0.5,     # skip signal ถ้า spread/ATR > 0.5
-            "max_trades_per_day": 3,         # จาก default 5-6 — ลด whipsaw
-            "flip_lock_retrace_mult": 0.7,   # จาก default 0.5 — require retrace มากกว่า
-        },
+        # === Major FX (pip = 0.0001) ===
+        "EURUSD": {"atr_floor_pips": 4},
+        "GBPUSD": {"atr_floor_pips": 4},
+        "AUDUSD": {"atr_floor_pips": 4},
+        "USDCAD": {"atr_floor_pips": 3},
+        "USDCHF": {"atr_floor_pips": 3},
+        "NZDUSD": {"atr_floor_pips": 3},
+        # === JPY pairs (pip = 0.01) ===
+        "USDJPY": {"atr_floor_pips": 5},
         "EURJPY": {
-            "atr_floor_pips": 15,
+            "atr_floor_pips": 6,
             "spread_atr_ratio_max": 0.6,
             "flip_lock_retrace_mult": 0.6,
         },
+        "GBPJPY": {
+            "atr_floor_pips": 8,             # recent median 9.9 pips → filter 15-20% ของเวลา
+            "min_confidence": 0.65,
+            "spread_atr_ratio_max": 0.5,
+            "max_trades_per_day": 3,
+            "flip_lock_retrace_mult": 0.7,
+        },
+        # === Metals (pip = 0.01, ticks) ===
         "XAUUSD": {
-            "atr_floor_pips": 100,           # Gold ticks (0.01)
+            "atr_floor_pips": 500,           # recent median 892 ticks → filter ช่วง Gold เงียบ
             "spread_atr_ratio_max": 0.7,
             "flip_lock_retrace_mult": 0.6,
         },

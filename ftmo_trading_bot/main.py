@@ -143,7 +143,6 @@ class FTMOTradingBot:
         print("    🤖 Algorithmic Forex Trading Bot — FTMO Compliant")
         print("    📋 Version: 3.0.0 (Phase 3 — Trade Execution & Management)")
         print("    🛡️ Risk Management: ACTIVE")
-        print("    ⚠️ Mode: PAPER TRADING (เทรดจำลอง)")
         print("=" * 70 + "\n")
 
     # =========================================================================

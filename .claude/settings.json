@@ -95,7 +95,12 @@
       "Bash(.venv/bin/python scripts/build_signal_pool.py --pool_size 100 --workers 4)",
       "Bash(.venv/bin/python scripts/build_signal_pool.py --pool_size 3000 --workers 8)",
       "Bash(.venv/bin/python3 scripts/train_signal_quality.py)",
-      "Bash(.venv/bin/python /tmp/tb_phase1.py)"
+      "Bash(.venv/bin/python /tmp/tb_phase1.py)",
+      "Bash(git ls-tree *)",
+      "Bash(md5 ftmo_trading_bot/models/ppo_signal_filter.zip)",
+      "Bash(.venv/bin/python /tmp/atr_analysis.py)",
+      "Bash(.venv/bin/python /tmp/atr_rec.py)",
+      "Bash(.venv/bin/python /tmp/atr_tune.py)"
     ],
     "additionalDirectories": [
       "/tmp",
