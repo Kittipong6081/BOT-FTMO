@@ -159,6 +159,13 @@ class FTMOSignalFilterEnv(gym.Env):
         # → ต้อง track peak เพื่อบอกว่า "เคยผ่าน"
         self._target_bonus_given = False
         self._peak_passed = False
+        # v6.3 B1: milestone bonuses — sticky flags ปลด bonus ทีละ 30/60/90 %
+        self._milestone_30_given = False
+        self._milestone_60_given = False
+        self._milestone_90_given = False
+        # v6.3 B1v2: mid-episode undertrading checks — sticky (fire once)
+        self._mid_check_day20_fired = False
+        self._mid_check_day35_fired = False
 
         self._signals: List[Dict] = []
         self._signal_idx = 0
@@ -335,6 +342,13 @@ class FTMOSignalFilterEnv(gym.Env):
         if len(self._signals) == 0:
             self._signals = [self._dummy_signal()]
 
+        # v6.3: inject spread noise ±50% around typical (news/illiquidity realism)
+        # ทำครั้งเดียวต่อ episode → obs[24] + reward.spread_cost ใช้ค่าเดียวกัน
+        for s in self._signals:
+            base = float(s.get('spread_pips', 0.0))
+            if base > 0:
+                s['spread_pips'] = base * float(rng.uniform(0.7, 1.5))
+
         self._signal_idx = 0
         self._current_day = self._signals[0]['day']
 
@@ -472,10 +486,11 @@ class FTMOSignalFilterEnv(gym.Env):
 
             # v6: หัก spread cost เป็น R units → agent เรียนหลีกเลี่ยง cost สูง
             # GBPJPY: spread 30 / SL 50 = 0.6R × 0.5 weight = 0.3R deduction
+            # v6.3: clamp spread_cost_R ที่ 1.0 (ห้าม penalty > -1R บน news-spike spread)
             spread_pips_trade = sig.get('spread_pips', 0.0)
             sl_pips_trade = sig.get('sl_distance_pips', 0.0)
             if sl_pips_trade > 0 and spread_pips_trade > 0:
-                spread_cost_R = spread_pips_trade / sl_pips_trade
+                spread_cost_R = min(spread_pips_trade / sl_pips_trade, 1.0)
                 # Weight 0.5 — spread affects entry/exit แต่ TP distance ดูดกลับบางส่วน
                 pnl_norm -= spread_cost_R * 0.5
 
@@ -532,16 +547,53 @@ class FTMOSignalFilterEnv(gym.Env):
                 reward += 0.10 if is_p1 else 0.06
 
             # Passive SKIP cost — สะสมต่อ step
-            # 133 signals/ep × 0.015 = -2.0 ถ้า SKIP ทั้งหมด → ดันออกจาก "do nothing" trap
-            reward -= 0.015
+            # v6.3 B1: ลดจาก -0.015 → -0.010 ให้ room SKIP signals คุณภาพต่ำ
+            # 133 signals/ep × 0.010 = -1.33 ถ้า SKIP ทั้งหมด → ยังดันออกจาก "do nothing" trap
+            reward -= 0.010
 
         # ═══ 3. Progress shaping + target bonus ═══
+        # v6.3 B1v2: เพิ่ม multiplier 0.02 → 0.05 (2.5x) ให้ reward สะท้อน progress ชัดขึ้น
+        # ตัวอย่าง: win 1R (risk 0.7%) ที่ balance 100k → profit $700 → progress +7%
+        # → bonus 0.05 × 7 = +0.35 (เดิม +0.14)
         progress_delta = self.target_progress_pct - self._last_progress
         if progress_delta > 0:
-            reward += 0.02 * progress_delta
+            reward += 0.05 * progress_delta
         elif progress_delta < -5.0:
             reward += 0.005 * progress_delta
         self._last_progress = self.target_progress_pct
+
+        # v6.3 B1v2: Mid-episode undertrading checks (P2 only, sticky)
+        # ยิง penalty "ระหว่าง episode" ไม่ใช่แค่ตอนจบ → credit assignment เร็วขึ้น
+        # agent เรียนว่า "ถ้า day 20 ยังไม่ take พอ = ลงโทษ" → push TAKE ตั้งแต่ต้น
+        if self.enable_risk_penalty:
+            if (
+                not self._mid_check_day20_fired
+                and self._current_day >= 20
+                and self.target_progress_pct < 40.0
+                and self._total_takes < 6
+            ):
+                reward -= 0.3
+                self._mid_check_day20_fired = True
+            if (
+                not self._mid_check_day35_fired
+                and self._current_day >= 35
+                and self.target_progress_pct < 60.0
+                and self._total_takes < 12
+            ):
+                reward -= 0.7
+                self._mid_check_day35_fired = True
+
+        # v6.3 B1: Milestone bonuses — sticky bonus เมื่อถึง 30/60/90 %
+        # Agent เรียนว่า "progress = สิ่งที่ต้องไปถึง ไม่ใช่แค่ target สุดท้าย"
+        if self.target_progress_pct >= 30.0 and not self._milestone_30_given:
+            reward += 0.5
+            self._milestone_30_given = True
+        if self.target_progress_pct >= 60.0 and not self._milestone_60_given:
+            reward += 1.0
+            self._milestone_60_given = True
+        if self.target_progress_pct >= 90.0 and not self._milestone_90_given:
+            reward += 1.5
+            self._milestone_90_given = True
 
         # Target hit logic — P1 vs P2 ต่างกัน
         # P1 (Alpha): ไม่ terminate — ให้ agent เรียนต่อเพื่อ maximize profit
@@ -549,8 +601,9 @@ class FTMOSignalFilterEnv(gym.Env):
         terminated = False
         if self.target_progress_pct >= 100.0:
             # Sticky mark: ครั้งแรกที่ถึง target
+            # v6.3 B1: bonus เพิ่มจาก +2.0 → +4.0 (max sticky รวม milestone = 7.0)
             if not self._target_bonus_given:
-                reward += 2.0
+                reward += 4.0
                 self._target_bonus_given = True
                 self._peak_passed = True
             # เฉพาะ P2 ที่จบ episode — P1 เรียนต่อ
@@ -574,6 +627,17 @@ class FTMOSignalFilterEnv(gym.Env):
                     reward -= 0.3
                 elif self.target_progress_pct < 30.0:
                     reward -= 0.3
+
+                # v6.3 B1v2: Undertrading penalty (terminal) — agent เทรดน้อยเกิน
+                # ถ้า ep ใช้เวลาเต็ม (>= 40 วัน) แต่เทรดรวม < 15 ตัว → push ให้ take
+                # ลด threshold 20 → 15 (pool ที่ th0.36 มีแค่ ~16 signals/ep → 20 เกินจริง)
+                # Calculation: 15 trades × 0.52R avg = 7.8R ≈ 5.5% ที่ 0.7% risk
+                if (
+                    self._current_day >= 40
+                    and (self._total_takes < 15)
+                    and not self._peak_passed
+                ):
+                    reward -= 1.0
             else:
                 # Phase 1: กรณีสุดขั้ว SKIP ทั้งหมด → penalty เบา ๆ กันไม่ให้ลงมา degenerate
                 if take_rate < 0.03:
@@ -687,4 +751,4 @@ class FTMOSignalFilterEnv(gym.Env):
 
     @staticmethod
     def obs_dim() -> int:
-        return 24
+        return 27

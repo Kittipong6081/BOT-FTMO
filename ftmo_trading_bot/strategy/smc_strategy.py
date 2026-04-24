@@ -176,14 +176,20 @@ class SMCStrategy:
         คำนวณ D1 bias จากราคาเทียบ EMA50 บน Daily chart
 
         ใช้ buffer 0.5% กัน noise → neutral ถ้าราคาใกล้ EMA50 มาก
+        Cache 1 ชม. + invalidate เมื่อข้าม UTC day (D1 close ใหม่)
 
         Returns:
             +1 bullish / -1 bearish / 0 neutral (หรือดึงข้อมูลไม่ได้)
         """
         import time as _t
         now_ts = _t.time()
+        now_date = TimeManager.get_server_time().astimezone(pytz.UTC).date()
         cached = self._d1_bias_cache.get(symbol)
-        if cached and (now_ts - cached.get("time", 0)) < 3600:
+        if (
+            cached
+            and (now_ts - cached.get("time", 0)) < 3600
+            and cached.get("date") == now_date
+        ):
             return int(cached.get("bias", 0))
 
         try:
@@ -201,7 +207,7 @@ class SMCStrategy:
                 bias = -1
             else:
                 bias = 0
-            self._d1_bias_cache[symbol] = {"bias": bias, "time": now_ts}
+            self._d1_bias_cache[symbol] = {"bias": bias, "time": now_ts, "date": now_date}
             return bias
         except Exception:
             return 0
@@ -235,10 +241,10 @@ class SMCStrategy:
         self._mtf_data = mtf_df
         self._ltf_data = ltf_df
 
-        # HTF bias — ใช้ 5-bar window + ต้องมี 3+ bars ฝั่งเดียวกัน
-        # (ของเก่า 2/3 = แกว่ง noise มาก เพราะ H4 = 12h ข้อมูลเท่านั้น)
-        if htf_df is not None and len(htf_df) >= 5:
-            recent_trends = htf_df["trend"].iloc[-5:].tolist()
+        # HTF bias — ใช้ 5 closed bars (exclude last forming bar) → anti-lookahead
+        # (ของเก่า iloc[-5:] รวม bar ปัจจุบันที่ยังไม่ close → backtest เห็นอนาคต)
+        if htf_df is not None and len(htf_df) >= 6:
+            recent_trends = htf_df["trend"].iloc[-6:-1].tolist()
             bullish_count = sum(1 for t in recent_trends if t == 1)
             bearish_count = sum(1 for t in recent_trends if t == -1)
             # 3/5 threshold + ห้าม mixed strong (ถ้า opposite >=2 → neutral)
@@ -364,10 +370,10 @@ class SMCStrategy:
         self._mtf_data = mtf_df
         self._ltf_data = ltf_df
 
-        # === ขั้นตอนที่ 5: วิเคราะห์ HTF (H4) — ทิศทางหลัก (5-bar window, 3/5 threshold) ===
+        # === ขั้นตอนที่ 5: วิเคราะห์ HTF (H4) — 5 closed bars (anti-lookahead) ===
         htf_values = self._indicators.get_latest_values(htf_df)
-        if htf_values and len(htf_df) >= 5:
-            recent_trends = htf_df["trend"].iloc[-5:].tolist()
+        if htf_values and len(htf_df) >= 6:
+            recent_trends = htf_df["trend"].iloc[-6:-1].tolist()
             bullish_count = sum(1 for t in recent_trends if t == 1)
             bearish_count = sum(1 for t in recent_trends if t == -1)
             if bullish_count >= 3 and bearish_count < 2:
@@ -521,7 +527,7 @@ class SMCStrategy:
         #    H1 EMA200 = "fair value line" ระยะกลาง → ซื้อใต้เส้น = กินมีด
         if self._mtf_data is not None and "ema_slow" in self._mtf_data.columns:
             ema200_h1 = float(self._mtf_data["ema_slow"].iloc[-1])
-            if ema200_h1 > 0 and current_price < ema200_h1:
+            if pd.notna(ema200_h1) and ema200_h1 > 0 and current_price < ema200_h1:
                 no_signal.confluence_score = 0
                 no_signal.reasons = [
                     f"❌ [REJECT] BUY below H1 EMA200 "
@@ -686,6 +692,11 @@ class SMCStrategy:
         min_sl_pips = get_symbol_config(symbol, "min_sl_pips", 10)
         min_sl_distance = min_sl_pips * pip_size
         if sl_distance < min_sl_distance:
+            if bot_config.debug_mode:
+                print(
+                    f"⚠️ [SMC {symbol}] BUY SL clamped: "
+                    f"{sl_distance/pip_size:.1f} → {min_sl_pips} pips (v6.2 min_sl guard)"
+                )
             sl_distance = min_sl_distance
 
         sl_price = entry_price - sl_distance
@@ -718,7 +729,7 @@ class SMCStrategy:
             rr_ratio=rr_ratio,
             confluence_score=score,
             atr_value=atr_value,
-            timestamp=datetime.now(),
+            timestamp=TimeManager.get_server_time(symbol),
             reasons=reasons,
             ob_high=bullish_ob.high if bullish_ob else None,
             ob_low=bullish_ob.low if bullish_ob else None,
@@ -790,9 +801,10 @@ class SMCStrategy:
         pip_size = 0.0001 if symbol_info and symbol_info["digits"] >= 4 else 0.01
         atr_pips = atr_value / pip_size if pip_size > 0 else 0
 
-        # A. Volatility floor — gold-aware
+        # A. Volatility floor — gold-aware + per-symbol override (mirror ของ BUY)
         is_metal = "XAU" in symbol.upper() or "XAG" in symbol.upper()
-        min_atr_pips = 100.0 if is_metal else 8.0
+        default_floor = 100.0 if is_metal else 8.0
+        min_atr_pips = float(get_symbol_config(symbol, "atr_floor_pips", default_floor))
         if atr_pips < min_atr_pips:
             no_signal.confluence_score = 0
             no_signal.reasons = [f"❌ [REJECT] ATR {atr_pips:.1f} pips < {min_atr_pips:.0f} (volatility ต่ำ)"]
@@ -814,7 +826,7 @@ class SMCStrategy:
         # D. EMA200 alignment (H1) — hard veto: ขายเหนือเส้น = ยืนขวางรถไฟ
         if self._mtf_data is not None and "ema_slow" in self._mtf_data.columns:
             ema200_h1 = float(self._mtf_data["ema_slow"].iloc[-1])
-            if ema200_h1 > 0 and current_price > ema200_h1:
+            if pd.notna(ema200_h1) and ema200_h1 > 0 and current_price > ema200_h1:
                 no_signal.confluence_score = 0
                 no_signal.reasons = [
                     f"❌ [REJECT] SELL above H1 EMA200 "
@@ -974,6 +986,11 @@ class SMCStrategy:
         min_sl_pips = get_symbol_config(symbol, "min_sl_pips", 10)
         min_sl_distance = min_sl_pips * pip_size
         if sl_distance < min_sl_distance:
+            if bot_config.debug_mode:
+                print(
+                    f"⚠️ [SMC {symbol}] SELL SL clamped: "
+                    f"{sl_distance/pip_size:.1f} → {min_sl_pips} pips (v6.2 min_sl guard)"
+                )
             sl_distance = min_sl_distance
 
         sl_price = entry_price + sl_distance

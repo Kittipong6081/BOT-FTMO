@@ -102,11 +102,38 @@
       "Bash(.venv/bin/python /tmp/atr_rec.py)",
       "Bash(.venv/bin/python /tmp/atr_tune.py)",
       "Bash(awk '{print $NF}')",
-      "Bash(grep \"\\\\.py$\")"
+      "Bash(grep \"\\\\.py$\")",
+      "Bash(chmod +x /Users/kittipong.n/Desktop/BOT/BOT-FTMO/.claude/hooks/check_wiki_sync.sh)",
+      "Bash(bash /Users/kittipong.n/Desktop/BOT/BOT-FTMO/.claude/hooks/check_wiki_sync.sh)",
+      "Bash(echo \"---exit: $?---\")",
+      "Bash(python -m py_compile ftmo_trading_bot/strategy/smc_strategy.py ftmo_trading_bot/ml/signal_filter_env.py ftmo_trading_bot/ml/strategy_backtester.py ftmo_trading_bot/scripts/train_signal_quality.py ftmo_trading_bot/main.py)",
+      "Bash(.venv/bin/python -m py_compile ftmo_trading_bot/strategy/smc_strategy.py ftmo_trading_bot/ml/signal_filter_env.py ftmo_trading_bot/ml/strategy_backtester.py ftmo_trading_bot/scripts/train_signal_quality.py ftmo_trading_bot/main.py)",
+      "Bash(python3 -m py_compile ftmo_trading_bot/strategy/smc_strategy.py ftmo_trading_bot/ml/signal_filter_env.py ftmo_trading_bot/ml/strategy_backtester.py ftmo_trading_bot/scripts/train_signal_quality.py ftmo_trading_bot/main.py)",
+      "Bash(python3 -c \"import sklearn, numpy, pandas; print\\('sklearn:', sklearn.__version__, 'numpy:', numpy.__version__\\)\")",
+      "Bash(.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 3000 --workers 8)",
+      "Bash(tee /tmp/build_pool_v6_3.log)",
+      "Bash(.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py)",
+      "Bash(tee /tmp/train_gbm_v6_3.log)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/signal_filter_env.py)"
     ],
     "additionalDirectories": [
       "/tmp",
-      "/private/tmp/xl"
+      "/private/tmp/xl",
+      "/Users/kittipong.n/Desktop/BOT/BOT-FTMO/.claude"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/kittipong.n/Desktop/BOT/BOT-FTMO/.claude/hooks/check_wiki_sync.sh"
+          }
+        ]
+      }
     ]
   }
 }

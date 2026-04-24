@@ -543,7 +543,13 @@ class FTMOTradingBot:
     def _has_opposite_recently_closed(self, sig) -> float:
         """1.0 ถ้ามี trade ตรงข้ามปิดภายใน 30 นาที (flip-lock context, v6)"""
         try:
-            flip_lock = getattr(self._risk_manager, '_flip_lock', {})
+            flip_lock = getattr(self._risk_manager, '_flip_lock', None)
+            if flip_lock is None:
+                # RiskManager ยังไม่ init _flip_lock → log เพื่อ debug
+                if not getattr(self, '_flip_lock_warned', False):
+                    print("⚠️ [main] RiskManager._flip_lock missing — obs[25] จะเป็น 0 ตลอด")
+                    self._flip_lock_warned = True
+                return 0.0
             lock = flip_lock.get(sig.symbol)
             if not lock:
                 return 0.0
@@ -552,7 +558,10 @@ class FTMOTradingBot:
             if closed_dir and closed_dir != signal_dir:
                 return 1.0
             return 0.0
-        except Exception:
+        except Exception as e:
+            if not getattr(self, '_flip_lock_warned', False):
+                print(f"⚠️ [main] flip_lock read failed: {e}")
+                self._flip_lock_warned = True
             return 0.0
 
     def _print_config_summary(self):

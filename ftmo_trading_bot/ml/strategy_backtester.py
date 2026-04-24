@@ -530,6 +530,27 @@ class StrategyBacktester:
                 slippage = float(rng.uniform(0.998, 1.002))
                 return risk_amount * pnl_ratio * slippage
 
+            # ─── Gap check: bar_open เกิน SL/TP (weekend gap, news) ──────
+            # ถ้า bar_open เปิดเลย SL/TP ไปแล้ว → fill ที่ bar_open ไม่ใช่ SL/TP price
+            if is_buy:
+                if bar_open <= sl_price:
+                    slippage = float(rng.uniform(1.0, 1.005))
+                    pnl_ratio = (bar_open - entry) / max(sl_dist, pip_size)
+                    return risk_amount * pnl_ratio * slippage
+                if bar_open >= tp_price:
+                    spread_cost = float(rng.uniform(0.995, 1.0))
+                    pnl_ratio = (bar_open - entry) / max(sl_dist, pip_size)
+                    return risk_amount * pnl_ratio * spread_cost
+            else:
+                if bar_open >= sl_price:
+                    slippage = float(rng.uniform(1.0, 1.005))
+                    pnl_ratio = (entry - bar_open) / max(sl_dist, pip_size)
+                    return risk_amount * pnl_ratio * slippage
+                if bar_open <= tp_price:
+                    spread_cost = float(rng.uniform(0.995, 1.0))
+                    pnl_ratio = (entry - bar_open) / max(sl_dist, pip_size)
+                    return risk_amount * pnl_ratio * spread_cost
+
             if is_buy:
                 hit_sl = bar_low <= sl_price
                 hit_tp = bar_high >= tp_price
@@ -609,8 +630,12 @@ class StrategyBacktester:
         if h1_df is None or h4_df is None:
             return []
 
+        # Pool threshold ต้องตรงกับ live (ก่อนหน้านี้ใช้ 60 → distribution shift บน obs[0])
+        from config.settings import bot_config as _bc
         saved_confluence = self._strategy.MIN_CONFLUENCE_SCORE
-        self._strategy.MIN_CONFLUENCE_SCORE = 60.0
+        self._strategy.MIN_CONFLUENCE_SCORE = float(
+            getattr(_bc.ftmo, "MIN_CONFLUENCE_SCORE", 70.0)
+        )
 
         signals = []
         scan_points = [0, 24, 48, 72]

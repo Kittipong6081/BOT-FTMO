@@ -77,10 +77,13 @@ ML ให้**คะแนนคุณภาพ** (0-1) ของแต่ละ
 
 **Reinforcement Learning Agent** คือ AI ที่ฝึกให้ตัดสินใจจาก **สถานการณ์** ไม่ใช่กฎตายตัว
 
-Agent เห็นอะไรบ้าง (obs 24 มิติ):
+Agent เห็นอะไรบ้าง (obs **27 มิติ** — v6, 2026-04-22):
 
-- **Signal features** (17): confluence, RR, ML score, RSI, ADX, etc.
-- **Portfolio state** (7): DD ปัจจุบัน, progress สู่เป้า, trades วันนี้, win rate ล่าสุด
+- **Signal core** (12): confluence, RR, direction, ATR, OB score, bias alignment, SL/ATR, RSI, MACD, trend, OB size, ADX
+- **Market regime** (4): Stoch, BB %B, ATR change, price ROC
+- **ML quality** (1) ⭐: GBM P(win) — map [0,1] → [-1,+1]
+- **Portfolio state** (7): DD total, DD daily, progress สู่เป้า, day progress, trades วันนี้, recent WR, consec losses
+- **Cost/Flip/HTF** (3) — v6 ใหม่: spread/ATR, flip-lock flag, HTF trend alignment
 
 Agent ตัดสินใจ:
 
@@ -196,7 +199,7 @@ data/ohlcv/
 
 ใส่ไฟล์ `{SYMBOL}_{TF}.csv` ใน `data/ohlcv/` มีคอลัมน์: `time, open, high, low, close, volume`
 
-**Symbols ที่รองรับ**: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY,XAUUSD
+**Symbols ที่รองรับ** (10 คู่): EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, **XAUUSD** (Gold)
 
 ---
 
@@ -526,7 +529,7 @@ Bot มี 2 การตรวจสอบอัตโนมัติใน `_l
 
 ## 🔍 เข้าใจองค์ประกอบ
 
-### 📁 Observation Space (24 dims)
+### 📁 Observation Space (27 dims, v6 2026-04-22)
 
 สิ่งที่ RL Agent เห็นในแต่ละ signal:
 
@@ -553,6 +556,10 @@ Bot มี 2 การตรวจสอบอัตโนมัติใน `_l
 | 21                      | trades_today                          | [0, 1]  | เทรดวันนี้ไปกี่ครั้ง      |
 | 22                      | recent_wr_norm                        | [-1, 1] | Win rate 10 trades ล่าสุด |
 | 23                      | consec_losses                         | [0, 1]  | แพ้ติดกันกี่ครั้ง         |
+| **Cost/Flip/HTF (3)** 🆕 v6 |
+| 24                      | spread_pct_of_atr                     | [0, 3]  | spread pips / ATR pips (cost awareness) |
+| 25                      | has_opposite_recently_closed          | 0/1     | flip-lock context (กัน whipsaw)         |
+| 26                      | htf_trend_alignment                   | [-1, 1] | HTF trend sync (ใช้ bias_align proxy)   |
 
 ### 🎓 2-Phase Curriculum Training
 
@@ -664,7 +671,7 @@ ftmo_trading_bot/
 
 ### Q: Model เก่าใช้ต่อได้ไหม หลัง update?
 
-⚠️ **ไม่ได้** เพราะ observation space เปลี่ยน (23→24 dims หลังเพิ่ม ml_score)  
+⚠️ **ไม่ได้** เพราะ observation space เปลี่ยนต่อเนื่อง (23 → 24 → **27 dims** ใน v6, เพิ่ม cost/flip/HTF)  
 → ต้องเทรนใหม่ด้วย `--fresh`
 
 ### Q: ถ้า ML model พัง/หายไปล่ะ?

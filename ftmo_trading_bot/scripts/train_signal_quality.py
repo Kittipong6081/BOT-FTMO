@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupKFold, cross_val_predict
 from sklearn.metrics import roc_auc_score
 
 
@@ -43,12 +43,16 @@ FEATURE_KEYS = [
 
 
 def load_pool_features(pool_path: str):
-    """Load pool → feature matrix + outcome + win labels"""
+    """Load pool → feature matrix + outcome + win labels + episode groups"""
     print(f"→ Loading pool: {pool_path}")
     with open(pool_path, 'rb') as f:
         pool = pickle.load(f)
 
     all_sigs = [sig for ep in pool for sig in ep]
+    groups = np.array(
+        [ep_idx for ep_idx, ep in enumerate(pool) for _ in ep],
+        dtype=np.int64,
+    )
     print(f"   {len(pool):,} episodes, {len(all_sigs):,} signals")
 
     X = np.array(
@@ -61,62 +65,71 @@ def load_pool_features(pool_path: str):
     print(f"   Baseline win rate: {wins.mean()*100:.2f}%")
     print(f"   Mean outcome:       {outcomes.mean():+.4f}")
 
-    return pool, all_sigs, X, outcomes, wins
+    return pool, all_sigs, X, outcomes, wins, groups
 
 
-def train_gbm(X, y, outcomes, random_state=42):
-    """Train GBM + return trained model + CV AUC stats"""
-    print("\n→ Training GBM (with held-out test for AUC)...")
-    idx = np.arange(len(y))
-    idx_tr, idx_te = train_test_split(idx, test_size=0.3, random_state=random_state)
+def train_gbm(X, y, outcomes, groups, random_state=42, n_splits=5):
+    """
+    Train GBM + GroupKFold OOF predictions (episode-level, anti-leakage).
 
-    # Train/test split
-    gbm_eval = GradientBoostingClassifier(
+    Returns:
+        gbm_final: model trained on full data (for live inference)
+        auc_oof: AUC computed on out-of-fold predictions (unbiased estimate)
+        oof_probs: per-signal OOF P(win) — use for re-scoring pool (ไม่ใช่ in-sample)
+    """
+    print(f"\n→ Training GBM with GroupKFold OOF (n_splits={n_splits}, groups=episode)...")
+    t0 = time.time()
+
+    gbm_template = GradientBoostingClassifier(
         max_depth=4, n_estimators=300, learning_rate=0.03,
         random_state=random_state,
     )
-    t0 = time.time()
-    gbm_eval.fit(X[idx_tr], y[idx_tr])
-    print(f"   Train time: {time.time()-t0:.1f}s")
+    cv = GroupKFold(n_splits=n_splits)
+    oof_probs = cross_val_predict(
+        gbm_template, X, y,
+        groups=groups, cv=cv,
+        method='predict_proba', n_jobs=-1,
+    )[:, 1]
+    print(f"   OOF time: {time.time()-t0:.1f}s")
 
-    probs_te = gbm_eval.predict_proba(X[idx_te])[:, 1]
-    auc = roc_auc_score(y[idx_te], probs_te)
-    print(f"   Test AUC: {auc:.4f}  ({'🟢 strong edge' if auc > 0.58 else '🟡 moderate' if auc > 0.55 else '🔴 weak'})")
+    auc_oof = roc_auc_score(y, oof_probs)
+    mark = '🟢 strong edge' if auc_oof > 0.58 else '🟡 moderate' if auc_oof > 0.55 else '🔴 weak'
+    print(f"   OOF AUC: {auc_oof:.4f}  ({mark})")
 
-    # Show threshold analysis on test set
-    o_te = outcomes[idx_te]
-    y_te = y[idx_te]
-    print(f"\n   Threshold analysis (test set n={len(y_te):,}):")
-    print(f"   {'threshold':>10}  {'% kept':>8}  {'n':>6}  {'win rate':>9}  {'EV':>8}")
+    # Threshold analysis on OOF (unbiased vs old 30% test set)
+    print(f"\n   Threshold analysis (OOF, n={len(y):,}):")
+    print(f"   {'threshold':>10}  {'% kept':>8}  {'n':>7}  {'win rate':>9}  {'EV':>8}")
     for thresh in [0.30, 0.33, 0.36, 0.40, 0.45, 0.50]:
-        keep = probs_te >= thresh
-        n = keep.sum()
+        keep = oof_probs >= thresh
+        n = int(keep.sum())
         if n < 20:
             continue
-        wr = y_te[keep].mean() * 100
-        ev = o_te[keep].mean()
+        wr = y[keep].mean() * 100
+        ev = outcomes[keep].mean()
         mark = '🟢' if ev > 0.1 else '🟡' if ev > 0 else '🔴'
-        print(f"   {mark} >{thresh:.2f}    {keep.mean()*100:>6.1f}%  {n:>6}  {wr:>7.1f}%   {ev:+7.3f}")
+        print(f"   {mark} >{thresh:.2f}    {keep.mean()*100:>6.1f}%  {n:>7}  {wr:>7.1f}%   {ev:+7.3f}")
 
-    # Train final on FULL data for production
-    print("\n→ Training final model on full data...")
+    # Final production model trained on FULL data — live signals are OOS
+    # quoted AUC above is OOF (unbiased), so this is safe
+    print("\n→ Training final model on full data (for live inference)...")
+    t0 = time.time()
     gbm_final = GradientBoostingClassifier(
         max_depth=4, n_estimators=300, learning_rate=0.03,
         random_state=random_state,
     )
     gbm_final.fit(X, y)
-    return gbm_final, auc
+    print(f"   Train time: {time.time()-t0:.1f}s")
+    return gbm_final, auc_oof, oof_probs
 
 
-def rescore_pool(pool, sigs, model, X):
-    """Update ml_score field ของทุก signal ใน pool (in-place)"""
-    print("\n→ Re-scoring pool with new ML model...")
-    probs = model.predict_proba(X)[:, 1]
-    for sig, p in zip(sigs, probs):
+def rescore_pool(sigs, oof_probs):
+    """Update ml_score ใน pool ด้วย OOF probabilities (anti-leakage)"""
+    print("\n→ Re-scoring pool with OOF predictions (not in-sample)...")
+    for sig, p in zip(sigs, oof_probs):
         sig['ml_score'] = float(p)
     print(f"   Updated {len(sigs):,} signal ml_scores")
-    print(f"   Distribution: mean={probs.mean():.3f}, std={probs.std():.3f}, "
-          f"min={probs.min():.3f}, max={probs.max():.3f}")
+    print(f"   Distribution: mean={oof_probs.mean():.3f}, std={oof_probs.std():.3f}, "
+          f"min={oof_probs.min():.3f}, max={oof_probs.max():.3f}")
 
 
 def main():
@@ -149,10 +162,10 @@ def main():
     print("=" * 72)
 
     # Load
-    pool, sigs, X, outs, y = load_pool_features(args.pool)
+    pool, sigs, X, outs, y, groups = load_pool_features(args.pool)
 
     # Train
-    model, auc = train_gbm(X, y, outs, random_state=args.seed)
+    model, auc, oof_probs = train_gbm(X, y, outs, groups, random_state=args.seed)
 
     # Save model
     os.makedirs(os.path.dirname(args.save), exist_ok=True)
@@ -161,16 +174,16 @@ def main():
     size_mb = os.path.getsize(args.save) / (1024 * 1024)
     print(f"\n✓ Saved model: {args.save} ({size_mb:.1f} MB)")
 
-    # Re-score pool
+    # Re-score pool with OOF predictions (anti-leakage)
     if not args.no_rescore:
-        rescore_pool(pool, sigs, model, X)
+        rescore_pool(sigs, oof_probs)
         print(f"\n→ Saving updated pool back to {args.pool}...")
         with open(args.pool, 'wb') as f:
             pickle.dump(pool, f, protocol=4)
         print(f"   ✓ Pool updated")
 
     print("\n" + "=" * 72)
-    print(f" Done — AUC={auc:.4f}")
+    print(f" Done — OOF AUC={auc:.4f}")
     print("=" * 72)
     print("\n🎯 พร้อม train RL agent แล้ว:")
     print("   python scripts/train_signal_filter.py --fresh \\")

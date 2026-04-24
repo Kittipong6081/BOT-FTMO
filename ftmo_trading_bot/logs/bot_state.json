@@ -1,0 +1,21 @@
+{
+  "state": "ACTIVE",
+  "initial_balance": 100000.0,
+  "highest_balance": 100000.0,
+  "daily_start_equity": 100000.0,
+  "daily_start_balance": 100000.0,
+  "peak_daily_equity": 100000.0,
+  "current_day": "2026-04-24",
+  "daily_closed_pnl": 0.0,
+  "daily_trades_count": 0,
+  "last_loss_time_per_symbol": {},
+  "consecutive_losses": 0,
+  "halt_until": null,
+  "daily_pnl_history": {},
+  "mt5_login": null,
+  "challenge_start_date": "2026-04-24",
+  "last_tp_per_symbol_dir": {},
+  "flip_lock": {},
+  "schema_version": 6,
+  "last_updated": "2026-04-24T23:46:09.249986"
+}
