@@ -84,6 +84,55 @@ class ExecutedTrade:
     original_lot_size: float = 0.0          # Lot ตอนเปิด (immutable — ใช้คำนวณ partial pct)
     partial_close_count: int = 0            # จำนวนครั้งที่ปิดบางส่วนไปแล้ว
 
+    # === v6.9 enhanced live logging (E1+E2 deploy) ===
+    # ML / Agent decision context
+    ml_score: float = 0.5                   # GBM calibrated P(win), 0.5 = neutral
+    ml_score_raw: float = 0.5               # uncalibrated raw probability
+    agent_action_value: float = 0.0         # raw policy output [-1, 1]
+    agent_decision: str = ""                # TAKE / SKIP / FALLBACK / NO_AGENT
+    ml_threshold_used: float = 0.0          # ml_filter_threshold at decision time
+
+    # Confluence scoring breakdown (parsed from strategy)
+    htf_score: int = 0                      # HTF (H4) trend points
+    mtf_score: int = 0                      # MTF (H1) bias points
+    ob_pts: int = 0                         # Order Block points
+    fvg_pts: int = 0                        # Fair Value Gap points
+    sweep_pts: int = 0                      # Liquidity sweep points
+
+    # Trade management state (TradeManager interactions, final at close)
+    be_moved: bool = False                  # SL moved to entry (BE)
+    partial_closed_flag: bool = False       # 50% partial executed
+    trailing_active: bool = False           # trail SL activated
+    final_sl_at_close: float = 0.0          # SL price at exit time
+
+    # Live execution details
+    bid_at_entry: float = 0.0
+    ask_at_entry: float = 0.0
+    spread_pips_actual: float = 0.0         # real spread at fill (pips)
+    bid_at_exit: float = 0.0
+    ask_at_exit: float = 0.0
+
+    # Market context (HTF analysis at signal time)
+    adx_h1: float = 0.0                     # H1 ADX value
+    adx_h4: float = 0.0                     # H4 ADX value
+    mtf_bias: int = 0                       # H1 market bias 1/-1/0
+    d1_bias: int = 0                        # D1 bias 1/-1/0
+
+    # Account state
+    balance_at_entry: float = 0.0
+    balance_at_close: float = 0.0
+    equity_peak_during_trade: float = 0.0
+
+    # === Overtrading detection (v6.9 — added 2026-04-25) ===
+    trades_today_at_open: int = 0           # # trades opened TODAY before this one
+    trades_last_hour_at_open: int = 0       # # trades opened in trailing 60 min
+    secs_since_last_trade_open: float = 0.0  # delta from last trade open (any symbol)
+    secs_since_last_trade_same_symbol: float = 0.0  # delta from last trade open (same symbol)
+
+    # === Retrain capability (v6.9 — added 2026-04-25) ===
+    # JSON-encoded 27-dim obs vector at decision time → unlock RL retrain from live data
+    obs_27_json: str = ""
+
     def to_dict(self) -> Dict:
         """แปลงเป็น Dictionary สำหรับ Excel Logging"""
         return {
@@ -119,6 +168,40 @@ class ExecutedTrade:
             "mfe": self.mfe,
             "time_in_trade": self.time_in_trade,
             "exit_path": self.exit_path,
+            # --- v6.9 enhanced (E1+E2 live deploy) ---
+            "ml_score": self.ml_score,
+            "ml_score_raw": self.ml_score_raw,
+            "agent_action_value": self.agent_action_value,
+            "agent_decision": self.agent_decision,
+            "ml_threshold_used": self.ml_threshold_used,
+            "htf_score": self.htf_score,
+            "mtf_score": self.mtf_score,
+            "ob_pts": self.ob_pts,
+            "fvg_pts": self.fvg_pts,
+            "sweep_pts": self.sweep_pts,
+            "be_moved": self.be_moved,
+            "partial_closed_flag": self.partial_closed_flag,
+            "trailing_active": self.trailing_active,
+            "final_sl_at_close": self.final_sl_at_close,
+            "bid_at_entry": self.bid_at_entry,
+            "ask_at_entry": self.ask_at_entry,
+            "spread_pips_actual": self.spread_pips_actual,
+            "bid_at_exit": self.bid_at_exit,
+            "ask_at_exit": self.ask_at_exit,
+            "adx_h1": self.adx_h1,
+            "adx_h4": self.adx_h4,
+            "mtf_bias": self.mtf_bias,
+            "d1_bias": self.d1_bias,
+            "balance_at_entry": self.balance_at_entry,
+            "balance_at_close": self.balance_at_close,
+            "equity_peak_during_trade": self.equity_peak_during_trade,
+            # --- Overtrading metrics ---
+            "trades_today_at_open": self.trades_today_at_open,
+            "trades_last_hour_at_open": self.trades_last_hour_at_open,
+            "secs_since_last_trade_open": self.secs_since_last_trade_open,
+            "secs_since_last_trade_same_symbol": self.secs_since_last_trade_same_symbol,
+            # --- Retrain capability ---
+            "obs_27_json": self.obs_27_json,
         }
 
 
@@ -238,7 +321,11 @@ class TradeExecutor:
     # 🚀 ส่งคำสั่งเทรดจากสัญญาณ
     # =========================================================================
 
-    def execute_signal(self, signal: TradeSignal) -> Optional[ExecutedTrade]:
+    def execute_signal(
+        self,
+        signal: TradeSignal,
+        live_context: Optional[Dict] = None,
+    ) -> Optional[ExecutedTrade]:
         """
         ดำเนินการส่งคำสั่งเทรดจาก TradeSignal
 
@@ -421,6 +508,41 @@ class TradeExecutor:
             # --- Partial close tracking ---
             original_lot_size=lot_size,
         )
+
+        # === v6.9: Apply live_context (ML score, agent decision, market context) ===
+        # ส่งจาก main.py.run() — ข้อมูลที่ executor ไม่รู้เอง
+        if live_context:
+            executed.ml_score = float(live_context.get("ml_score", 0.5))
+            executed.ml_score_raw = float(live_context.get("ml_score_raw", 0.5))
+            executed.agent_action_value = float(live_context.get("agent_action_value", 0.0))
+            executed.agent_decision = str(live_context.get("agent_decision", ""))
+            executed.ml_threshold_used = float(live_context.get("ml_threshold_used", 0.0))
+            # Confluence breakdown (ถ้ามี)
+            executed.htf_score = int(live_context.get("htf_score", 0))
+            executed.mtf_score = int(live_context.get("mtf_score", 0))
+            executed.ob_pts = int(live_context.get("ob_pts", 0))
+            executed.fvg_pts = int(live_context.get("fvg_pts", 0))
+            executed.sweep_pts = int(live_context.get("sweep_pts", 0))
+            # Live execution snapshot (bid/ask)
+            executed.bid_at_entry = float(live_context.get("bid_at_entry", 0.0))
+            executed.ask_at_entry = float(live_context.get("ask_at_entry", 0.0))
+            executed.spread_pips_actual = float(live_context.get("spread_pips_actual", 0.0))
+            # Market context (ADX, biases)
+            executed.adx_h1 = float(live_context.get("adx_h1", 0.0))
+            executed.adx_h4 = float(live_context.get("adx_h4", 0.0))
+            executed.mtf_bias = int(live_context.get("mtf_bias", 0))
+            executed.d1_bias = int(live_context.get("d1_bias", 0))
+            # Account state
+            executed.balance_at_entry = float(live_context.get("balance_at_entry", 0.0))
+            # Overtrading metrics
+            executed.trades_today_at_open = int(live_context.get("trades_today_at_open", 0))
+            executed.trades_last_hour_at_open = int(live_context.get("trades_last_hour_at_open", 0))
+            executed.secs_since_last_trade_open = float(live_context.get("secs_since_last_trade_open", 0.0))
+            executed.secs_since_last_trade_same_symbol = float(
+                live_context.get("secs_since_last_trade_same_symbol", 0.0)
+            )
+            # Obs vector (JSON) — for offline retrain reconstruction
+            executed.obs_27_json = str(live_context.get("obs_27_json", ""))
 
         # เก็บใน Active Trades
         self._active_trades[executed.ticket] = executed
@@ -655,10 +777,22 @@ class TradeExecutor:
                     trade.close_price = price_info["bid"]
                 else:
                     trade.close_price = price_info["ask"]
+                # v6.9: capture bid/ask snapshot at exit for analysis
+                trade.bid_at_exit = float(price_info.get("bid", 0.0))
+                trade.ask_at_exit = float(price_info.get("ask", 0.0))
 
             trade.is_open = False
             trade.close_time = datetime.now()
             trade.close_reason = reason
+            # v6.9: capture balance + final SL at close
+            try:
+                rs = self._risk_manager.get_risk_status()
+                trade.balance_at_close = float(rs.get("current_balance", 0.0))
+                trade.equity_peak_during_trade = float(rs.get("current_equity", 0.0))
+            except Exception:
+                pass
+            if not trade.final_sl_at_close:
+                trade.final_sl_at_close = float(trade.sl_price)
 
             # คำนวณ P/L (ประมาณ) — ใช้ contract_size จริงของโบรกเกอร์ (ไม่ hardcode 100000)
             # และแปลงเป็นสกุลเงินของบัญชี (USD) สำหรับคู่ที่ Quote != USD

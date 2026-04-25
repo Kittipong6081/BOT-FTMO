@@ -144,7 +144,10 @@
       "Bash(.venv/bin/python -c \"import stable_baselines3; print\\(stable_baselines3.__version__\\)\")",
       "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/aux_rollout_buffer.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/aux_aware_policy.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/aux_aware_ppo.py)",
       "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/scripts/train_signal_filter.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/signal_filter_env.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/aux_rollout_buffer.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/aux_aware_policy.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/ml/aux_aware_ppo.py)",
-      "Bash(tee /tmp/smoke_test_e2.log)"
+      "Bash(tee /tmp/smoke_test_e2.log)",
+      "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/main.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/execution/trade_executor.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/execution/trade_manager.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/analytics/trade_logger.py)",
+      "Bash(.venv/bin/pip freeze *)",
+      "Bash(python -m py_compile ftmo_trading_bot/analytics/trade_logger.py ftmo_trading_bot/execution/trade_executor.py ftmo_trading_bot/main.py)"
     ],
     "additionalDirectories": [
       "/tmp",

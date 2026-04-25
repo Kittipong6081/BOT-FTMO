@@ -194,6 +194,8 @@ class TradeManager:
         # === ขั้นตอนที่ 3: Trailing Stop ===
         if current_rr >= self.TRAIL_ACTIVATION_RR:
             state.trailing_active = True
+            # v6.9: mirror to ExecutedTrade for logging
+            trade.trailing_active = True
             self._update_trailing_stop(trade, state, current_price)
 
     # =========================================================================
@@ -236,6 +238,9 @@ class TradeManager:
         if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
             state.current_sl = new_sl
             state.breakeven_moved = True
+            # v6.9: mirror to ExecutedTrade for logging
+            trade.be_moved = True
+            trade.final_sl_at_close = new_sl
             digits = 5 if state.pip_size <= 0.0001 else 3
             offset_desc = "Entry" if self.BE_OFFSET_PIPS == 0 else f"Entry+{self.BE_OFFSET_PIPS} pip"
             print(f"🔒 [Trade Manager] เลื่อน SL มา Break-Even: Ticket {trade.ticket} "
@@ -283,6 +288,8 @@ class TradeManager:
             state.partial_closed = True
             trade.lot_size = remaining  # อัพเดท Volume ที่เหลือ
             trade.partial_close_count += 1
+            # v6.9: mirror to ExecutedTrade for logging
+            trade.partial_closed_flag = True
 
             # === คำนวณ realized P/L ของ partial (USD) ===
             realized_pnl = self._compute_partial_pnl(
@@ -434,6 +441,7 @@ class TradeManager:
             if new_sl > state.current_sl:
                 if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
                     state.current_sl = new_sl
+                    trade.final_sl_at_close = new_sl  # v6.9 mirror
                     if bot_config.debug_mode:
                         print(f"📏 [Trail] Ticket {trade.ticket} BUY: SL↑ {new_sl:.5f} "
                               f"(Best={state.best_price:.5f})")
@@ -449,6 +457,7 @@ class TradeManager:
             if new_sl < state.current_sl:
                 if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
                     state.current_sl = new_sl
+                    trade.final_sl_at_close = new_sl  # v6.9 mirror
                     if bot_config.debug_mode:
                         print(f"📏 [Trail] Ticket {trade.ticket} SELL: SL↓ {new_sl:.5f} "
                               f"(Best={state.best_price:.5f})")

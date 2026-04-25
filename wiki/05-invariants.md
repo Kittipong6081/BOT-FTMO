@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-25 | Scope: red flags, version log, migration notes
+> Last Updated: 2026-04-25 | Scope: red flags, version log, migration notes (latest: obs_27_json retrain unlock)
 
 ## TL;DR (30-second scan)
 
@@ -164,6 +164,73 @@ Addresses root-cause gaps that Phase A (bug fixes) + Phase B (reward tuning) cou
 ```
 
 Expected: Pass Rate 3.7 % → 6-10 %, Win Rate 49.6 % → 53-57 % (quality-first), Orders/day 0.26 → 0.15-0.20 (fewer but better).
+
+### 2026-04-25 — v6.9 Live Logging (Schema v3) — comprehensive demo data capture
+
+Re-enabled `TradeLogger` for live demo deployment. Schema v3 = 58-col Trades sheet + 19-col Signals sheet to capture data needed for E1/E2/baseline comparison vs live behavior.
+
+**`analytics/trade_logger.py`:**
+
+- Extended `TRADE_HEADERS` from 31 → 58 cols. New cols (24 fields, grouped):
+  - **ML / Agent decision** (5): `ML Score (cal)`, `ML Score (raw)`, `Agent Action`, `Agent Decision`, `ML Threshold`
+  - **Confluence breakdown** (5): `HTF pts`, `MTF pts`, `OB pts`, `FVG pts`, `Sweep pts`
+  - **Trade mgmt state** (4): `BE Moved`, `Partial Closed`, `Trailing`, `Final SL`
+  - **Live execution** (5): `Bid@Entry`, `Ask@Entry`, `Spread (pips)`, `Bid@Exit`, `Ask@Exit`
+  - **Market context** (4): `ADX H1`, `ADX H4`, `MTF Bias`, `D1 Bias`
+  - **Account state** (3): `Balance@Entry`, `Balance@Close`, `Equity Peak`
+- Added `log_signal_scan(scan_data)` method + `SIGNAL_HEADERS` (19 cols) — per-scan log including `AGENT_SKIP` / `AGENT_TAKE_FAIL` / `REJECTED` / `NO_SIGNAL` results. Color-coded by result.
+- New `Signals` sheet auto-created on first scan log.
+
+**`execution/trade_executor.py`:**
+
+- Extended `ExecutedTrade` dataclass with 24 new fields matching the logger schema.
+- `to_dict()` now exports all new fields.
+- `execute_signal(signal, live_context=None)` accepts a context dict from main.py. Fields populated into `ExecutedTrade` if context provided.
+- Close path captures `bid_at_exit`, `ask_at_exit`, `balance_at_close`, `equity_peak_during_trade`, `final_sl_at_close`.
+
+**`execution/trade_manager.py`:**
+
+- BE move (`_move_to_breakeven`) → mirrors `state.breakeven_moved` to `trade.be_moved` and `trade.final_sl_at_close`.
+- Partial close (`_partial_close`) → mirrors `state.partial_closed` to `trade.partial_closed_flag`.
+- Trail activation (`manage_position`) → mirrors `state.trailing_active` to `trade.trailing_active`.
+- Trail SL update (BUY/SELL paths) → mirrors `new_sl` to `trade.final_sl_at_close`.
+
+**`main.py`:**
+
+- Re-enabled `TradeLogger` (was `None`); now `TradeLogger(log_dir=logs/)`.
+- New `_build_live_context(sig)` method — computes `ml_score` (cal+raw), bid/ask snapshot, ADX H1/H4, MTF/D1 bias, balance at entry. Read from `_quality_model`, `_strategy._mtf_data`/`_htf_data`, `_connector`, `_risk_manager`.
+- New `_log_signal_scan(sig, ctx, result)` — wrapper that builds `scan_data` from signal + context.
+- Run loop (`scan_all_symbols` → for each sig) now logs every scan as `AGENT_SKIP` / `AGENT_TAKE` / `AGENT_TAKE_FAIL`. Passes `live_context` to `executor.execute_signal`.
+
+**`requirements.txt`:**
+
+- Added `openpyxl >= 3.1.0` — required for TradeLogger Excel output.
+- Added `tqdm >= 4.65.0` and `rich >= 13.0.0` — required by `stable-baselines3` `model.learn(progress_bar=True)`.
+
+**Overtrading detection (added 2026-04-25):**
+
+- `ExecutedTrade` extended with 4 new fields (62 trade cols total):
+  - `trades_today_at_open`: count of trades opened today before this one
+  - `trades_last_hour_at_open`: count in trailing 60-min window
+  - `secs_since_last_trade_open`: delta from last trade open (any symbol)
+  - `secs_since_last_trade_same_symbol`: delta from last trade open (same symbol)
+- `FTMOTradingBot` tracks `_trade_open_history: List[(datetime, symbol)]` (capped at 200 entries).
+- `_build_live_context` computes the 4 metrics from history; passed to executor via `live_context`.
+- Use case: filter Trades sheet by `Sec Since Last Open` < 60 → see clusters of fast-fire trades (overtrading symptom).
+
+**Smoke test:** TradeLogger smoke test passed — 58 trade cols + 19 signal cols, all 4 sheets created (Trades, Daily, Stats, Signals).
+
+**Output:** `ftmo_trading_bot/logs/ftmo_trades.xlsx` updated in real time during live run.
+
+**Retrain unlock (added 2026-04-25, schema bump 62 → 63 trade cols, 19 → 20 signal cols):**
+
+- `ExecutedTrade.obs_27_json: str` — JSON-encoded 27-dim obs vector at decision time. Lets us reconstruct full RL state for offline retrain / pool augmentation from live data.
+- `FTMOTradingBot._build_live_context` calls `_build_signal_observation(sig)` (same path the live agent sees) and stores `json.dumps([round(float(x), 4) for x in obs.tolist()])` in `ctx["obs_27_json"]`.
+- `TRADE_HEADERS[-1] = "Obs27 JSON"`, `SIGNAL_HEADERS[-1] = "Obs27 JSON"`. Both populated from `live_context` / `scan_data`. Cell capped at 600 chars.
+- Round-trip verified: `json.dumps` (4-dec round) → `json.loads` → numpy float32. Max error ≈ 5e-5 (< 1e-3 invariant).
+- Wrapped in `try/except` — JSON build failure leaves `obs_27_json=""` (no log break).
+- File size impact: ~250 chars/row × ~1000 trades/month ≈ 250 KB/month (negligible).
+- Use case: reconstruct exact obs the live agent saw → train next-gen agent on live distribution drift, or seed pool augmentation experiments.
 
 ### 2026-04-25 — v6.9 Phase E2 — Auxiliary Task on PPO
 

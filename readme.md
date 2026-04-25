@@ -135,19 +135,83 @@ Agent ตัดสินใจ:
 
 ### ขั้นตอน
 
+#### 1. Clone โปรเจค
+
 ```bash
-# 1. Clone หรือ download โปรเจค
-cd /path/to/project
-cd ftmo_trading_bot
-
-# 2. ติดตั้ง dependencies
-pip install -r requirements.txt
-
-# 3. (Windows เท่านั้น) ติดตั้ง MetaTrader5 library
-pip install MetaTrader5
+git clone https://github.com/Kittipong6081/BOT-FTMO.git
+cd BOT-FTMO
 ```
 
-> 💡 บน macOS/Linux จะใช้ **Mock Mode** อัตโนมัติ (เทรนและทดสอบได้ แต่เทรดจริงไม่ได้)
+#### 2. สร้าง Virtual Environment (สำคัญ — ห้ามข้าม)
+
+`venv` แยก dependencies ของบอทออกจาก Python ระบบ → ป้องกัน package ปะปนและทำลายระบบ
+
+**macOS / Linux:**
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r ftmo_trading_bot/requirements.txt
+```
+
+**Windows (PowerShell):**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\pip install -r ftmo_trading_bot\requirements.txt
+.venv\Scripts\pip install MetaTrader5
+```
+
+> 💡 บน macOS/Linux จะใช้ **Mock Mode** อัตโนมัติ (เทรนและทดสอบได้ แต่เทรดจริงไม่ได้ — ต้อง Windows + MT5 เท่านั้น)
+
+#### 3. ตรวจสอบ install สำเร็จ
+
+```bash
+# macOS / Linux
+.venv/bin/python -c "import sklearn, torch, stable_baselines3, gymnasium; print('✅ deps OK')"
+```
+
+```powershell
+# Windows
+.venv\Scripts\python -c "import sklearn, torch, stable_baselines3, gymnasium; print('✅ deps OK')"
+```
+
+---
+
+### 🐍 วิธีรัน Python commands — 2 รูปแบบ
+
+**คำสั่งที่เห็นในบทความนี้** (เช่น `python main.py`, `python3 scripts/...`) สามารถรันได้ 2 แบบ:
+
+#### แบบ A: เรียก interpreter ของ venv ตรง ๆ (แนะนำ)
+
+ไม่ต้องจำ activate ทุกครั้ง — explicit ว่าใช้ venv ไหน
+
+```bash
+# macOS / Linux
+.venv/bin/python ftmo_trading_bot/main.py
+```
+
+```powershell
+# Windows
+.venv\Scripts\python ftmo_trading_bot\main.py
+```
+
+#### แบบ B: Activate venv ก่อน แล้วใช้ `python` เฉย ๆ (Python convention ปกติ)
+
+```bash
+# macOS / Linux
+source .venv/bin/activate
+python ftmo_trading_bot/main.py
+deactivate                # ตอนเลิกใช้
+```
+
+```powershell
+# Windows
+.venv\Scripts\activate
+python ftmo_trading_bot\main.py
+deactivate                # ตอนเลิกใช้
+```
+
+> 📝 **ข้อตกลงในบทความนี้:** ตั้งแต่นี้ไปจะเขียนเป็น `python ...` / `python3 ...` (แบบ B) เพื่อความกระชับ — ผู้ใช้แทนด้วย `.venv/bin/python` (แบบ A) ได้เสมอถ้าไม่อยาก activate
 
 ### ตั้งค่า .env (สำหรับเทรดจริง)
 

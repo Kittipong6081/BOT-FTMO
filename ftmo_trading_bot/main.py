@@ -13,11 +13,13 @@ FTMO Trading Bot — จุดเริ่มต้นของโปรแก�
 ===============================================================================
 """
 
+import json
 import os
 import sys
 import signal
 import time as time_module
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from typing import Dict
 
 import numpy as np
 import argparse
@@ -68,9 +70,15 @@ class FTMOTradingBot:
         self._risk_manager = RiskManager(self._connector)
         self._position_sizer = PositionSizer(self._connector)
         self._strategy = SMCStrategy(self._connector)
-        # TradeLogger ถูกปิด — ไม่ใช้ ftmo_trades.xlsx แล้ว
-        # Trade history ดึงจาก MT5 history_deals_get() ได้โดยตรง
-        self._logger = None
+        # v6.9: TradeLogger เปิดอีกครั้ง — เก็บ live demo data สำหรับวิเคราะห์
+        # Schema v3 = 56 cols (core + ML v2 + E1/E2 enhanced) + Signals sheet (per-scan)
+        try:
+            self._logger = TradeLogger(
+                log_dir=os.path.join(_project_root, "logs")
+            )
+        except Exception as e:
+            print(f"⚠️ [Bot] TradeLogger init failed: {e} — running without trade log")
+            self._logger = None
         self._analyzer = PerformanceAnalyzer(initial_balance=100000.0)
         self._executor = TradeExecutor(
             self._connector, 
@@ -122,6 +130,10 @@ class FTMOTradingBot:
         # === ตัวแปรสถิติ ===
         self._loop_count = 0
         self._start_time = None
+
+        # v6.9: track trade open history for overtrading detection
+        # List of tuples (datetime, symbol) — capped at last 200 entries
+        self._trade_open_history: list = []
         
         # === จัดการ Signal สำหรับ Graceful Shutdown ===
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -564,6 +576,176 @@ class FTMOTradingBot:
                 self._flip_lock_warned = True
             return 0.0
 
+    def _build_live_context(self, sig) -> Dict:
+        """v6.9 — สร้าง dict ของ live context สำหรับ logging + executor.
+
+        เก็บข้อมูล ณ moment ของ signal scan ที่ executor ไม่รู้เอง:
+          - ml_score (calibrated + raw)
+          - market context: ADX H1/H4, MTF/D1 bias
+          - bid/ask snapshot
+          - account balance
+        """
+        ctx = {
+            "ml_score": 0.5,
+            "ml_score_raw": 0.5,
+            "agent_action_value": 0.0,
+            "agent_decision": "",
+            "ml_threshold_used": 0.0,
+            "htf_score": 0,
+            "mtf_score": 0,
+            "ob_pts": 0,
+            "fvg_pts": 0,
+            "sweep_pts": 0,
+            "bid_at_entry": 0.0,
+            "ask_at_entry": 0.0,
+            "spread_pips_actual": 0.0,
+            "adx_h1": 0.0,
+            "adx_h4": 0.0,
+            "mtf_bias": 0,
+            "d1_bias": 0,
+            "balance_at_entry": 0.0,
+        }
+
+        # ML scores (calibrated via SignalQualityModel + raw via base GBM)
+        try:
+            if self._quality_model is not None:
+                ctx["ml_score"] = float(self._quality_model.score(sig))
+                # raw probability (skip calibrator)
+                if self._quality_model.calibrator is not None:
+                    raw = self._quality_model.model.predict_proba(
+                        np.array([[self._quality_model._extract(sig, k)
+                                   for k in self._quality_model.keys]],
+                                 dtype=np.float64)
+                    )[0, 1]
+                    ctx["ml_score_raw"] = float(raw)
+                else:
+                    ctx["ml_score_raw"] = ctx["ml_score"]
+        except Exception:
+            pass
+
+        # Confluence breakdown (parse จาก signal.reasons text)
+        try:
+            for r in sig.reasons:
+                if "HTF" in r and "(+" in r:
+                    pass  # could extract numeric — skip for now
+        except Exception:
+            pass
+
+        # Market context — read from strategy state
+        try:
+            mtf = self._strategy._mtf_data
+            htf = self._strategy._htf_data
+            if mtf is not None and "adx" in mtf.columns:
+                ctx["adx_h1"] = float(mtf["adx"].iloc[-1])
+            if htf is not None and "adx" in htf.columns:
+                ctx["adx_h4"] = float(htf["adx"].iloc[-1])
+            ctx["mtf_bias"] = int(self._strategy._structure_mtf.get_current_bias())
+            ctx["d1_bias"] = int(self._strategy._get_d1_bias(sig.symbol))
+        except Exception:
+            pass
+
+        # Bid/ask snapshot
+        try:
+            tick = self._connector.get_current_price(sig.symbol)
+            if tick:
+                ctx["bid_at_entry"] = float(tick.get("bid", 0.0))
+                ctx["ask_at_entry"] = float(tick.get("ask", 0.0))
+                spread = ctx["ask_at_entry"] - ctx["bid_at_entry"]
+                # pip size = 0.01 for JPY/Gold (digits<=3), else 0.0001
+                symbol_info = self._connector.get_symbol_info(sig.symbol)
+                pip = 0.0001 if symbol_info and symbol_info.get("digits", 5) >= 4 else 0.01
+                ctx["spread_pips_actual"] = float(spread / pip) if pip > 0 else 0.0
+        except Exception:
+            pass
+
+        # Account balance
+        try:
+            risk_status = self._risk_manager.get_risk_status()
+            ctx["balance_at_entry"] = float(risk_status.get("current_balance", 0.0))
+        except Exception:
+            pass
+
+        # ML threshold (จาก agent if available)
+        try:
+            if self._rl_agent and hasattr(self._rl_agent, "ml_filter_threshold"):
+                ctx["ml_threshold_used"] = float(self._rl_agent.ml_filter_threshold)
+        except Exception:
+            pass
+
+        # === Overtrading metrics ===
+        # นับ trade history vs current time → detect overtrading patterns
+        try:
+            now = datetime.now()
+            today = now.date()
+            one_hour_ago = now - timedelta(hours=1)
+
+            ctx["trades_today_at_open"] = sum(
+                1 for (t, _s) in self._trade_open_history if t.date() == today
+            )
+            ctx["trades_last_hour_at_open"] = sum(
+                1 for (t, _s) in self._trade_open_history if t >= one_hour_ago
+            )
+
+            # delta from last trade (any symbol)
+            if self._trade_open_history:
+                last_t, _ = self._trade_open_history[-1]
+                ctx["secs_since_last_trade_open"] = (now - last_t).total_seconds()
+
+            # delta from last trade on SAME symbol
+            same_symbol_history = [
+                t for (t, s) in self._trade_open_history if s == sig.symbol
+            ]
+            if same_symbol_history:
+                ctx["secs_since_last_trade_same_symbol"] = (
+                    now - same_symbol_history[-1]
+                ).total_seconds()
+        except Exception:
+            pass
+
+        # === Obs 27-dim vector (JSON) — for offline RL retrain ===
+        # ใช้ existing _build_signal_observation (ที่ feed เข้า agent อยู่แล้ว)
+        # round 4 decimals → file size ~250 chars/row
+        try:
+            if self._rl_agent is not None:
+                obs = self._build_signal_observation(sig)
+                ctx["obs_27_json"] = json.dumps(
+                    [round(float(x), 4) for x in obs.tolist()]
+                )
+        except Exception:
+            ctx["obs_27_json"] = ""
+
+        return ctx
+
+    def _log_signal_scan(self, sig, live_context: Dict, result: str):
+        """v6.9 — บันทึก signal scan ลง Signals sheet ของ TradeLogger."""
+        if self._logger is None:
+            return
+        try:
+            scan_data = {
+                "time": sig.timestamp,
+                "symbol": sig.symbol,
+                "direction": sig.signal_type.value,
+                "result": result,
+                "confluence": sig.confluence_score,
+                "atr": sig.atr_value,
+                "rr_target": sig.rr_ratio,
+                "ml_score": live_context.get("ml_score", 0),
+                "ml_score_raw": live_context.get("ml_score_raw", 0),
+                "agent_action_value": live_context.get("agent_action_value", 0),
+                "agent_decision": live_context.get("agent_decision", ""),
+                "ml_threshold": live_context.get("ml_threshold_used", 0),
+                "adx_h1": live_context.get("adx_h1", 0),
+                "htf_bias": getattr(self._strategy, "_htf_bias", 0),
+                "mtf_bias": live_context.get("mtf_bias", 0),
+                "d1_bias": live_context.get("d1_bias", 0),
+                "session": "",  # filled by TimeManager if needed
+                "spread_pips": live_context.get("spread_pips_actual", 0),
+                "reasons": sig.reasons[:5] if isinstance(sig.reasons, list) else str(sig.reasons),
+            }
+            self._logger.log_signal_scan(scan_data)
+        except Exception as e:
+            print(f"⚠️ [Bot] log_signal_scan error: {e}")
+
     def _print_config_summary(self):
         """แสดงสรุปการตั้งค่าทั้งหมด"""
         print("\n" + "━" * 40)
@@ -715,25 +897,47 @@ class FTMOTradingBot:
                     try:
                         signals = self._strategy.scan_all_symbols()
                         for sig in signals:
+                            # === v6.9: Build live_context สำหรับ logging + executor ===
+                            live_context = self._build_live_context(sig)
+
+                            agent_decision = "NO_AGENT"
+                            agent_action_value = 0.0
+
                             if self._rl_agent:
                                 signal_obs = self._build_signal_observation(sig)
                                 take = self._rl_agent.should_take_signal(signal_obs)
                                 confidence = self._rl_agent.get_action_confidence(signal_obs)
+                                agent_action_value = float(confidence)
+                                agent_decision = "TAKE" if take else "SKIP"
+                                live_context["agent_action_value"] = agent_action_value
+                                live_context["agent_decision"] = agent_decision
+
                                 if not take:
                                     print(f"⏭️ [Agent] SKIP {sig.signal_type.value} {sig.symbol} "
                                           f"Conf={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f} "
                                           f"(confidence={confidence:.2f})")
+                                    # log signal scan แม้ agent SKIP
+                                    self._log_signal_scan(sig, live_context, result="AGENT_SKIP")
                                     continue
                                 print(f"📡 [Agent] TAKE {sig.signal_type.value} {sig.symbol} "
                                       f"Conf={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f} "
                                       f"(confidence={confidence:.2f})")
                             else:
+                                live_context["agent_decision"] = "NO_AGENT"
                                 print(f"📡 [Bot] สัญญาณ {sig.signal_type.value} {sig.symbol} "
                                       f"Confluence={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f}")
 
-                            executed = self._executor.execute_signal(sig)
+                            executed = self._executor.execute_signal(sig, live_context=live_context)
                             if executed:
                                 print(f"✅ [Bot] เปิดเทรดสำเร็จ: Ticket {executed.ticket}")
+                                self._log_signal_scan(sig, live_context, result="AGENT_TAKE")
+                                # v6.9: บันทึก trade open history สำหรับ overtrading detection
+                                self._trade_open_history.append((datetime.now(), sig.symbol))
+                                # cap ที่ 200 entries (กัน memory leak run นาน ๆ)
+                                if len(self._trade_open_history) > 200:
+                                    self._trade_open_history = self._trade_open_history[-200:]
+                            else:
+                                self._log_signal_scan(sig, live_context, result="AGENT_TAKE_FAIL")
                     except Exception as e:
                         print(f"⚠️ [Bot] Strategy/Execution error: {e}")
                 

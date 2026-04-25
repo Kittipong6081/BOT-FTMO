@@ -45,21 +45,58 @@ class TradeLogger:
     Confluence | Open Time | Close Price | Close Time | P/L | Reason | Close Reason
     """
 
-    # === คอลัมน์สำหรับ Sheet "Trades" (Schema v2) ===
-    # v2 เพิ่ม features สำหรับ ML: session, spread, htf_bias, MAE/MFE,
-    # consecutive_losses_before, drawdown_at_entry, exit_path, time_in_trade
+    # === คอลัมน์สำหรับ Sheet "Trades" (Schema v3 — v6.9 enhanced) ===
+    # v3 เพิ่ม fields สำหรับวิเคราะห์ live behavior of E1+E2 deployment:
+    # ML score (cal/raw), agent decision, confluence breakdown, trade mgmt state,
+    # bid/ask, market context (ADX H1/H4, MTF/D1 bias), account state
     TRADE_HEADERS = [
+        # --- core (cols 1-19) ---
         "Ticket", "Symbol", "Type", "Entry", "SL", "TP", "Lot",
         "Risk%", "Risk$", "RR", "Confluence", "ATR",
         "Open Time", "Close Price", "Close Time",
         "P/L ($)", "P/L (%)", "Close Reason", "Signal Reasons",
-        # --- ML features v2 ---
+        # --- ML features v2 (cols 20-31) ---
         "Session", "DayOfWeek", "HourOfDay",
         "Spread@Entry", "Slippage",
         "HTF Bias", "Volatility Regime",
         "ConsecLoss Before", "DD@Entry %",
         "MAE", "MFE",
         "Time-in-Trade (s)", "Exit Path",
+        # --- v6.9 enhanced (cols 32-55) ---
+        # ML / Agent decision context
+        "ML Score (cal)", "ML Score (raw)",
+        "Agent Action", "Agent Decision", "ML Threshold",
+        # Confluence breakdown
+        "HTF pts", "MTF pts", "OB pts", "FVG pts", "Sweep pts",
+        # Trade mgmt state
+        "BE Moved", "Partial Closed", "Trailing", "Final SL",
+        # Live execution details
+        "Bid@Entry", "Ask@Entry", "Spread (pips)",
+        "Bid@Exit", "Ask@Exit",
+        # Market context
+        "ADX H1", "ADX H4", "MTF Bias", "D1 Bias",
+        # Account state
+        "Balance@Entry", "Balance@Close", "Equity Peak",
+        # Overtrading detection (cols 57-60)
+        "Trades Today @Open", "Trades 1h @Open",
+        "Sec Since Last Open", "Sec Since Last Same-Sym",
+        # Retrain capability — full obs vector at decision time (col 61)
+        "Obs27 JSON",
+    ]
+
+    # === คอลัมน์สำหรับ Sheet "Signals" (per-scan log) ===
+    # ทุกการ scan ของ SMC strategy + agent decision = 1 row
+    # ใช้ตรวจสอบ signal frequency, reject distribution, agent SKIP behavior ใน live
+    SIGNAL_HEADERS = [
+        "Time", "Symbol", "Direction", "Result",
+        "Confluence", "ATR", "RR Target",
+        "ML Score (cal)", "ML Score (raw)",
+        "Agent Action", "Agent Decision", "ML Threshold",
+        "ADX H1", "HTF Bias", "MTF Bias", "D1 Bias",
+        "Session", "Spread (pips)",
+        "Reject/Skip Reasons",
+        # Retrain capability — full obs vector at decision time (col 20)
+        "Obs27 JSON",
     ]
 
     # === คอลัมน์สำหรับ Sheet "Daily" ===
@@ -110,7 +147,7 @@ class TradeLogger:
             wb, filepath = self._get_or_create_workbook()
             ws = wb["Trades"]
 
-            # เพิ่มแถวใหม่ (Schema v2 — ML features)
+            # เพิ่มแถวใหม่ (Schema v3 — v6.9 E1+E2 enhanced)
             row = [
                 trade_data.get("ticket", 0),
                 trade_data.get("symbol", ""),
@@ -145,6 +182,40 @@ class TradeLogger:
                 "",   # MFE
                 "",   # time_in_trade
                 "",   # exit_path
+                # --- v6.9 enhanced (E1+E2 deploy) ---
+                trade_data.get("ml_score", 0.5),
+                trade_data.get("ml_score_raw", 0.5),
+                trade_data.get("agent_action_value", 0),
+                trade_data.get("agent_decision", ""),
+                trade_data.get("ml_threshold_used", 0),
+                trade_data.get("htf_score", 0),
+                trade_data.get("mtf_score", 0),
+                trade_data.get("ob_pts", 0),
+                trade_data.get("fvg_pts", 0),
+                trade_data.get("sweep_pts", 0),
+                "",   # be_moved (อัพเดตตอนปิด)
+                "",   # partial_closed_flag
+                "",   # trailing_active
+                "",   # final_sl_at_close
+                trade_data.get("bid_at_entry", 0),
+                trade_data.get("ask_at_entry", 0),
+                trade_data.get("spread_pips_actual", 0),
+                "",   # bid_at_exit
+                "",   # ask_at_exit
+                trade_data.get("adx_h1", 0),
+                trade_data.get("adx_h4", 0),
+                trade_data.get("mtf_bias", 0),
+                trade_data.get("d1_bias", 0),
+                trade_data.get("balance_at_entry", 0),
+                "",   # balance_at_close
+                "",   # equity_peak_during_trade
+                # --- Overtrading metrics ---
+                trade_data.get("trades_today_at_open", 0),
+                trade_data.get("trades_last_hour_at_open", 0),
+                trade_data.get("secs_since_last_trade_open", 0),
+                trade_data.get("secs_since_last_trade_same_symbol", 0),
+                # --- Obs vector (JSON) — for offline retrain ---
+                str(trade_data.get("obs_27_json", ""))[:600],
             ]
             ws.append(row)
 
@@ -220,6 +291,22 @@ class TradeLogger:
                 ws.cell(row=target_row, column=29, value=trade_data.get("mfe", 0))
                 ws.cell(row=target_row, column=30, value=trade_data.get("time_in_trade", 0))
                 ws.cell(row=target_row, column=31, value=trade_data.get("exit_path", trade_data.get("close_reason", "")))
+
+                # --- v6.9 enhanced fields (close-time updates) ---
+                # cols 42=BE_Moved, 43=Partial, 44=Trailing, 45=Final SL,
+                # 46=Bid@Exit, 47=Ask@Exit (no — these are at close, cols differ)
+                # Actually columns: 32=ml_score, 33=ml_score_raw, ..., 42=be_moved,
+                # 43=partial, 44=trailing, 45=final_sl, 46=bid@entry,..., 49=bid@exit, 50=ask@exit
+                # 54=balance_at_entry, 55=balance_at_close, 56=equity_peak
+                # Use 1-based column indexing matching TRADE_HEADERS list
+                ws.cell(row=target_row, column=42, value=bool(trade_data.get("be_moved", False)))
+                ws.cell(row=target_row, column=43, value=bool(trade_data.get("partial_closed_flag", False)))
+                ws.cell(row=target_row, column=44, value=bool(trade_data.get("trailing_active", False)))
+                ws.cell(row=target_row, column=45, value=trade_data.get("final_sl_at_close", 0))
+                ws.cell(row=target_row, column=49, value=trade_data.get("bid_at_exit", 0))
+                ws.cell(row=target_row, column=50, value=trade_data.get("ask_at_exit", 0))
+                ws.cell(row=target_row, column=55, value=trade_data.get("balance_at_close", 0))
+                ws.cell(row=target_row, column=56, value=trade_data.get("equity_peak_during_trade", 0))
             else:
                 # ไม่เจอ Ticket — เพิ่มแถวใหม่พร้อมข้อมูลครบ
                 row = [
@@ -249,6 +336,117 @@ class TradeLogger:
 
         except Exception as e:
             print(f"⚠️ [Logger] บันทึกเทรดปิดล้มเหลว: {e}")
+
+    # =========================================================================
+    # 🔍 บันทึก Signal Scan (per-scan log — รวม SKIP / NO_SIGNAL / REJECTED)
+    # =========================================================================
+
+    def log_signal_scan(self, scan_data: Dict):
+        """
+        บันทึก signal scan event (ทุกครั้งที่ SMC strategy run, ไม่ว่า outcome อะไร)
+
+        เป้าหมาย: เก็บ live signal frequency, reject distribution, agent SKIP behavior
+        ในรูปแบบที่ vis ภายหลังได้ → เทียบ backtest
+
+        Args:
+            scan_data: Dict with keys:
+                time, symbol, direction, result, confluence, atr, rr_target,
+                ml_score, ml_score_raw, agent_action_value, agent_decision,
+                ml_threshold, adx_h1, htf_bias, mtf_bias, d1_bias,
+                session, spread_pips, reasons (list or str)
+
+            result values: NO_SIGNAL / REJECTED / AGENT_SKIP / AGENT_TAKE / AGENT_TAKE_FAIL
+        """
+        if not OPENPYXL_AVAILABLE:
+            return
+
+        try:
+            wb, filepath = self._get_or_create_workbook()
+
+            if "Signals" not in wb.sheetnames:
+                self._create_signal_sheet(wb)
+
+            ws = wb["Signals"]
+
+            reasons = scan_data.get("reasons", "")
+            if isinstance(reasons, list):
+                reasons = "; ".join(str(r) for r in reasons)
+
+            row = [
+                str(scan_data.get("time", "")),
+                scan_data.get("symbol", ""),
+                scan_data.get("direction", ""),
+                scan_data.get("result", ""),
+                scan_data.get("confluence", 0),
+                scan_data.get("atr", 0),
+                scan_data.get("rr_target", 0),
+                scan_data.get("ml_score", 0),
+                scan_data.get("ml_score_raw", 0),
+                scan_data.get("agent_action_value", 0),
+                scan_data.get("agent_decision", ""),
+                scan_data.get("ml_threshold", 0),
+                scan_data.get("adx_h1", 0),
+                scan_data.get("htf_bias", 0),
+                scan_data.get("mtf_bias", 0),
+                scan_data.get("d1_bias", 0),
+                scan_data.get("session", ""),
+                scan_data.get("spread_pips", 0),
+                reasons[:500],  # truncate to avoid Excel cell overflow
+                str(scan_data.get("obs_27_json", ""))[:600],
+            ]
+            ws.append(row)
+
+            # Color row by result
+            last_row = ws.max_row
+            result = scan_data.get("result", "")
+            color_map = {
+                "AGENT_TAKE": "C6EFCE",       # green
+                "AGENT_SKIP": "FFEB9C",       # yellow
+                "REJECTED": "FFC7CE",         # red
+                "AGENT_TAKE_FAIL": "FFC7CE",  # red
+                "NO_SIGNAL": "F2F2F2",        # grey
+            }
+            if result in color_map:
+                ws.cell(row=last_row, column=4).fill = PatternFill(
+                    "solid", fgColor=color_map[result]
+                )
+
+            wb.save(filepath)
+
+        except Exception as e:
+            # Don't break bot loop on logger failure — print only
+            print(f"⚠️ [Logger] log_signal_scan ล้มเหลว: {e}")
+
+    def _create_signal_sheet(self, wb):
+        """Setup Signals sheet — headers + formatting"""
+        ws = wb.create_sheet("Signals")
+
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill("solid", fgColor="6F4E7C")  # purple
+        header_align = Alignment(horizontal="center", vertical="center")
+
+        ws.append(self.SIGNAL_HEADERS)
+        for col_idx, _ in enumerate(self.SIGNAL_HEADERS, 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+
+        # Column widths (matches SIGNAL_HEADERS length 20)
+        col_widths = [
+            20, 10, 6, 18,        # Time, Symbol, Direction, Result
+            10, 10, 10,           # Confluence, ATR, RR Target
+            12, 12,               # ML Score (cal/raw)
+            12, 14, 12,           # Agent Action, Decision, ML Threshold
+            8, 9, 9, 8,           # ADX H1, HTF/MTF/D1 Bias
+            10, 10,               # Session, Spread
+            60,                   # Reject/Skip Reasons
+            60,                   # Obs27 JSON
+        ]
+        for idx, width in enumerate(col_widths, 1):
+            ws.column_dimensions[get_column_letter(idx)].width = width
+
+        ws.freeze_panes = "A2"
 
     # =========================================================================
     # 📊 บันทึก Daily Summary
@@ -386,12 +584,23 @@ class TradeLogger:
             cell.alignment = header_align
             cell.border = thin_border
 
-        # กำหนดความกว้างคอลัมน์ (Schema v2 — 31 คอลัมน์)
+        # กำหนดความกว้างคอลัมน์ (Schema v3 — 61 คอลัมน์ พร้อม Obs27 JSON)
         col_widths = [
+            # core (1-19)
             12, 10, 6, 10, 10, 10, 7, 7, 10, 6, 10, 10, 20, 10, 20, 12, 8, 20, 40,
             # v2 cols: Session, DoW, Hour, Spread, Slippage, HTF, VolRegime,
-            # ConsecLoss, DD%, MAE, MFE, TimeInTrade, ExitPath
+            # ConsecLoss, DD%, MAE, MFE, TimeInTrade, ExitPath (20-32)
             10, 6, 6, 10, 10, 8, 10, 10, 10, 10, 10, 14, 14,
+            # v3 cols (33-56): ML/Agent (5), Confluence breakdown (5), Trade mgmt (4),
+            # Live exec (5), Market context (4), Account state (3)
+            12, 12, 12, 10, 10,                # ML/Agent (5)
+            8, 8, 8, 8, 8,                     # Confluence breakdown (5)
+            10, 14, 10, 10,                    # Trade mgmt (4)
+            10, 10, 10, 10, 10,                # Live exec (5)
+            8, 8, 9, 8,                        # Market context (4)
+            12, 12, 12,                        # Account state (3)
+            14, 14, 18, 20,                    # Overtrading metrics (4)
+            60,                                # Obs27 JSON (1)
         ]
         for idx, width in enumerate(col_widths, 1):
             ws.column_dimensions[get_column_letter(idx)].width = width

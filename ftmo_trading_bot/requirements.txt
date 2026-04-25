@@ -13,11 +13,18 @@ gymnasium>=0.29.0
 stable-baselines3>=2.1.0
 torch>=2.0.0
 
+# Required by stable-baselines3 progress bar (model.learn(progress_bar=True))
+tqdm>=4.65.0
+rich>=13.0.0
+
 # Machine Learning (Signal Quality Model — GBM classifier)
 scikit-learn>=1.3.0
 
 # TensorBoard สำหรับดู training curves
 tensorboard>=2.14.0
+
+# Trade Logger (Excel output)
+openpyxl>=3.1.0
 
 # Timezone และ Utilities
 pytz>=2023.3
