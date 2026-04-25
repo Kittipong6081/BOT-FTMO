@@ -28,8 +28,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.isotonic import IsotonicRegression
 from sklearn.model_selection import GroupKFold, cross_val_predict
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, brier_score_loss
 
 
 # Features ต้อง match กับ SignalQualityModel.FEATURES
@@ -70,12 +71,23 @@ def load_pool_features(pool_path: str):
 
 def train_gbm(X, y, outcomes, groups, random_state=42, n_splits=5):
     """
-    Train GBM + GroupKFold OOF predictions (episode-level, anti-leakage).
+    Train GBM + GroupKFold OOF + Isotonic calibration (Phase E1).
+
+    Workflow:
+      1. OOF probabilities via GroupKFold cross_val_predict (anti-leakage)
+      2. Compute Brier (uncalibrated) — discrimination metric: AUC
+      3. Fit IsotonicRegression on (oof_probs, y) — calibrated mapping
+      4. Apply calibrator → calibrated OOF probs
+      5. Brier (calibrated) — should drop 5-15 % per Niculescu-Mizil 2005
+      6. Final base GBM trained on full X
+      7. Return base + calibrator → save together
 
     Returns:
-        gbm_final: model trained on full data (for live inference)
-        auc_oof: AUC computed on out-of-fold predictions (unbiased estimate)
-        oof_probs: per-signal OOF P(win) — use for re-scoring pool (ไม่ใช่ in-sample)
+        gbm_final: base GBM (raw predict_proba) — full-data trained
+        calibrator: fitted IsotonicRegression
+        auc_oof: discrimination AUC on OOF (unchanged by calibration)
+        oof_probs_calibrated: per-signal calibrated P(win) — for pool re-score
+        brier_uncal, brier_cal: Brier scores (calibration improvement metric)
     """
     print(f"\n→ Training GBM with GroupKFold OOF (n_splits={n_splits}, groups=episode)...")
     t0 = time.time()
@@ -96,11 +108,38 @@ def train_gbm(X, y, outcomes, groups, random_state=42, n_splits=5):
     mark = '🟢 strong edge' if auc_oof > 0.58 else '🟡 moderate' if auc_oof > 0.55 else '🔴 weak'
     print(f"   OOF AUC: {auc_oof:.4f}  ({mark})")
 
-    # Threshold analysis on OOF (unbiased vs old 30% test set)
-    print(f"\n   Threshold analysis (OOF, n={len(y):,}):")
+    # ─── Phase E1: Isotonic calibration ───────────────────
+    # Fit on OOF probs (group-aware) → no leakage
+    # Reference: Niculescu-Mizil & Caruana 2005 — isotonic > Platt for tree models when n > 1000
+    brier_uncal = brier_score_loss(y, oof_probs)
+    print(f"   Brier (uncalibrated): {brier_uncal:.4f}")
+
+    print(f"\n→ Fitting isotonic calibrator on OOF probs...")
+    calibrator = IsotonicRegression(out_of_bounds='clip')
+    calibrator.fit(oof_probs, y)
+    oof_probs_cal = calibrator.transform(oof_probs)
+    brier_cal = brier_score_loss(y, oof_probs_cal)
+    delta_pct = (brier_cal / brier_uncal - 1) * 100
+    print(f"   Brier (calibrated):   {brier_cal:.4f}  ({delta_pct:+.1f}% vs uncal)")
+
+    # Reliability diagram (5-bin)
+    print(f"\n   Reliability bins (calibrated):")
+    print(f"   {'bin':>10}  {'pred avg':>9}  {'true avg':>9}  {'n':>7}")
+    for lo, hi in [(0.0, 0.3), (0.3, 0.4), (0.4, 0.5), (0.5, 0.6), (0.6, 1.0)]:
+        mask = (oof_probs_cal >= lo) & (oof_probs_cal < hi)
+        n = int(mask.sum())
+        if n < 20:
+            continue
+        pred_avg = oof_probs_cal[mask].mean()
+        true_avg = y[mask].mean()
+        match = '✅' if abs(pred_avg - true_avg) < 0.03 else '🟡' if abs(pred_avg - true_avg) < 0.06 else '🔴'
+        print(f"   {match} [{lo:.1f},{hi:.1f})  {pred_avg:>9.3f}  {true_avg:>9.3f}  {n:>7,}")
+
+    # Threshold analysis on CALIBRATED OOF (now thresholds map to true probabilities)
+    print(f"\n   Threshold analysis (CALIBRATED OOF, n={len(y):,}):")
     print(f"   {'threshold':>10}  {'% kept':>8}  {'n':>7}  {'win rate':>9}  {'EV':>8}")
     for thresh in [0.30, 0.33, 0.36, 0.40, 0.45, 0.50]:
-        keep = oof_probs >= thresh
+        keep = oof_probs_cal >= thresh
         n = int(keep.sum())
         if n < 20:
             continue
@@ -109,9 +148,8 @@ def train_gbm(X, y, outcomes, groups, random_state=42, n_splits=5):
         mark = '🟢' if ev > 0.1 else '🟡' if ev > 0 else '🔴'
         print(f"   {mark} >{thresh:.2f}    {keep.mean()*100:>6.1f}%  {n:>7}  {wr:>7.1f}%   {ev:+7.3f}")
 
-    # Final production model trained on FULL data — live signals are OOS
-    # quoted AUC above is OOF (unbiased), so this is safe
-    print("\n→ Training final model on full data (for live inference)...")
+    # Final production model trained on FULL data
+    print("\n→ Training final base GBM on full data (for live inference)...")
     t0 = time.time()
     gbm_final = GradientBoostingClassifier(
         max_depth=4, n_estimators=300, learning_rate=0.03,
@@ -119,7 +157,7 @@ def train_gbm(X, y, outcomes, groups, random_state=42, n_splits=5):
     )
     gbm_final.fit(X, y)
     print(f"   Train time: {time.time()-t0:.1f}s")
-    return gbm_final, auc_oof, oof_probs
+    return gbm_final, calibrator, auc_oof, oof_probs_cal, brier_uncal, brier_cal
 
 
 def rescore_pool(sigs, oof_probs):
@@ -165,25 +203,31 @@ def main():
     pool, sigs, X, outs, y, groups = load_pool_features(args.pool)
 
     # Train
-    model, auc, oof_probs = train_gbm(X, y, outs, groups, random_state=args.seed)
+    model, calibrator, auc, oof_probs_cal, brier_uncal, brier_cal = train_gbm(
+        X, y, outs, groups, random_state=args.seed,
+    )
 
-    # Save model
+    # Save model + calibrator (Phase E1)
     os.makedirs(os.path.dirname(args.save), exist_ok=True)
     with open(args.save, 'wb') as f:
-        pickle.dump({'model': model, 'keys': FEATURE_KEYS}, f, protocol=4)
+        pickle.dump({
+            'model': model,
+            'calibrator': calibrator,
+            'keys': FEATURE_KEYS,
+        }, f, protocol=4)
     size_mb = os.path.getsize(args.save) / (1024 * 1024)
-    print(f"\n✓ Saved model: {args.save} ({size_mb:.1f} MB)")
+    print(f"\n✓ Saved model + calibrator: {args.save} ({size_mb:.1f} MB)")
 
-    # Re-score pool with OOF predictions (anti-leakage)
+    # Re-score pool with CALIBRATED OOF predictions (anti-leakage + calibrated)
     if not args.no_rescore:
-        rescore_pool(sigs, oof_probs)
+        rescore_pool(sigs, oof_probs_cal)
         print(f"\n→ Saving updated pool back to {args.pool}...")
         with open(args.pool, 'wb') as f:
             pickle.dump(pool, f, protocol=4)
         print(f"   ✓ Pool updated")
 
     print("\n" + "=" * 72)
-    print(f" Done — OOF AUC={auc:.4f}")
+    print(f" Done — OOF AUC={auc:.4f}, Brier {brier_uncal:.4f} → {brier_cal:.4f} ({(brier_cal/brier_uncal-1)*100:+.1f}%)")
     print("=" * 72)
     print("\n🎯 พร้อม train RL agent แล้ว:")
     print("   python scripts/train_signal_filter.py --fresh \\")

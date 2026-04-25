@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-24 | Scope: every module + key class / method / variable
+> Last Updated: 2026-04-25 | Scope: every module + key class / method / variable
 
 ## TL;DR (30-second scan)
 
@@ -41,6 +41,28 @@ Three knobs with distinct roles — **never conflate them**:
 
 **Want SL narrower?** Lower `atr_sl_multiplier` or `min_sl_pips` — lowering `atr_floor_pips` only widens the accepted-signal population (indirect, clamped by `min_sl_pips`).
 
+### v6.7 Rollback Phase D (2026-04-25)
+
+Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate below the B1v2 baseline (3.7 %). Reverted to v6.3 B1v2 backtester (`_resolve_trade` uses only SL / TP / timeout / force-close / gap — no BE, no partial, no trailing inside training). **Live `TradeManager` still performs BE + partial + trail** — train-live gap is accepted as "train < live" direction.
+
+### v6.5 Phase D — Train-Live Alignment (REVERTED 2026-04-25)
+
+**Kept as historical reference only.** Evidence: BE-only dropped pool mean outcome from `−0.0645` → `−0.1051` (8.4 pp of winners became 0R vs 9.6 pp of losers saved — net EV negative). Phase D full caps tail (winners capped at 1.5R instead of 2R+) which is the wrong direction for FTMO's tail-probability objective.
+
+- **`StrategyBacktester._resolve_trade`** was rewritten as bar-by-bar state machine (removed in v6.7).
+- Class constants `_BE_TRIGGER_RR`, `_PARTIAL_CLOSE_PCT`, `_PARTIAL_TRIGGER_RR`, `_TRAIL_ACTIVATION_RR`, `_TRAIL_ATR_MULTIPLIER` — removed in v6.7.
+
+### v6.4 SMC Phase C — 4 Professional Principles (REVERTED 2026-04-25)
+
+**This block was rolled back** after empirical results (Pass Rate 3.7 % → 1.5 %). Kept here as historical reference only; none of these changes exist in the current codebase.
+
+- **`SMCStrategy._get_h4_poi_zones` / `_is_near_h4_poi`** (removed) — H4 POI cache + gate.
+- **`SMCStrategy._ob_detector_h4` / `_fvg_detector_h4` / `_h4_poi_cache`** (removed).
+- **`MarketStructure.is_valid_pullback`** (removed) — 3-gate validator.
+- **IDM sweep gate** (removed) — sweep + OB bonus / old OB penalty.
+- **FVG + BOS conjunction** (removed).
+- **ADX floor** reverted 25 → 20.
+
 ### v6.3 SMC fixes (2026-04-24 audit)
 
 - **SELL `atr_floor_pips` per-symbol override now applied** — previously `_evaluate_sell_signal` hardcoded 100/8, ignoring `SymbolConfig.symbol_overrides`. BUY + SELL now share the same gate.
@@ -57,7 +79,7 @@ Three knobs with distinct roles — **never conflate them**:
 | File | Key symbols | Role |
 |------|-------------|------|
 | `signal_quality.py` | `SignalQualityModel.score`, `SignalQualityModel.train_from_pool` | sklearn `GradientBoostingClassifier` wrapper — P(win) prediction (AUC ~0.59) |
-| `strategy_backtester.py` | `StrategyBacktester.generate_episode_signals`, `StrategyBacktester._resolve_trade`, `StrategyBacktester._quality_model` | Pool generation + outcome resolution (bar-color heuristic, 0.5 % slippage, 96-bar M15 future window) |
+| `strategy_backtester.py` | `StrategyBacktester.generate_episode_signals`, `StrategyBacktester._resolve_trade`, `StrategyBacktester._quality_model` | Pool generation + outcome resolution with **trade management** (BE move / partial close / trailing) mirroring `TradeManager`. v6.5 Phase D. |
 | `signal_filter_env.py` | `FTMOSignalFilterEnv` (gym.Env), `._get_obs`, `.step`, `.reset` | Gymnasium env for RL training — pool sampler + reward shaper |
 | `rl_agent.py` | `SelfLearningAgent.OBS_DIM` (= 27), `.should_take_signal`, `.initialize_model`, `._normalize_obs` | PPO inference wrapper for live — loads `vec_normalize_sf.pkl` so obs normalization matches training |
 

@@ -28,7 +28,8 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from stable_baselines3 import PPO
+from ml.aux_aware_ppo import AuxAwarePPO
+from ml.aux_aware_policy import AuxAwareACPolicy
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
@@ -468,7 +469,8 @@ def main():
         if not os.path.exists(model_path_final):
             print(f"Model not found: {model_path_final}")
             sys.exit(1)
-        model = PPO.load(model_path_final)
+        # v6.9 E2: AuxAwarePPO subclass — load with AuxAwarePPO to keep aux head
+        model = AuxAwarePPO.load(model_path_final)
         # Use same pool as training (if exists) for distribution match
         eval_pool = os.path.join(ROOT, "data", f"signal_pool_{args.pool_size}.pkl")
         if not os.path.exists(eval_pool):
@@ -525,9 +527,11 @@ def main():
         clip_obs=10.0, clip_reward=20.0, gamma=0.99,
     )
 
-    model_p1 = PPO(
-        "MlpPolicy",
+    # v6.9 E2: AuxAwarePPO + AuxAwareACPolicy — auxiliary regression head on signal outcome
+    model_p1 = AuxAwarePPO(
+        AuxAwareACPolicy,
         vec_env_p1,
+        aux_loss_weight=0.5,   # weight for MSE(predict_aux, outcome_pnl_ratio)
         learning_rate=3e-4,
         n_steps=4096,
         batch_size=256,
@@ -596,9 +600,12 @@ def main():
     vec_env_p2.norm_reward = True
     vec_env_p2.clip_reward = 20.0   # เผื่อ DD penalty สูงช่วง breach
 
-    model_p2 = PPO.load(model_path_p1, env=vec_env_p2)
-    model_p2.learning_rate = 2e-4   # ↑ จาก 1e-4 ให้ policy ขยับได้เร็วขึ้นช่วง transition
-    model_p2.ent_coef = 0.03        # ↑ จาก 0.01 กัน collapse ไป SKIP-all
+    # v6.9 E2: load with AuxAwarePPO (preserves aux_head + buffer class)
+    model_p2 = AuxAwarePPO.load(model_path_p1, env=vec_env_p2)
+    # v6.8 P2 stability fix — value_loss explosion ทำให้ early-stop เร็วเกิน
+    # หลังเปลี่ยน reward distribution (calibration / ฯลฯ) — ลด LR + ent_coef
+    model_p2.learning_rate = 5e-5   # ↓ จาก 2e-4 (4x conservative) — match value-loss scale
+    model_p2.ent_coef = 0.02        # ↓ จาก 0.03 — ลด exploration variance ใน P2
     model_p2.gamma = 0.99           # Phase 2 inherit, แต่ explicit set ให้ชัด
     model_p2.tensorboard_log = tb_log_dir
 
@@ -612,8 +619,9 @@ def main():
     model_p2.learn(
         total_timesteps=args.timesteps_p2,
         callback=[
-            EntropyScheduleCallback(initial=0.03, final=0.008),
-            EarlyStopOnValueLoss(threshold=10.0, patience=5),
+            EntropyScheduleCallback(initial=0.02, final=0.005),
+            # v6.8: threshold 10 → 20 — value_loss spike ชั่วคราวยอม, ปกป้องเฉพาะ true divergence
+            EarlyStopOnValueLoss(threshold=20.0, patience=5),
             EpisodeStatsCallback(print_every=20),
             FTMOTradingCallback(),
             ckpt_cb_p2,

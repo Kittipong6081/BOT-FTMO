@@ -46,6 +46,8 @@ class SignalQualityModel:
         with open(model_path, 'rb') as f:
             payload = pickle.load(f)
         self.model = payload['model']
+        # Phase E1: optional isotonic calibrator (None → backwards-compat raw probs)
+        self.calibrator = payload.get('calibrator', None)
         self.keys = payload.get('keys', self.FEATURES)
         self.model_path = model_path
 
@@ -56,23 +58,31 @@ class SignalQualityModel:
             return float(src.get(key, 0.0))
         return float(getattr(src, key, 0.0))
 
+    def _calibrate(self, raw_probs: np.ndarray) -> np.ndarray:
+        """Apply isotonic calibrator if available, else return raw."""
+        if self.calibrator is None:
+            return raw_probs
+        return self.calibrator.transform(raw_probs)
+
     def score(self, src: Union[Dict, Any]) -> float:
-        """ทำนาย P(win) ของ signal 1 ตัว → [0.0, 1.0]"""
+        """ทำนาย P(win) calibrated ของ signal 1 ตัว → [0.0, 1.0]"""
         features = np.array(
             [[self._extract(src, k) for k in self.keys]],
             dtype=np.float64,
         )
-        return float(self.model.predict_proba(features)[0, 1])
+        raw = self.model.predict_proba(features)[:, 1]
+        return float(self._calibrate(raw)[0])
 
     def score_batch(self, sources: List[Union[Dict, Any]]) -> np.ndarray:
-        """Score signals หลายตัวพร้อมกัน (เร็วกว่า loop)"""
+        """Score signals หลายตัวพร้อมกัน (calibrated, เร็วกว่า loop)"""
         if not sources:
             return np.array([], dtype=np.float64)
         features = np.array(
             [[self._extract(s, k) for k in self.keys] for s in sources],
             dtype=np.float64,
         )
-        return self.model.predict_proba(features)[:, 1]
+        raw = self.model.predict_proba(features)[:, 1]
+        return self._calibrate(raw)
 
     def __repr__(self) -> str:
         return f"SignalQualityModel(path={self.model_path})"

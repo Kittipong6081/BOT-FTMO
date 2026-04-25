@@ -287,14 +287,14 @@ class MarketStructure:
                 # ตรวจว่า Close ทะลุ Swing High ล่าสุดหรือไม่
                 if closes[i] > active_sh.price:
                     active_sh.broken = True
-                    
+
                     if current_bias <= 0:
                         # เปลี่ยนจาก Bearish/Neutral → Bullish = CHoCH
                         event_type = StructureType.CHOCH_BULLISH
                     else:
                         # ยังคงเป็น Bullish = BOS
                         event_type = StructureType.BOS_BULLISH
-                    
+
                     event = StructureEvent(
                         event_type=event_type,
                         index=i,
@@ -305,19 +305,19 @@ class MarketStructure:
                     self._events.append(event)
                     structure_event[i] = event_type.value
                     current_bias = 1  # Bullish
-            
+
             if active_sl and not active_sl.broken:
                 # ตรวจว่า Close ทะลุ Swing Low ล่าสุดหรือไม่
                 if closes[i] < active_sl.price:
                     active_sl.broken = True
-                    
+
                     if current_bias >= 0:
                         # เปลี่ยนจาก Bullish/Neutral → Bearish = CHoCH
                         event_type = StructureType.CHOCH_BEARISH
                     else:
                         # ยังคงเป็น Bearish = BOS
                         event_type = StructureType.BOS_BEARISH
-                    
+
                     event = StructureEvent(
                         event_type=event_type,
                         index=i,

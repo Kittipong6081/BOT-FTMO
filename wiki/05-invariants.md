@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-24 | Scope: red flags, version log, migration notes
+> Last Updated: 2026-04-25 | Scope: red flags, version log, migration notes
 
 ## TL;DR (30-second scan)
 
@@ -119,6 +119,223 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-04-25 — v6.4 SMC Phase C (4 professional principles)
+
+Addresses root-cause gaps that Phase A (bug fixes) + Phase B (reward tuning) could not reach. All 5 sub-tasks landed in one pass. Requires **pool rebuild + GBM retrain + RL retrain** before deploy (strategy layer changed).
+
+**SMC `smc_strategy.py`:**
+
+- **C1 — ADX threshold raised 20 → 25** in BUY + SELL pre-filters. Industry standard for "actual trend vs ranging". Expected signal volume drop ~30 %.
+- **C3 — H4 POI hard gate (new, Principle 2):** added `_get_h4_poi_zones` + `_is_near_h4_poi`. Before confluence score, signal is rejected if price is > 2 ATR away from an H4 bullish OB/FVG (for BUY) / bearish (for SELL). Cache per-symbol, invalidated when H4 bar timestamp changes. New state: `_h4_poi_cache`, `_ob_detector_h4`, `_fvg_detector_h4` (separate instances to avoid M15 state contamination).
+- **C4 — IDM sweep soft gate (Principle 3):** in sweep scoring block, OB without recent IDM sweep now costs `-20` (old OB, age > 5 bars) or `-8` (fresh OB). Sweep + OB together adds `+10` bonus (ideal smart-money pattern).
+- **C5 — FVG + BOS conjunction (Principle 4):** after MTF bias scoring, if LTF (M15) had recent BOS, check for active M15 FVG. BOS without FVG → `-15` (weak break). BOS + FVG → `+8`.
+
+**SMC `market_structure.py`:**
+
+- **C2 — `is_valid_pullback` helper (new, Principle 1):** added method with 3 gates:
+  1. impulse size ≥ 1.0 × ATR (no tiny wobble)
+  2. pullback retracement ≥ 30 % of impulse (deep enough)
+  3. pullback depth ≥ 0.25 × ATR (absolute floor, guards wick-only "BOS")
+- Wired into `detect_structure_breaks`: when close breaks active swing high/low, `is_valid_pullback` is called first. If invalid → swing marked broken but NO event raised (internal noise rejected).
+- Uses `df['atr']` column — already populated by `TechnicalIndicators.calculate_all` upstream, no new param plumbing.
+
+**Lookahead / correctness:**
+
+- All checks operate on confirmed-closed bars (iloc slicing ≤ current bar index).
+- H4 POI cache invalidates by bar_ts equality — new H4 close triggers recompute.
+- Mirror BUY/SELL logic verified identical except direction.
+
+**Pipeline impact:**
+
+- Pool will shrink (stricter filters) — monitor signals-per-episode, raise `pool_size` if < 12 avg.
+- VecNormalize stats from previous training are invalid — must retrain RL with `--fresh`.
+- `obs[0] confluence_norm` distribution shifts (IDM/FVG penalties widen range).
+
+**Retrain sequence (required):**
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 3000 --workers 8
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
+    --timesteps_p1 10000000 --timesteps_p2 5000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.02 \
+    --ml_threshold 0.36 --risk_per_trade 0.007
+```
+
+Expected: Pass Rate 3.7 % → 6-10 %, Win Rate 49.6 % → 53-57 % (quality-first), Orders/day 0.26 → 0.15-0.20 (fewer but better).
+
+### 2026-04-25 — v6.9 Phase E2 — Auxiliary Task on PPO
+
+Research-backed (arXiv 2411.01456) — auxiliary regression head on policy network forces the trunk to learn signal-outcome-informative representations. Paper reports Sharpe lift -2.61 → 0.24 (Dataset 1) and -2.93 → 0.47 (Dataset 2) on forex DRL.
+
+**3 new files:**
+
+- `ml/aux_rollout_buffer.py` — `AuxRolloutBuffer` extends `RolloutBuffer` with per-step `aux_targets` field (shape `(buffer_size, n_envs)`). Adds `aux_target` kwarg to `add()`, includes `aux_targets` in `get()` swap_and_flatten loop, returns extended `AuxRolloutBufferSamples` NamedTuple.
+- `ml/aux_aware_policy.py` — `AuxAwareACPolicy` extends `ActorCriticPolicy` with `aux_head: nn.Linear(latent_dim_pi, 1)` and `predict_aux(obs)` method that runs obs through actor trunk → aux head → squeezed scalar.
+- `ml/aux_aware_ppo.py` — `AuxAwarePPO` extends `PPO`. Overrides:
+  1. `__init__` — defaults `rollout_buffer_class = AuxRolloutBuffer`, accepts `aux_loss_weight=0.5`.
+  2. `collect_rollouts()` — copy of `OnPolicyAlgorithm.collect_rollouts` with one extra line: `aux_targets = np.array([info.get('aux_target', 0.0) for info in infos])` then `rollout_buffer.add(..., aux_target=aux_targets)`.
+  3. `train()` — copy of `PPO.train` with extra `aux_loss = F.mse_loss(policy.predict_aux(obs), aux_targets)` added to total loss as `+ aux_loss_weight × aux_loss`. Logs `train/aux_loss` to TensorBoard.
+
+**Env modification (`ml/signal_filter_env.py`):**
+
+- Added `info['aux_target'] = float(sig.get('outcome_pnl_ratio', 0.0))` in `step()` info dict. AuxAwarePPO reads this from `infos` returned by `env.step` (vectorized).
+
+**Training script (`scripts/train_signal_filter.py`):**
+
+- Replaced `PPO("MlpPolicy", ...)` with `AuxAwarePPO(AuxAwareACPolicy, ..., aux_loss_weight=0.5, ...)` in P1.
+- Replaced `PPO.load(...)` with `AuxAwarePPO.load(...)` in P2 transition + final eval — preserves aux head + buffer class on reload.
+
+**Smoke test (100 k P1 + 50 k P2, n_envs=4):**
+
+- ✅ Pipeline runs end-to-end without errors.
+- ✅ `train/aux_loss` logged: 1.39-1.45 (near regression baseline `var(outcome) ≈ 1.5`, stable not exploding).
+- ✅ `train/value_loss`: 0.58-0.69 (healthy).
+- ✅ `train/policy_gradient_loss`: -0.005 to 0 (healthy small values).
+- ✅ Model save/load round-trip works (eval reloaded model successfully).
+
+**Risks (still open):**
+
+- Full 10M+5M training may diverge if `aux_loss_weight=0.5` is too high — fallback to 0.1 if value_loss or aux_loss explodes.
+- VecNormalize wraps env — `info['aux_target']` is unmodified (VecNormalize only touches obs/reward).
+- v6.8 P2 stability fix (LR 5e-5, ent 0.02, threshold 20) is preserved — paired with E2 aux loss.
+
+**Retrain required (only RL — pool + GBM unchanged from v6.8 calibrated):**
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
+    --timesteps_p1 10000000 --timesteps_p2 5000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.02 \
+    --ml_threshold 0.36 --risk_per_trade 0.007
+```
+
+Expected (per arXiv paper extrapolation): Pass Rate 3.0-3.5 % (B1v2/E1 baseline) → 4.5-7 %, with stable P2 (no early-stop), DD safer due to better feature learning.
+
+### 2026-04-25 — v6.8 Phase E1 — Isotonic Calibration on GBM
+
+Research-backed improvement (Niculescu-Mizil & Caruana 2005, MQL5 financial-ML series). GBM `predict_proba` was uncalibrated — raw probabilities clustered around 0.30-0.45 regardless of true frequency. Calibration tightens probability semantics so `ml_score` is interpretable as actual win rate.
+
+**Changes (`scripts/train_signal_quality.py`):**
+
+- Added `IsotonicRegression(out_of_bounds='clip')` fitted on OOF probabilities (group-aware via existing `GroupKFold` setup → no leakage).
+- Pool re-scored with **calibrated** OOF probabilities instead of raw.
+- Production save bundle now includes both `model` (base GBM) and `calibrator` (isotonic mapping).
+- Brier score logged before/after for verification.
+- 5-bin reliability diagram printed (pred_avg vs true_avg per bin).
+
+**Changes (`ml/signal_quality.py`):**
+
+- `SignalQualityModel.__init__` loads optional `calibrator` from payload (None → backwards-compat with old uncalibrated models).
+- `score` and `score_batch` apply `calibrator.transform` after `model.predict_proba`.
+
+**Verification (Phase E1 first run):**
+
+- Brier 0.2243 → 0.2234 (-0.4 %).
+- Reliability bins: 5/5 ✅ — `pred_avg` matches `true_avg` exactly across [0,0.3), [0.3,0.4), [0.4,0.5), [0.5,0.6), [0.6,1.0).
+- Distribution: mean 0.356, std grew 0.050 → 0.076 (calibration spreads probabilities to match true frequency).
+- Threshold analysis shift:
+  - 0.33: WR 38.8 % → 39.6 %, EV `−0.005` → `+0.010` (flip to positive).
+  - 0.40: WR 46.8 % → 46.6 %, EV `+0.154` → `+0.149` (almost identical, larger n).
+  - 0.45: 3.5 % kept → 8.3 % kept, EV `+0.393` → `+0.275` (more samples at sweet spot).
+
+**Why isotonic, not Platt:**
+
+- Tree models (GBM) have non-sigmoid miscalibration → Platt's log-linear assumption fails.
+- 106 k samples ≫ 1 000 → isotonic strictly dominant per Niculescu-Mizil 2005.
+
+**Live impact:** `ml_score >= 0.40` reward bonuses in `FTMOSignalFilterEnv.step` now trigger at the *true* 46 % WR threshold instead of an arbitrary raw-prob bucket. Threshold for `--ml_threshold` should typically use 0.40 (sweet spot) instead of the previous 0.36.
+
+**Retrain required (only RL):**
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
+    --timesteps_p1 10000000 --timesteps_p2 5000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.02 \
+    --ml_threshold 0.40 --risk_per_trade 0.007
+```
+
+Expected: Pass Rate 3.5 % → 4-5 % (calibration improves position sizing per Niculescu-Mizil chain: probs → sizing → Kelly → equity smoothness).
+
+### 2026-04-25 — v6.7 Rollback Phase D (BE-only tested + rejected)
+
+Phase D full (partial + BE + trail) and Phase D BE-only both failed to beat the B1v2 baseline (Pass Rate 3.7 %). After two experiments the evidence is strong enough to lock in a decision: **trade management inside the training backtester hurts Pass Rate for FTMO challenges**, even though it improves WR in isolation.
+
+**Why trade management loses for Pass Rate:**
+
+- FTMO 10 % target in 45 days is a *tail* objective — it needs high variance, not low variance.
+- Partial close caps winners at 1.5R (locks 0.5R early, remaining half to 2R net) → reduces tail events.
+- BE-only at 1R trigger kills trades that reach 1R and minor-pullback back to entry: in the raw pool these are 8.4 pp of former winners that became 0R, versus 9.6 pp of losers saved. Net EV per trade worsens (mean outcome moved from `−0.0645` to `−0.1051`).
+- Distribution confirms it: `TP 2R+` bucket 12.8 % (B1v2) → 8.6 % (BE-only). Tail got thinner.
+
+**Rollback actions:**
+
+- `ml/strategy_backtester.py` `_resolve_trade` — reverted to the v6.3 B1v2 version (no BE / partial / trail; SL or TP only, with bar-color heuristic for same-bar).
+- `execution/trade_manager.py` constants — restored to live defaults (`PARTIAL_CLOSE_PCT=0.5`, `PARTIAL_TRIGGER_RR=1.0`, `TRAIL_ACTIVATION_RR=1.5`, `TRAIL_ATR_MULTIPLIER=1.0`). Live still uses trade management; only the training backtester is flat.
+- Pool restored from `data/signal_pool_3000.pkl.bak_v6_2` (identical to the v6.3 B1v2 pool — 2 887 episodes, 106 454 signals, mean outcome `−0.0645`).
+- GBM retrained on the restored pool (expected OOF AUC ≈ 0.5875).
+
+**Note on train-live alignment:** with rollback, the training env now *under*-estimates live performance because live has BE + partial + trail while training does not. This is an *acceptable* direction of mismatch (live ≥ train) — the alternative (Phase D) produced the wrong direction (live worse than train in Pass Rate terms). Future work could revisit this gap with higher trigger points (e.g., BE at 1.5R with buffer) if empirical live data supports it.
+
+**Retrain required (only RL — pool + GBM are restored/regenerated):**
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
+    --timesteps_p1 10000000 --timesteps_p2 5000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.02 \
+    --ml_threshold 0.36 --risk_per_trade 0.007
+```
+
+Expected to reproduce ≈ 3.7 % Pass Rate. Once confirmed, the bot can be deployed to demo for live data collection — further offline tuning hit diminishing returns.
+
+### 2026-04-25 — v6.5 Phase D Train-Live Alignment (rollback Phase C)
+
+Phase C (SMC 4 principles, 2026-04-25 earlier) reduced pool 44 % but Pass Rate dropped 3.7 % → 1.5 % — **rolled back fully** in same day. Root cause confirmed: Phase C filters removed signals proportionally without improving WR, and pool shrinkage caused PPO P2 to early-stop.
+
+Phase D attacks the real gap: **backtester `_resolve_trade` did not simulate BE / partial-close / trailing** that live `TradeManager` performs. Training pool outcomes therefore misrepresented realized RR.
+
+**Rollback (all Phase C changes reverted):**
+
+- `smc_strategy.py` — removed `_get_h4_poi_zones`, `_is_near_h4_poi`, H4 POI gate (BUY+SELL), H4 POI soft scoring, IDM sweep penalty, FVG + BOS conjunction, ADX 25 threshold (back to 20). `_ob_detector_h4`, `_fvg_detector_h4`, `_h4_poi_cache` removed from `__init__`.
+- `market_structure.py` — removed `is_valid_pullback`, wire-in dropped from `detect_structure_breaks`.
+- `strategy_backtester.py` `_init_strategy` — removed `_ob_detector_h4`, `_fvg_detector_h4`, `_h4_poi_cache` setup.
+
+**Phase D new (`ml/strategy_backtester.py`):**
+
+- Added class constants mirroring `TradeManager`: `_BE_TRIGGER_RR=1.0`, `_PARTIAL_CLOSE_PCT=0.5`, `_PARTIAL_TRIGGER_RR=1.0`, `_TRAIL_ACTIVATION_RR=1.5`, `_TRAIL_ATR_MULTIPLIER=1.0`.
+- Rewrote `_resolve_trade` as bar-by-bar state machine with fields: `effective_sl`, `partial_closed`, `partial_gain_R`, `trail_active`, `best_price`.
+- On 1R hit: partial close 50 % (locks `+0.5R`) and moves SL to entry (BE).
+- On 1.5R hit: activates trailing — SL = `best_price ± ATR × 1.0` (one-way).
+- Gap / force-close logic preserved; applies to `effective_sl` so gap-SL below BE still counts as 0 R on remaining half.
+- Outcome `total_R = partial_gain_R + remaining_pct × exit_R` — combines locked partial with remaining exit.
+
+**Unit tests (6 scenarios) all pass:**
+
+- TP direct hit → `+1.5R` (partial +0.5R + TP on remaining 50 %).
+- Partial + BE stop (no trail) → `+0.5R` (half locked, half BE = 0R).
+- Full SL before 1R → `−1R`.
+- Partial + trail stop → `~+1R` (trail above entry, not full RR).
+- SELL mirror of case 1 → `+1.5R` as expected.
+- Timeout after partial → locked partial + remaining at last close.
+
+**Pool v6.5 snapshot (after rebuild):**
+
+- 2 887 episodes, 106 454 signals (same as v6.3 B1v2 baseline — rollback + Phase D preserves signal count).
+- WR (outcome > 0) **35.56 % → 45.83 %** (+10.3 pp).
+- New distribution buckets visible: `+0.1 to +0.5R` (18.0 %) and `+1.0 to +1.5R` (19.7 %) — partial-win outcomes that didn't exist before.
+- Mean outcome −0.0887 (slightly more negative than v6.3's −0.0645) because partial-cap reduces winners from 2R → 1.5R on average.
+
+**Retrain required:**
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
+    --timesteps_p1 10000000 --timesteps_p2 5000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.02 \
+    --ml_threshold 0.36 --risk_per_trade 0.007
+```
+
+Expected: Pass Rate 3.7 % → 6-10 %, WR 49.6 % → 55-60 %, DD max safer because BE caps downside of partial-winners.
 
 ### 2026-04-24 — v6.3 B1v2 mid-episode undertrading checks
 

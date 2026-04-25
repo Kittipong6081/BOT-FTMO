@@ -656,6 +656,9 @@ class FTMOSignalFilterEnv(gym.Env):
             'total_takes': self._total_takes,
             'total_skips': self._total_skips,
             'clamped': was_clamped,
+            # v6.9 E2: aux regression target = signal outcome (R units)
+            # AuxAwarePPO reads this from infos, stores in AuxRolloutBuffer
+            'aux_target': float(sig.get('outcome_pnl_ratio', 0.0)),
         }
 
         if terminated or truncated:

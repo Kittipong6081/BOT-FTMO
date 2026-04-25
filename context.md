@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-04-24 | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-04-25 | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
