@@ -158,7 +158,8 @@
       "Skill(update-config)",
       "Skill(update-config:*)",
       "Bash(bash .claude/hooks/check_wiki_sync.sh)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/main.py)"
     ],
     "additionalDirectories": [
       "/tmp",

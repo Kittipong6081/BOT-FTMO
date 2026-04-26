@@ -230,9 +230,16 @@ python -m venv .venv
 
 ### Step 4: ติดตั้ง dependencies
 
+**macOS / Linux:**
 ```bash
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r ftmo_trading_bot/requirements.txt
+```
+
+**Windows (PowerShell / CMD):**
+```cmd
+.venv\Scripts\pip install --upgrade pip
+.venv\Scripts\pip install -r ftmo_trading_bot\requirements.txt
 ```
 
 ### Step 5: ติดตั้ง MetaTrader5 (เฉพาะ Windows)
@@ -245,11 +252,17 @@ python -m venv .venv
 
 ### Step 6: ตรวจสอบ install สำเร็จ
 
+**macOS / Linux:**
 ```bash
 .venv/bin/pip freeze | grep -E "^(torch|stable|gymnasium|numpy|scikit)"
 ```
 
-ผลลัพธ์ที่ถูก:
+**Windows (PowerShell):**
+```powershell
+.venv\Scripts\pip freeze | Select-String "torch|stable|gymnasium|numpy|scikit"
+```
+
+ผลลัพธ์ที่ถูก (ทั้ง 2 platform):
 ```
 gymnasium==1.2.3
 numpy==2.4.4
@@ -260,8 +273,14 @@ torch==2.11.0
 
 ### Step 7: Quick smoke test
 
+**macOS / Linux:**
 ```bash
 .venv/bin/python ftmo_trading_bot/main.py --status
+```
+
+**Windows:**
+```cmd
+.venv\Scripts\python ftmo_trading_bot\main.py --status
 ```
 
 ถ้าเห็น banner + version + symbols list → install สำเร็จ
@@ -324,9 +343,11 @@ pip freeze > vps_versions.txt
 
 ### วิธี 1: ดึงจาก MT5 อัตโนมัติ (Windows + MT5 connected)
 
-```bash
-.venv/bin/python ftmo_trading_bot/scripts/fetch_mt5_data.py
+```cmd
+.venv\Scripts\python ftmo_trading_bot\scripts\fetch_mt5_data.py
 ```
+
+(macOS/Linux ใช้ MT5 ไม่ได้ — Mock Mode เท่านั้น)
 
 ดึง OHLCV ของ 9 symbols × 3 TF (M15, H1, H4, D1) → save ลง [`data/ohlcv/`](ftmo_trading_bot/data/ohlcv/)
 
@@ -346,8 +367,15 @@ pip freeze > vps_versions.txt
 
 ### Step 1 — Build Signal Pool
 
+**macOS / Linux:**
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py \
+    --pool_size 3000 --workers 8 --max_days 45
+```
+
+**Windows:**
+```cmd
+.venv\Scripts\python ftmo_trading_bot\scripts\build_signal_pool.py ^
     --pool_size 3000 --workers 8 --max_days 45
 ```
 
@@ -357,8 +385,14 @@ pip freeze > vps_versions.txt
 
 ### Step 2 — Train ML Quality Model (GBM + Calibrator)
 
+**macOS / Linux:**
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
+```
+
+**Windows:**
+```cmd
+.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_quality.py
 ```
 
 **ทำอะไร:**
@@ -372,12 +406,23 @@ pip freeze > vps_versions.txt
 
 ### Step 3 — Train PPO Agent (with Auxiliary Task)
 
+**macOS / Linux:**
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py \
     --pool_size 3000 \
     --ml_threshold 0.36 \
     --risk_per_trade 0.007 \
     --timesteps_p1 300000 \
+    --timesteps_p2 200000
+```
+
+**Windows:**
+```cmd
+.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py ^
+    --pool_size 3000 ^
+    --ml_threshold 0.36 ^
+    --risk_per_trade 0.007 ^
+    --timesteps_p1 300000 ^
     --timesteps_p2 200000
 ```
 
@@ -399,11 +444,21 @@ pip freeze > vps_versions.txt
 
 ## 🧪 Evaluation
 
+**macOS / Linux:**
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py \
     --eval_only \
     --pool_size 3000 \
     --ml_threshold 0.36 \
+    --risk_per_trade 0.007
+```
+
+**Windows:**
+```cmd
+.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py ^
+    --eval_only ^
+    --pool_size 3000 ^
+    --ml_threshold 0.36 ^
     --risk_per_trade 0.007
 ```
 
@@ -416,7 +471,7 @@ pip freeze > vps_versions.txt
    Survive, no target: 4475 (89.5%)
 ```
 
-⚠️ ใช้ `.venv/bin/python` เสมอ (หรือ activate venv) — ถ้าใช้ Python คนละ env, RNG seed จะต่าง → Pass Rate drift
+⚠️ ใช้ venv interpreter เสมอ (`.venv/bin/python` บน macOS/Linux, `.venv\Scripts\python` บน Windows) — หรือ activate venv ก่อน. ถ้าใช้ Python คนละ env, RNG seed + package versions จะต่าง → Pass Rate drift
 
 ---
 
@@ -449,8 +504,14 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
 
 ### Step 3 — รัน bot
 
+**macOS / Linux (Mock Mode — dev only):**
 ```bash
 .venv/bin/python ftmo_trading_bot/main.py
+```
+
+**Windows VPS (live trading):**
+```cmd
+.venv\Scripts\python ftmo_trading_bot\main.py
 ```
 
 **Console output (quiet mode — v6.9):**
@@ -515,10 +576,22 @@ Win Rate, Sharpe, Profit Factor, etc.
 
 ### Manual Import
 
+⚠️ **CSV path เป็น positional argument** (ไม่ใช่ `--csv`)
+
+**macOS / Linux:**
 ```bash
-.venv/bin/python ftmo_trading_bot/scripts/import_forexfactory_csv.py \
-    --csv path/to/calendar.csv
+.venv/bin/python ftmo_trading_bot/scripts/import_forexfactory_csv.py path/to/calendar.csv
 ```
+
+**Windows:**
+```cmd
+.venv\Scripts\python ftmo_trading_bot\scripts\import_forexfactory_csv.py path\to\calendar.csv
+```
+
+Optional flags:
+- `--tz-offset 0.0` — timezone offset ของ CSV (default 0 = UTC). ใช้ `--tz-offset -5` ถ้า export เป็น EST
+- `--valid-days 7` — จำนวนวันที่ calendar ยัง valid
+- `--output PATH` — override default `config/news_calendar.json`
 
 **ขั้นตอน weekly:**
 1. ดาวน์โหลด CSV จาก [forexfactory.com](https://forexfactory.com)
@@ -533,6 +606,7 @@ Win Rate, Sharpe, Profit Factor, etc.
 
 ### ขั้นตอน reset (เริ่มรอบใหม่)
 
+**macOS / Linux:**
 ```bash
 # 1. Backup state เดิม (กรณีต้องดูประวัติ)
 mv ftmo_trading_bot/logs/bot_state.json ftmo_trading_bot/logs/bot_state.json.bak_$(date +%s)
@@ -543,6 +617,19 @@ mv ftmo_trading_bot/logs/ftmo_trades.xlsx ftmo_trading_bot/logs/ftmo_trades_chal
 # 3. ตั้งค่า MT5 account ใหม่ใน .env
 # 4. รัน bot — bot_state.json + ftmo_trades.xlsx จะ auto-create จาก balance ใหม่
 .venv/bin/python ftmo_trading_bot/main.py
+```
+
+**Windows VPS:**
+```cmd
+REM 1. Backup state เดิม
+move ftmo_trading_bot\logs\bot_state.json ftmo_trading_bot\logs\bot_state.json.bak
+
+REM 2. Backup Excel เดิม
+move ftmo_trading_bot\logs\ftmo_trades.xlsx ftmo_trading_bot\logs\ftmo_trades_challenge1.xlsx
+
+REM 3. ตั้งค่า MT5 account ใหม่ใน .env
+REM 4. รัน bot
+.venv\Scripts\python ftmo_trading_bot\main.py
 ```
 
 ---
@@ -620,9 +707,21 @@ A: ได้ แต่ต้องแก้ `CONSISTENCY_RULE_THRESHOLD` เป�
 
 A: **ต้อง** — Bot ใช้ EET ของ broker เทียบ UTC ของ system. คลาดเคลื่อน > 5s อาจทำให้ session detect ผิด, friday close miss
 
-**Windows Setup:**
+**Windows Setup (Run as Administrator):**
 ```cmd
+REM 1. Config NTP source + enable manual sync
 w32tm /config /manualpeerlist:"time.windows.com" /syncfromflags:manual /reliable:yes /update
+
+REM 2. Force resync ทันที
+w32tm /resync
+
+REM 3. Verify — ตรวจ Last Successful Sync Time (ต้องไม่เก่ากว่า 1 ชม.)
+w32tm /query /status
+```
+
+ถ้า `Last Successful Sync Time` ยังเก่า / error → ลอง restart Windows Time service:
+```cmd
+net stop w32time && net start w32time
 w32tm /resync
 ```
 

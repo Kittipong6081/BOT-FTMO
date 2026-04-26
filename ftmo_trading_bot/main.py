@@ -70,8 +70,10 @@ class FTMOTradingBot:
         self._risk_manager = RiskManager(self._connector)
         self._position_sizer = PositionSizer(self._connector)
         self._strategy = SMCStrategy(self._connector)
+        # Project root — ใช้ทั้ง TradeLogger + NewsCalendarScheduler
+        _project_root = os.path.dirname(os.path.abspath(__file__))
         # v6.9: TradeLogger เปิดอีกครั้ง — เก็บ live demo data สำหรับวิเคราะห์
-        # Schema v3 = 56 cols (core + ML v2 + E1/E2 enhanced) + Signals sheet (per-scan)
+        # Schema v3 = 63 cols (core + ML v2 + E1/E2 enhanced + Obs27 JSON) + Signals sheet (per-scan)
         try:
             self._logger = TradeLogger(
                 log_dir=os.path.join(_project_root, "logs")
@@ -120,7 +122,7 @@ class FTMOTradingBot:
             print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
         
         # === News Calendar Auto-Scheduler (อัพเดททุกอาทิตย์ 23:30 EET) ===
-        _project_root = os.path.dirname(os.path.abspath(__file__))
+        # _project_root กำหนดข้างบนแล้ว
         self._news_scheduler = NewsCalendarScheduler(
             inbox_dir=os.path.join(_project_root, "config", "news_inbox"),
             output_json=os.path.join(_project_root, "config", "news_calendar.json"),
