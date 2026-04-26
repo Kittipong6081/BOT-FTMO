@@ -134,7 +134,14 @@ class FTMOTradingBot:
         # v6.9: track trade open history for overtrading detection
         # List of tuples (datetime, symbol) — capped at last 200 entries
         self._trade_open_history: list = []
-        
+
+        # === Announce-once flags (idle states — print on entry, silence on repeat) ===
+        self._daily_halt_announced = False
+        self._weekend_announced = False
+        self._friday_announced = False
+        self._daily_close_announced = False
+        self._rollover_announced = False
+
         # === จัดการ Signal สำหรับ Graceful Shutdown ===
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -829,13 +836,15 @@ class FTMOTradingBot:
                     break
                     
                 if bot_state == BotState.DAILY_HALT:
-                    # รอจนกว่าวันจะเปลี่ยน
-                    if self._loop_count % 60 == 0:  # แสดงทุก 5 นาที (60 loops × 5s)
+                    if not self._daily_halt_announced:
                         print(f"🔒 [Bot] Daily Halt — รอวันถัดไป (เวลาปัจจุบัน: {datetime.now().strftime('%H:%M:%S')})")
-                        if self._loop_count == 60: # ส่งเตือนครั้งแรกที่เข้าเงื่อนไข
-                            self._notifier.send_risk_alert("🔒 DAILY LOSS LIMIT", "พอร์ตชนค่าจำกัดขาดทุนรายวัน (Daily Drawdown) บอทเข้าโหมดระงับการเทรดชั่วคราวจนกว่าจะขึ้นวันใหม่รอยัลโอเวอร์")
+                        self._notifier.send_risk_alert("🔒 DAILY LOSS LIMIT", "พอร์ตชนค่าจำกัดขาดทุนรายวัน (Daily Drawdown) บอทเข้าโหมดระงับการเทรดชั่วคราวจนกว่าจะขึ้นวันใหม่รอยัลโอเวอร์")
+                        self._daily_halt_announced = True
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
+                else:
+                    # ออกจาก Daily Halt → reset flag เพื่อพร้อม print ครั้งหน้า
+                    self._daily_halt_announced = False
                     
                 if bot_state == BotState.DISCONNECTED:
                     print("⚠️ [Bot] MT5 ไม่ได้เชื่อมต่อ — พยายามเชื่อมต่อใหม่...")
@@ -849,8 +858,9 @@ class FTMOTradingBot:
 
                 # หากเลยเวลา Friday 20:45 EET ระบบจะบังคับปิดทุก position + หยุดเทรดจนสัปดาห์หน้า
                 if TimeManager.is_friday_close_time(current_server_time):
-                    if self._loop_count % 60 == 0:
+                    if not self._friday_announced:
                         print(f"🛑 [Bot] Friday Force Close (20:45 EET) — ปิดทุก position + หยุดสุดสัปดาห์")
+                        self._friday_announced = True
                     # 🚨 FORCE CLOSE: check_session_close() มี logic ปิดทุก position ตอน Friday
                     closed = self._trade_manager.check_session_close()
                     if closed > 0:
@@ -859,23 +869,28 @@ class FTMOTradingBot:
                     self._trade_manager.manage_all_positions()
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
+                else:
+                    self._friday_announced = False
 
                 # === Weekend Sleep (Saturday/Sunday) — market closed ===
                 # ปิดตลาด Forex วันเสาร์อาทิตย์ → sleep นาน + ไม่ต้อง scan
                 if TimeManager.is_weekend(current_server_time):
-                    # พิมพ์ครั้งแรกทันที (loop=1) + ทุก 10 นาที (loop % 10 == 0 @ sleep 60s)
-                    if self._loop_count == 1 or self._loop_count % 10 == 0:
+                    if not self._weekend_announced:
                         weekday_th = ['จันทร์','อังคาร','พุธ','พฤหัส','ศุกร์','เสาร์','อาทิตย์'][current_server_time.weekday()]
                         print(f"🌙 [Bot] Weekend Sleep — ตลาดปิดวัน{weekday_th} "
                               f"({current_server_time.strftime('%H:%M')} EET) — รอจันทร์ 00:00 EET...")
+                        self._weekend_announced = True
                     # Sleep นานกว่าปกติ (60s แทน 5s) เพื่อไม่ spam CPU
                     time_module.sleep(60)
                     continue
+                else:
+                    self._weekend_announced = False
 
                 # Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิดทุก position ก่อนข้ามวัน
                 if TimeManager.is_daily_close_time(current_server_time):
-                    if self._loop_count % 30 == 0:
+                    if not self._daily_close_announced:
                         print(f"🌙 [Bot] Daily Close (23:30 EET) — ปิดทุก position ก่อนข้ามวัน")
+                        self._daily_close_announced = True
                     # 🚨 FORCE CLOSE: check_session_close() มี logic Daily Overnight Close
                     closed = self._trade_manager.check_session_close()
                     if closed > 0:
@@ -883,13 +898,18 @@ class FTMOTradingBot:
                     self._trade_manager.manage_all_positions()  # retry สำหรับที่ปิดไม่สำเร็จ
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
+                else:
+                    self._daily_close_announced = False
 
                 # หากช่วงเวลา 23:55 น. ถึง 01:05 น. (Rollover / Spread Expansion)
                 if TimeManager.is_rollover_period(current_server_time):
-                    if self._loop_count % 20 == 0:
+                    if not self._rollover_announced:
                         print(f"💤 [Bot] Rollover Pause — เข้าสู่โหมดหลับพักหนีสเปรดถ่างประจำวัน ({current_server_time.strftime('%H:%M:%S')} EET)")
+                        self._rollover_announced = True
                     time_module.sleep(bot_config.main_loop_interval)
                     continue
+                else:
+                    self._rollover_announced = False
 
                 # === ขั้นตอนที่ 2: สแกนสัญญาณ + กรองด้วย AI + ส่งคำสั่งเทรด ===
                 # สแกนทุกๆ 12 loops (~1 นาที)
@@ -913,19 +933,15 @@ class FTMOTradingBot:
                                 live_context["agent_decision"] = agent_decision
 
                                 if not take:
-                                    print(f"⏭️ [Agent] SKIP {sig.signal_type.value} {sig.symbol} "
-                                          f"Conf={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f} "
-                                          f"(confidence={confidence:.2f})")
-                                    # log signal scan แม้ agent SKIP
+                                    # SKIP: log into Signals sheet only (no console — silenced to reduce loop noise)
                                     self._log_signal_scan(sig, live_context, result="AGENT_SKIP")
                                     continue
+                                # TAKE: keep — สัญญาณกำลังจะเปิดเทรด, event สำคัญ
                                 print(f"📡 [Agent] TAKE {sig.signal_type.value} {sig.symbol} "
                                       f"Conf={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f} "
                                       f"(confidence={confidence:.2f})")
                             else:
                                 live_context["agent_decision"] = "NO_AGENT"
-                                print(f"📡 [Bot] สัญญาณ {sig.signal_type.value} {sig.symbol} "
-                                      f"Confluence={sig.confluence_score:.0f} RR=1:{sig.rr_ratio:.1f}")
 
                             executed = self._executor.execute_signal(sig, live_context=live_context)
                             if executed:

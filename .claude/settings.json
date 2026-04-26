@@ -147,7 +147,14 @@
       "Bash(tee /tmp/smoke_test_e2.log)",
       "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/main.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/execution/trade_executor.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/execution/trade_manager.py /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/analytics/trade_logger.py)",
       "Bash(.venv/bin/pip freeze *)",
-      "Bash(python -m py_compile ftmo_trading_bot/analytics/trade_logger.py ftmo_trading_bot/execution/trade_executor.py ftmo_trading_bot/main.py)"
+      "Bash(python -m py_compile ftmo_trading_bot/analytics/trade_logger.py ftmo_trading_bot/execution/trade_executor.py ftmo_trading_bot/main.py)",
+      "Bash(python -m py_compile ftmo_trading_bot/main.py)",
+      "Bash(.venv/bin/python --version)",
+      "Bash(.venv/bin/python -c \"import torch, numpy, stable_baselines3, gymnasium; print\\(f'torch={torch.__version__}, numpy={numpy.__version__}, sb3={stable_baselines3.__version__}, gym={gymnasium.__version__}'\\)\")",
+      "Bash(python -c \"import torch, numpy, stable_baselines3, gymnasium; print\\(f'torch={torch.__version__}, numpy={numpy.__version__}, sb3={stable_baselines3.__version__}, gym={gymnasium.__version__}'\\)\")",
+      "Bash(grep -E \"\\\\.zip$|\\\\.pkl$\")",
+      "Bash(grep -E \"\\\\.pkl$\")",
+      "Bash(grep -E \"\\(ppo_signal_filter|vec_normalize_sf\\)\\\\.\\(zip|pkl\\)$\")"
     ],
     "additionalDirectories": [
       "/tmp",

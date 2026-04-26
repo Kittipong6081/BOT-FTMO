@@ -1,35 +1,40 @@
 # === FTMO Trading Bot Dependencies ===
+# ⚠️ CRITICAL: pin versions ทั้งหมด — VPS ต้องใช้เวอร์ชันเดียวกับเครื่อง train
+#    มิฉะนั้น agent อาจตัดสินใจต่างจากที่ verified (Pass Rate 10%)
+#
+# ตรวจ versions ตรงกันหรือไม่:
+#   .venv/bin/pip freeze | grep -E "^(torch|stable|gymnasium|numpy|scikit)"
 
-# การเชื่อมต่อ MetaTrader 5 (ต้อง install แยก — ใช้ได้เฉพาะ Windows)
+# === การเชื่อมต่อ MetaTrader 5 (ต้อง install แยก — Windows-only) ===
 # pip install MetaTrader5
 # บน macOS/Linux จะใช้ Mock Mode อัตโนมัติ
 
-# การจัดการและวิเคราะห์ข้อมูล
-pandas>=2.0.0
-numpy>=1.24.0
+# === การจัดการและวิเคราะห์ข้อมูล ===
+pandas==3.0.2
+numpy==2.4.4
 
-# Reinforcement Learning (Signal Filter Agent)
-gymnasium>=0.29.0
-stable-baselines3>=2.1.0
-torch>=2.0.0
+# === Reinforcement Learning (Signal Filter Agent — PPO + Auxiliary Task) ===
+gymnasium==1.2.3
+stable-baselines3==2.8.0
+torch==2.11.0
 
-# Required by stable-baselines3 progress bar (model.learn(progress_bar=True))
-tqdm>=4.65.0
-rich>=13.0.0
+# === SB3 progress bar (model.learn(progress_bar=True)) ===
+tqdm==4.67.3
+rich==15.0.0
 
-# Machine Learning (Signal Quality Model — GBM classifier)
-scikit-learn>=1.3.0
+# === Machine Learning (Signal Quality Model — GBM + Isotonic Calibration) ===
+scikit-learn==1.8.0
 
-# TensorBoard สำหรับดู training curves
-tensorboard>=2.14.0
+# === TensorBoard สำหรับดู training curves ===
+tensorboard==2.20.0
 
-# Trade Logger (Excel output)
-openpyxl>=3.1.0
+# === Trade Logger (Excel output — Trades + Signals + Daily + Stats) ===
+openpyxl==3.1.5
 
-# Timezone และ Utilities
-pytz>=2023.3
-requests>=2.31.0
-python-dotenv>=1.0.0
+# === Timezone และ Utilities ===
+pytz==2026.1.post1
+requests==2.33.1
+python-dotenv==1.2.2
 
-# Testing
-pytest>=7.4.0
+# === Testing ===
+pytest==9.0.3

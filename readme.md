@@ -1,885 +1,656 @@
 # 🤖 FTMO Trading Bot
 
-> ระบบเทรด Forex อัตโนมัติ ที่ออกแบบมาเพื่อผ่าน **FTMO Challenge** (10% profit, 4% daily DD, 8% total DD) โดยใช้ **3 สมอง** ทำงานร่วมกัน: SMC Strategy + ML Filter + RL Agent
+> ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **3 สมอง** ทำงานร่วมกัน: SMC Strategy + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
+>
+> **Last Updated:** 2026-04-25 | **Stable verified:** Pass Rate 10.0% (5000 eps eval)
 
 ---
 
 ## 📖 สารบัญ
 
 - [โปรเจคนี้ทำอะไร](#-โปรเจคนี้ทำอะไร)
-- [ทำงานยังไง (สำหรับผู้เริ่มต้น)](#-ทำงานยังไง-สำหรับผู้เริ่มต้น)
-- [ติดตั้ง](#-ติดตั้ง)
-- [เตรียมข้อมูล](#-เตรียมข้อมูล)
-- [เทรน Model](#-เทรน-model)
-- [เทรดจริง (Live)](#-เทรดจริง-live)
-- [อัพเดทปฏิทินข่าว (Weekly)](#-อัพเดทปฏิทินข่าว-weekly)
-- [เริ่ม FTMO Challenge ใหม่](#-เริ่ม-ftmo-challenge-ใหม่)
-- [FAQ: NTP Time Sync](#q-vps-ต้อง-sync-เวลา-ntp-ยังไง)
-- [เข้าใจองค์ประกอบ](#-เข้าใจองค์ประกอบ)
+- [สถาปัตยกรรม 3 สมอง](#-สถาปัตยกรรม-3-สมอง)
 - [โครงสร้างโปรเจค](#-โครงสร้างโปรเจค)
+- [ติดตั้ง (สำคัญ — pin versions)](#-ติดตั้ง-สำคัญ--pin-versions)
+- [Deploy บน VPS — ห้ามผิดเวอร์ชัน](#-deploy-บน-vps--ห้ามผิดเวอร์ชัน)
+- [เตรียมข้อมูล (เฉพาะตอน train ใหม่)](#-เตรียมข้อมูล-เฉพาะตอน-train-ใหม่)
+- [Training Pipeline](#-training-pipeline)
+- [Evaluation](#-evaluation)
+- [Live Trading](#-live-trading)
+- [Live Logging (Excel)](#-live-logging-excel)
+- [News Calendar Update](#-news-calendar-update)
+- [เริ่ม FTMO Challenge ใหม่](#-เริ่ม-ftmo-challenge-ใหม่)
+- [Configuration Reference](#-configuration-reference)
 - [FAQ](#-faq)
 
 ---
 
 ## 🎯 โปรเจคนี้ทำอะไร
 
-**FTMO Challenge** คืออะไร?
+**FTMO** เป็น Prop Firm ที่ให้ทุน $100K ถ้าผ่านการสอบ:
 
-- สำนักลงทุนให้ทุน $100,000 ถ้าคุณพิสูจน์ได้ว่าเทรดเก่ง
-- เงื่อนไข: ทำกำไร +10% ภายใน ~45 วัน โดย**ห้าม**ขาดทุนเกิน 4% ในวันเดียว หรือ 8% รวม
-- **90%+ ของนักเทรดสอบไม่ผ่าน** เพราะความโลภ/เสียวินัย
+- เป้าหมาย: **+10% profit** ภายใน ~45 วัน
+- ห้าม Daily DD เกิน **5%** | ห้าม Total DD เกิน **10%**
+- 90%+ ของผู้สอบไม่ผ่านเพราะความโลภ + เสียวินัย
 
-**Bot นี้ช่วยอะไร**?
+**Bot ทำหน้าที่:**
 
-- ใช้กลยุทธ์ **Smart Money Concepts (SMC)** หา setup เทรด
-- ใช้ **Machine Learning** กรอง signal ที่มีโอกาสชนะสูง
-- ใช้ **Reinforcement Learning** ตัดสินใจว่าเทรดเมื่อไร โดยดูทั้งคุณภาพ signal และสถานะบัญชี (DD, progress)
-- ทำงาน **24/5** อัตโนมัติ ไม่มีอารมณ์
-
----
-
-## 🧠 ทำงานยังไง (สำหรับผู้เริ่มต้น)
-
-Bot แบ่งเป็น **3 สมอง** ทำงานกันเป็นทีม:
-
-### 1. 🎯 SMC Strategy (หาเซ็ทอัพ)
-
-**Smart Money Concepts** คือทฤษฎีที่ว่า "เงินก้อนใหญ่ (ธนาคาร)" ทิ้งร่องรอยในกราฟ ให้เราเดินตามได้
-
-SMC มองหา:
-
-- **Order Blocks (OB)** — โซนที่สถาบันซื้อ/ขาย ปริมาณมาก → ราคามักกลับมาแตะ
-- **Fair Value Gap (FVG)** — ช่องว่างราคาที่ต้องถูกเติม
-- **Liquidity Sweep** — การเด้งกลับหลังราคาไล่ล่า stop loss
-- **Market Structure (BOS/CHoCH)** — การเปลี่ยนแนวโน้ม
-
-เมื่อพบ setup ที่ผ่านเกณฑ์ → ส่ง "signal" ต่อไปให้สมองที่ 2
-
-```
-H4 Trend → H1 Structure → M15 Entry (Order Block + Confluence)
-```
-
-### 2. 🔬 ML Quality Filter (กลั่นกรอง)
-
-ปัญหาของ SMC เดิม: signal ส่วนใหญ่ **ไม่แม่น** (~32% win rate = เสมือนสุ่ม)
-
-เราจึงเพิ่ม **Gradient Boosting Machine (GBM)** — AI ที่ดูจาก **history ของ signal เก่า** แล้วเรียนรู้ว่าแบบไหนมักจะชนะ
-
-**ผลลัพธ์**:
-
-- `ml_score > 0.40` → win rate **48%** (จาก 32%)
-- `ml_score > 0.45` → win rate **57%**
-- `ml_score > 0.50` → win rate **65%**
-
-ML ให้**คะแนนคุณภาพ** (0-1) ของแต่ละ signal → ส่งให้สมองที่ 3
-
-### 3. 🎓 RL Agent (ตัดสินใจเทรด)
-
-**Reinforcement Learning Agent** คือ AI ที่ฝึกให้ตัดสินใจจาก **สถานการณ์** ไม่ใช่กฎตายตัว
-
-Agent เห็นอะไรบ้าง (obs **27 มิติ** — v6, 2026-04-22):
-
-- **Signal core** (12): confluence, RR, direction, ATR, OB score, bias alignment, SL/ATR, RSI, MACD, trend, OB size, ADX
-- **Market regime** (4): Stoch, BB %B, ATR change, price ROC
-- **ML quality** (1) ⭐: GBM P(win) — map [0,1] → [-1,+1]
-- **Portfolio state** (7): DD total, DD daily, progress สู่เป้า, day progress, trades วันนี้, recent WR, consec losses
-- **Cost/Flip/HTF** (3) — v6 ใหม่: spread/ATR, flip-lock flag, HTF trend alignment
-
-Agent ตัดสินใจ:
-
-- **TAKE** → เปิด order
-- **SKIP** → ข้าม signal นี้ไป
-
-**ทำไมต้องใช้ RL แทนกฎง่าย ๆ?**
-
-- ML บอกแค่ "signal นี้น่าจะชนะ" แต่ไม่รู้**เวลา**
-- RL เรียนรู้ว่า: ถ้า DD สูง → SKIP ไว้ก่อน, ถ้า progress ดี → เลือกเฉพาะ signal คุณภาพสูง
-
-### 🔄 Flow รวม
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  OHLCV Data (M15, H1, H4)                                   │
-│                     ↓                                        │
-│  ╔═══════════════════════════════════╗                      │
-│  ║  1. SMC Strategy                  ║  → TradeSignal       │
-│  ║   - Order Blocks, FVG, Sweeps     ║    + features        │
-│  ║   - Confluence scoring (0-100)    ║                      │
-│  ╚═══════════════════════════════════╝                      │
-│                     ↓                                        │
-│  ╔═══════════════════════════════════╗                      │
-│  ║  2. ML Quality Filter (GBM)       ║  → ml_score ∈ [0,1]  │
-│  ║   AUC ~0.58 บน historical data    ║                      │
-│  ╚═══════════════════════════════════╝                      │
-│                     ↓                                        │
-│  ╔═══════════════════════════════════╗                      │
-│  ║  3. RL Agent (PPO)                ║  → TAKE / SKIP       │
-│  ║   Sees: signal + ML + portfolio   ║                      │
-│  ║   Decides based on context        ║                      │
-│  ╚═══════════════════════════════════╝                      │
-│                     ↓                                        │
-│  Trade Executor → MT5 Broker                                 │
-└─────────────────────────────────────────────────────────────┘
-```
+- ใช้ **Smart Money Concepts (SMC)** หา setup เทรด (BOS/CHoCH, Order Blocks, FVG, Liquidity Sweeps)
+- ใช้ **ML (GBM + Isotonic Calibration)** กรอง signal ที่มีโอกาสชนะสูง
+- ใช้ **PPO RL Agent** + Auxiliary Task ตัดสินใจ TAKE/SKIP โดยมองทั้งคุณภาพ signal และสถานะบัญชี (DD, progress, trades today)
+- ทำงาน **24/5** อัตโนมัติ + buffer ป้องกัน FTMO breach (4%/8% แทน 5%/10%)
 
 ---
 
-## 📥 ติดตั้ง
+## 🧠 สถาปัตยกรรม 3 สมอง
 
-### ความต้องการ
+### 1. 🎯 SMC Strategy (Brain 1) — หา setup
 
-- **Python 3.10+** (แนะนำ 3.11 หรือ 3.12)
-- **RAM 8GB+** (16GB แนะนำถ้าเทรนพร้อมกัน 8 workers)
-- **Disk 2GB+** สำหรับ model + data
-- **OS**: macOS / Linux (เทรน), Windows (เทรดจริง with MT5)
+ใน [`ftmo_trading_bot/strategy/`](ftmo_trading_bot/strategy/) มี:
 
-### ขั้นตอน
+- `smc_strategy.py` — main engine, scan 9 symbols ทุกนาที
+- `market_structure.py` — BOS / CHoCH detection (D1 → H4 → H1 → M15)
+- `order_blocks.py` — Order Block detection
+- `fair_value_gaps.py` — FVG detection
+- `liquidity_sweeps.py` — Liquidity Sweep detection
+- `indicators.py` — RSI, MACD, ADX, ATR, Bollinger, Stochastic
 
-#### 1. Clone โปรเจค
+**Output:** `Signal` (symbol, BUY/SELL, entry, SL, TP, confluence_score, RR)
 
-```bash
-git clone https://github.com/Kittipong6081/BOT-FTMO.git
-cd BOT-FTMO
-```
+### 2. 🔬 ML Quality Filter (Brain 2) — กลั่นกรอง
 
-#### 2. สร้าง Virtual Environment (สำคัญ — ห้ามข้าม)
+ใน [`ftmo_trading_bot/ml/signal_quality.py`](ftmo_trading_bot/ml/signal_quality.py):
 
-`venv` แยก dependencies ของบอทออกจาก Python ระบบ → ป้องกัน package ปะปนและทำลายระบบ
+- **GBM Classifier** (sklearn `GradientBoostingClassifier`) เรียนทำนาย P(win) ของแต่ละ signal
+- **Isotonic Calibration** บนผล OOF (`GroupKFold cross_val_predict`) → ป้องกัน overconfident probabilities
+- ใช้ feature 30+ ตัว: confluence, ATR, RR, ADX, RSI, MACD, BB %B, MTF/HTF bias, session, day-of-week, ฯลฯ
+- **Threshold เริ่มต้น: 0.36** — signal ที่ score < 0.36 ถูก reject ทันที (ก่อนถึง RL agent)
 
-**macOS / Linux:**
+**Output:** `ml_score ∈ [0, 1]` (calibrated)
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r ftmo_trading_bot/requirements.txt
-```
+### 3. 🎓 RL Agent — PPO + Auxiliary Task (Brain 3)
 
-**Windows (PowerShell):**
+ใน [`ftmo_trading_bot/ml/`](ftmo_trading_bot/ml/) มี:
 
-```powershell
-python -m venv .venv
-.venv\Scripts\pip install -r ftmo_trading_bot\requirements.txt
-.venv\Scripts\pip install MetaTrader5
-```
+- `aux_aware_policy.py` — PPO policy พร้อม `aux_head: nn.Linear(latent_dim_pi, 1)` ทำนาย `outcome_pnl_ratio`
+- `aux_aware_ppo.py` — PPO subclass เพิ่ม MSE aux_loss (weight=0.5)
+- `aux_rollout_buffer.py` — RolloutBuffer พร้อม `aux_targets`
+- `signal_filter_env.py` — Gymnasium env (state = 27-dim obs, action = TAKE/SKIP)
+- `rl_agent.py` — wrapper สำหรับ inference (`should_take_signal`, `get_action_confidence`)
 
-> 💡 บน macOS/Linux จะใช้ **Mock Mode** อัตโนมัติ (เทรนและทดสอบได้ แต่เทรดจริงไม่ได้ — ต้อง Windows + MT5 เท่านั้น)
-
-#### 3. ตรวจสอบ install สำเร็จ
-
-```bash
-# macOS / Linux
-.venv/bin/python -c "import sklearn, torch, stable_baselines3, gymnasium; print('✅ deps OK')"
-```
-
-```powershell
-# Windows
-.venv\Scripts\python -c "import sklearn, torch, stable_baselines3, gymnasium; print('✅ deps OK')"
-```
-
----
-
-### 🐍 วิธีรัน Python commands — 2 รูปแบบ
-
-**คำสั่งที่เห็นในบทความนี้** (เช่น `python main.py`, `python3 scripts/...`) สามารถรันได้ 2 แบบ:
-
-#### แบบ A: เรียก interpreter ของ venv ตรง ๆ (แนะนำ)
-
-ไม่ต้องจำ activate ทุกครั้ง — explicit ว่าใช้ venv ไหน
-
-```bash
-# macOS / Linux
-.venv/bin/python ftmo_trading_bot/main.py
-```
-
-```powershell
-# Windows
-.venv\Scripts\python ftmo_trading_bot\main.py
-```
-
-#### แบบ B: Activate venv ก่อน แล้วใช้ `python` เฉย ๆ (Python convention ปกติ)
-
-```bash
-# macOS / Linux
-source .venv/bin/activate
-python ftmo_trading_bot/main.py
-deactivate                # ตอนเลิกใช้
-```
-
-```powershell
-# Windows
-.venv\Scripts\activate
-python ftmo_trading_bot\main.py
-deactivate                # ตอนเลิกใช้
-```
-
-> 📝 **ข้อตกลงในบทความนี้:** ตั้งแต่นี้ไปจะเขียนเป็น `python ...` / `python3 ...` (แบบ B) เพื่อความกระชับ — ผู้ใช้แทนด้วย `.venv/bin/python` (แบบ A) ได้เสมอถ้าไม่อยาก activate
-
-### ตั้งค่า .env (สำหรับเทรดจริง)
-
-สร้างไฟล์ `.env` ใน `ftmo_trading_bot/`:
-
-```env
-# MT5 Credentials
-MT5_TERMINAL_PATH="C:\Program Files\MetaTrader 5\terminal64.exe"
-MT5_LOGIN=12345678
-MT5_PASSWORD="your_password"
-MT5_SERVER="FTMO-Server"
-
-# Discord Notification (optional)
-DISCORD_ENABLE=True
-DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
-```
-
----
-
-## 📊 เตรียมข้อมูล
-
-ต้องมีข้อมูลราคา **3 timeframes** (M15, H1, H4) ของทุก symbol
-
-### วิธีที่ 1: ดึงจาก MT5 อัตโนมัติ ⭐
-
-```bash
-# ดึงย้อนหลัง 3 ปี (default)
-python scripts/fetch_mt5_data.py
-
-# หรือระบุจำนวนปี
-python scripts/fetch_mt5_data.py --years 5
-```
-
-Script จะสร้างไฟล์ใน `data/ohlcv/`:
+**Obs 27 dims** (ต้อง sync 3 จุด — ดู [`wiki/05-invariants.md`](wiki/05-invariants.md)):
 
 ```
-data/ohlcv/
-├── EURUSD_M15.csv   ← ~105,000 bars (3 ปี)
-├── EURUSD_H1.csv
-├── EURUSD_H4.csv
-├── GBPUSD_M15.csv
-├── ...
-└── (9 symbols × 3 TFs = 27 ไฟล์)
+[0]  ml_score              [9]  bb_pctb           [18] consec_norm
+[1]  atr_pips              [10] atr_chg           [19] spread_pct_of_atr
+[2]  sl_atr                [11] price_roc         [20] has_opposite_recently_closed
+[3]  rsi_norm              [12] total_dd_n        [21] htf_trend_alignment
+[4]  macd_norm             [13] daily_dd_n        [22] bias_align
+[5]  trend_str             [14] progress_n        [23] direction
+[6]  ob_size_atr           [15] day_progress      [24] rr_norm
+[7]  adx_norm              [16] trades_today_n    [25] confluence_norm
+[8]  stoch_norm            [17] recent_wr_norm    [26] (reserved)
 ```
 
-> ⚠️ ต้องรันบน **Windows + MT5 login** เท่านั้น
+**Reward:** ratio (P/L ÷ risk) + DD penalty + activity floor + auxiliary signal (Phase E2)
 
-### วิธีที่ 2: ใช้ CSV ของตัวเอง
-
-ใส่ไฟล์ `{SYMBOL}_{TF}.csv` ใน `data/ohlcv/` มีคอลัมน์: `time, open, high, low, close, volume`
-
-**Symbols ที่รองรับ** (10 คู่): EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, **XAUUSD** (Gold)
-
----
-
-## 🏋️ เทรน Model
-
-การเทรนมี **3 ขั้นตอน** ทำตามลำดับ:
-
-### Step 1: Build Signal Pool
-
-Signal pool = ชุดข้อมูล signals พร้อม outcomes (win/lose) สำหรับสอน AI
-
-```bash
-python3 scripts/build_signal_pool.py --pool_size 3000 --workers 8
-```
-
-**เวลา**: ~8 นาที (parallel 8 cores)  
-**Output**: `data/signal_pool_3000.pkl` (~60 MB, 158k signals)
-
-### Step 2: Train ML Quality Model (GBM)
-
-AI ที่ดูจาก history → ทำนายว่า signal ไหนจะชนะ
-
-```bash
-python3 scripts/train_signal_quality.py
-```
-
-**เวลา**: ~2-3 นาที  
-**Output**:
-
-- `data/signal_quality_model.pkl` (0.7 MB)
-- Pool signals ถูก update `ml_score` อัตโนมัติ
-
-**คาดการณ์ผล**: AUC ~0.58 (มี edge) — จะเห็น threshold analysis ในคอนโซล
-
-### Step 3: Train RL Agent (PPO)
-
-AI ที่ตัดสินใจ TAKE/SKIP จาก signal + ML score + portfolio state
-
-```bash
-python3 scripts/train_signal_filter.py --fresh \
-    --timesteps_p1 10000000 \
-    --timesteps_p2 5000000 \
-    --n_envs 8 \
-    --pool_size 3000 \
-    --outcome_noise 0.02 \
-    --ml_threshold 0.33 \
-    --risk_per_trade 0.007
-```
-
-**เวลา**: ~20-25 นาที
-**Output**:
-
-- `models/ppo_signal_filter.zip` — RL model สุดท้าย
-- `models/vec_normalize_sf.pkl` — Observation normalization stats
-
-**Parameters explained**:
-
-- `--ml_threshold 0.33` — กรอง signals ที่ ml_score < 0.33 ออก (Hybrid ML+RL)
-- `--risk_per_trade 0.006` — ความเสี่ยง 0.6% ต่อเทรด (balance profit/DD)
-- `--outcome_noise 0.02` — Gaussian noise 2% กัน overfit pool
-
-### ดู Training Progress
-
-```bash
-tensorboard --logdir logs/tb_signal_filter
-```
-
-เปิด browser ที่ http://localhost:6006
-
-**ดูอะไร**:
-
-- `train/explained_variance` ควรขึ้นไป **> 0.5** (value function เรียนรู้)
-- `ftmo/pass_rate` ควรขึ้นเรื่อย ๆ (passing FTMO challenges)
-- `4_Performance/Take_Rate` ควรอยู่ **60-70%** (หลัง ML filter)
-- `4_Performance/Win_Rate` ควร **> 43%**
-
-### ประเมินผลหลังเทรน
-
-```bash
-python3 scripts/train_signal_filter.py --eval_only \
-    --pool_size 3000 \
-    --ml_threshold 0.33 \
-    --risk_per_trade 0.006
-```
-
-**เป้าหมายที่ realistic** (อิงจาก Option B 500-ep benchmark):
-
-| Metric               | Good       | Excellent | เหตุผล                                    |
-| -------------------- | ---------- | --------- | ----------------------------------------- |
-| Pass Rate            | **7-9%**   | > 10%     | ถึงเป้า 10% FTMO (realistic ceiling ~10%) |
-| Breach Rate          | **< 2%**   | 0%        | ไม่ชน DD limit 8%                         |
-| Profit avg/ep        | **+2%**    | +2.5%     | กำไรคงที่                                 |
-| Take Rate (filtered) | **50-60%** | -         | quality-first selection                   |
-| Win Rate             | **> 45%**  | > 48%     | agent filter ทำงาน                        |
-| DD avg               | **< 0.6%** | < 0.3%    | ปลอดภัย                                   |
-
-**Option B actual (500 eps)**: Pass 8.6%, Profit +2.32%, Win Rate 46.2%, DD avg 0.47%, 0% breach, Survive profitable 66.3% ✅
-
-**Risk 0.7% Deployment (verified 5000 eps, 2026-04-20)**: Pass **12.5%**, Profit **+2.59%**, WR 46.2%, DD max 8.50%, Breach 0%, Days to pass avg 29.5 ⭐
-
-> ⚠️ **Eval sample size matters**: 100-ep eval มี variance สูง (±5pp) — ใช้ 500 eps ขึ้นไปสำหรับ true performance
-
----
-
-## ⚙️ Sync Config ก่อน Deploy Live
-
-### ⚠️ ต้องแก้ `config/settings.py` ให้ตรงกับ train
-
-ค่าปัจจุบัน (หลัง verified risk 0.7% ที่ 5000 eps — 2026-04-20):
-
-```python
-# config/settings.py line 73-75
-MIN_RISK_PER_TRADE_PCT: float = 0.005      # 0.5% floor
-MAX_RISK_PER_TRADE_PCT: float = 0.008      # 0.8% cap
-DEFAULT_RISK_PER_TRADE_PCT: float = 0.007  # 0.7% ⭐ verified optimal
-```
-
-### 🧮 Rule of Thumb
-
-```
-DEFAULT = risk ที่ verified (สูงกว่า train 0.6% ได้ แต่ต้อง verify)
-MIN     = DEFAULT − 0.002
-MAX     = DEFAULT + 0.001
-```
-
-### 📊 ตาราง mapping (Verified Results)
-
-| Risk (DEFAULT)      | Pass Rate (5000 eps) | Profit avg | Breach | MIN / MAX |
-| ------------------- | :---: | :---: | :---: | :---: |
-| 0.006 (0.6%) train  | 8.8%  | +2.34% | 0% | 0.004 / 0.007 |
-| **0.007 (0.7%)** ⭐ | **12.5%** | **+2.59%** | **0%** | **0.005 / 0.008** |
-| 0.008 (0.8%) ⚠️     | 14.0% (n=1000) | +2.53% (↓) | 0% | 0.006 / 0.009 |
-
-### ❓ ทำไมต้องแก้?
-
-- Bot live ใช้ `DEFAULT_RISK_PER_TRADE_PCT` ในการคำนวณ lot size
-- ถ้าไม่ตรง train → **live sim-real mismatch** → performance ต่างจาก backtest
-- `MIN/MAX` เป็น guardrail ใน RiskManager → ป้องกัน lot เกินตั้งใจ
-
----
-
-## 💰 เทรดจริง (Live)
-
-**ข้อกำหนด**:
-
-- Windows + MT5 ติดตั้ง
-- บัญชี FTMO login อยู่
-- ไฟล์ `.env` ตั้งค่าครบ
-- Model เทรนเสร็จแล้ว (ขั้นตอน 3 ข้อบน)
-
-**รัน Bot**:
-
-```bash
-cd ftmo_trading_bot
-python main.py
-```
-
-Bot จะ:
-
-1. ✅ เชื่อมต่อ MT5
-2. ✅ โหลด RL Agent + ML Quality Model
-3. ✅ สแกน signal ทุก 5 วินาที (ปรับได้ใน `config/settings.py`)
-4. ✅ ถาม AI ว่า TAKE หรือ SKIP
-5. ✅ ส่งคำสั่งเทรดถ้า TAKE (มี SL, TP ตามกลยุทธ์)
-6. ✅ บันทึก log + Discord notification
-
-**ปิด Bot**: กด `Ctrl+C` (bot จะ save state + ปิด position ถ้าจำเป็น)
-
----
-
-## 📅 อัพเดทปฏิทินข่าว (Weekly)
-
-Bot block signal ช่วงข่าวแรง (NFP, CPI, FOMC, ECB, BoE, PMI ฯลฯ) เพื่อกัน spread กว้าง + whipsaw
-
-### วิธีทำงาน (2-tier)
-
-1. **Priority 1: JSON calendar** — `config/news_calendar.json` (ความแม่น ~95-98%)
-2. **Priority 2: Fallback hardcoded** — ใน `config/news_events.py` (ความแม่น ~40-50%, ใช้เมื่อไฟล์ JSON หาย/หมดอายุ)
-
-### 🤖 Auto-Import (แนะนำ — drop-in ง่ายสุด)
-
-Bot มี **NewsCalendarScheduler** รัน auto ทุกวันอาทิตย์ **23:30 EET**
-
-**ขั้นตอน:**
-
-1. ดาวน์โหลด CSV จาก <https://www.forexfactory.com/calendar>
-   - ⚙️ (ขวาบน) → Time Zone = **GMT/UTC**
-   - Filter → Impact = **High only** + currencies (USD/EUR/GBP/JPY/AUD/CAD/CHF/NZD)
-   - เลือก **Next Week** → กด Export
-
-2. วางไฟล์ CSV ใน `config/news_inbox/` (ชื่อไฟล์อะไรก็ได้)
-
-3. ไม่ต้องทำอะไรต่อ — bot จะ auto-import เมื่อถึงอาทิตย์ 23:30 EET:
-   - Parse CSV → เขียนทับ `config/news_calendar.json`
-   - Move CSV → `config/news_inbox/processed/YYYY-MM-DD_filename.csv`
-   - Log: `✅ [NewsScheduler] Import เสร็จ: N events`
-
-> 💡 Bot ยังรันอยู่ 24/5 บน VPS → scheduler จะเจอ CSV วันอาทิตย์เย็นพอดี ก่อนตลาดจันทร์เปิด
-
-### 🛠️ Manual Import (ถ้าต้องการ update ทันที)
-
-```bash
-cd ftmo_trading_bot
-python scripts/import_forexfactory_csv.py ~/Downloads/ff_calendar_thisweek.csv
-```
-
-### ตรวจ log ตอนรัน bot
-
-ครั้งแรกหลัง update จะเห็น:
-
-```text
-📅 [NewsFilter] โหลด N events จาก news_calendar.json (valid_until=...)
-```
-
-### JSON Schema
-
-```json
-{
-  "updated_at": "2026-04-19T20:00:00Z",
-  "valid_until": "2026-04-26T23:59:59Z",
-  "events": [
-    {
-      "datetime_utc": "2026-04-21T12:30:00Z",
-      "currency": "USD",
-      "name": "Core Retail Sales m/m",
-      "impact": "high"
-    }
-  ]
-}
-```
-
-### ถ้าลืม update
-
-- ไฟล์หมดอายุ (`valid_until` ผ่านไปแล้ว) → bot log warning + fallback ไปใช้ hardcoded events (NFP/CPI/FOMC ที่ประมาณการ)
-- Bot ยังทำงานได้ แต่ความแม่นลดลง เหลือ ~40-50%
-- แนะนำให้ update ทุกอาทิตย์ก่อนเริ่มสัปดาห์เทรด
-
-### ปรับหน้าต่าง block
-
-ใน `config/settings.py`:
-
-```python
-no_trade_before_news_minutes: int = 30   # block ล่วงหน้า (นาที)
-no_trade_after_news_minutes: int = 15    # block หลังข่าว (นาที)
-```
-
----
-
-## 🔄 เริ่ม FTMO Challenge ใหม่
-
-Bot เก็บ state ใน `logs/bot_state.json` (initial_balance, DD anchor, state machine, cooldowns)
-→ **เมื่อเริ่ม Challenge ใหม่ ต้อง reset state** เพื่อ anchor ใหม่ถูกต้อง
-
-### 📋 ขั้นตอนเริ่ม Challenge ใหม่
-
-```bash
-# 1. หยุด bot ก่อน (ถ้ารันอยู่)
-#    กด Ctrl+C บน terminal ที่รัน main.py
-
-# 2. Backup state เก่า (ไม่ลบ — กันลืม)
-cd ftmo_trading_bot
-mv logs/bot_state.json logs/bot_state.json.bak_$(date +%s)
-
-# 3. เปลี่ยน MT5 login เป็น account ใหม่ใน .env (ถ้าเป็น account ใหม่)
-#    MT5_LOGIN=xxxxxxx
-#    MT5_PASSWORD="..."
-#    MT5_SERVER="FTMO-Server"
-
-# 4. Start bot — สร้าง state ใหม่อัตโนมัติ
-python main.py
-```
-
-Bot จะแสดง:
-
-```
-🆕 [Risk Manager] เริ่ม Challenge ใหม่:
-   🔐 MT5 Login: 12345678
-   📅 Start Date: 2026-04-19
-   💰 Initial Balance: $100,000.00
-```
-
-### 🛡️ Safety Validation (v4)
-
-Bot มี 2 การตรวจสอบอัตโนมัติใน `_load_state()`:
-
-**1. MT5 Login mismatch** (ป้องกันใช้ state ผิด account):
-
-```
-⚠️ MT5 Login เปลี่ยน (saved=11111, now=22222)
-   → บอทคิดว่าเป็น account ใหม่ — reset state
-```
-
-**2. Balance ห่างจาก initial เกิน 20%** (warn เท่านั้น):
-
-```
-⚠️ Balance ห่างจาก initial มาก (saved=$100,000 vs MT5=$50,000, diff=50.0%)
-   → อาจเป็น Challenge ใหม่ / account ใหม่
-   💡 ถ้าต้องการเริ่ม Challenge ใหม่ ให้ลบไฟล์ logs/bot_state.json
-   → ใช้ state เดิมต่อ (keep integrity — ห้าม reset อัตโนมัติ)
-```
-
-**หมายเหตุ**: Bot **ไม่ reset อัตโนมัติ** เวลา balance เพี้ยน — ต้องลบไฟล์เอง (กันเผลอ reset ช่วง DD)
-
-### ❌ อะไรที่ **ไม่** ควรทำ
-
-- ❌ **ลบ bot_state.json ระหว่าง challenge** — DD anchor จะชนพัง FTMO anchor ผิด
-- ❌ **แก้ `initial_balance` ด้วยมือ** — ทำให้ DD/Profit calc ผิด
-- ❌ **เปลี่ยน MT5 account โดยไม่ reset** — จะ warn แต่ใช้ state เก่า
-
-### 📂 State Fields Reference
-
-| Field                        | Purpose                                               |
-| ---------------------------- | ----------------------------------------------------- |
-| `initial_balance`            | FTMO anchor — Balance ตอนเริ่ม challenge              |
-| `state`                      | ACTIVE / DAILY_HALT / MAX_DRAWDOWN_HALT / MANUAL_HALT |
-| `highest_balance`            | High water mark (max balance เคยถึง)                  |
-| `current_day`                | วันปัจจุบัน (broker time)                             |
-| `daily_closed_pnl`           | P/L วันนี้ (reset ทุกวันใหม่)                         |
-| `consecutive_losses`         | นับแพ้ติด (cooldown trigger)                          |
-| `halt_until`                 | Timestamp คืน trade ถ้าโดน cooldown                   |
-| `daily_pnl_history`          | P/L รายวัน (ใช้ FTMO Consistency Rule)                |
-| `mt5_login` ⭐ v4            | Login number (validation)                             |
-| `challenge_start_date` ⭐ v4 | วันเริ่ม challenge                                    |
-| `schema_version` ⭐ v4       | เลข version (ตอนนี้ 4)                                |
-
----
-
-## 🔍 เข้าใจองค์ประกอบ
-
-### 📁 Observation Space (27 dims, v6 2026-04-22)
-
-สิ่งที่ RL Agent เห็นในแต่ละ signal:
-
-| Index                   | Feature                               | ช่วงค่า | ความหมาย                  |
-| ----------------------- | ------------------------------------- | ------- | ------------------------- |
-| **Signal Core (12)**    |
-| 0                       | confluence_norm                       | [-1, 1] | คะแนน SMC                 |
-| 1                       | rr_ratio_norm                         | [0, 1]  | Risk:Reward               |
-| 2                       | direction                             | ±1      | BUY หรือ SELL             |
-| 3                       | atr_norm                              | [-2, 2] | Volatility                |
-| 4                       | ob_score_norm                         | [0, 1]  | คะแนน Order Block         |
-| 5                       | bias_alignment                        | [-1, 1] | ทิศทางตรงกับ H4 ไหม       |
-| 6                       | sl_atr_ratio                          | [0, 2]  | ระยะ SL กี่ ATR           |
-| 7-11                    | rsi, macd, trend, ob_size, adx        | varies  | Momentum + Trend          |
-| **Market Regime (4)**   |
-| 12-15                   | stoch, bb_pctb, atr_change, price_roc | varies  | ลักษณะตลาด                |
-| **ML Quality (1)** ⭐   |
-| 16                      | ml_score_norm                         | [-1, 1] | GBM ทำนาย P(win)          |
-| **Portfolio State (7)** |
-| 17                      | total_dd_norm                         | [-5, 0] | DD รวม                    |
-| 18                      | daily_dd_norm                         | [-5, 0] | DD วันนี้                 |
-| 19                      | progress_norm                         | [-1, 2] | % ใกล้เป้า 10%            |
-| 20                      | day_progress                          | [0, 1]  | วันที่ของ challenge       |
-| 21                      | trades_today                          | [0, 1]  | เทรดวันนี้ไปกี่ครั้ง      |
-| 22                      | recent_wr_norm                        | [-1, 1] | Win rate 10 trades ล่าสุด |
-| 23                      | consec_losses                         | [0, 1]  | แพ้ติดกันกี่ครั้ง         |
-| **Cost/Flip/HTF (3)** 🆕 v6 |
-| 24                      | spread_pct_of_atr                     | [0, 3]  | spread pips / ATR pips (cost awareness) |
-| 25                      | has_opposite_recently_closed          | 0/1     | flip-lock context (กัน whipsaw)         |
-| 26                      | htf_trend_alignment                   | [-1, 1] | HTF trend sync (ใช้ bias_align proxy)   |
-
-### 🎓 2-Phase Curriculum Training
-
-**ทำไมต้องแบ่ง 2 phase?**
-
-- ถ้าสอนอะไรหลายอย่างพร้อมกัน → agent งง → เรียนช้า
-- แบ่งให้เรียนทีละเรื่อง → เก่งขึ้นเร็วกว่า
-
-**Phase 1 (Alpha)**: เรียน "อ่านกราฟ + ทำกำไร"
-
-- `enable_risk_penalty=False` — ไม่มี DD penalty
-- มี **Oracle SKIP reward** — agent รู้ outcome ล่วงหน้า (training only)
-- **Bonus**: เทรดถูก + confluence สูง → +0.25 reward
-
-**Phase 2 (Risk)**: เพิ่ม "จัดการ DD"
-
-- `enable_risk_penalty=True` — DD penalty active
-- Exponential penalty ยิ่งใกล้ 10% ยิ่งแรง
-- Inherit weights จาก Phase 1 → ไม่ต้องเริ่มใหม่
-
-### 🎯 FTMO Rules
-
-| กฎ             | ค่า                        | Bot ทำอะไร              |
-| -------------- | -------------------------- | ----------------------- |
-| เป้ากำไร       | 10% ($10,000 จาก $100,000) | RL มี target bonus      |
-| Daily DD       | 4% max ($4,000)            | Risk guard + DD penalty |
-| Total DD       | 8% max ($8,000)            | Risk guard + DD penalty |
-| ระยะเวลา       | 45 วัน                     | Episode length          |
-| วันเทรดขั้นต่ำ | 4 วัน                      | Auto-satisfied          |
+**Verified Pass Rate:** **10.0%** (5000-eps eval, 3× baseline 3.5%)
 
 ---
 
 ## 📂 โครงสร้างโปรเจค
 
 ```
-ftmo_trading_bot/
-├── main.py                          # 🎯 Bot loop หลัก (live trading)
-├── requirements.txt                 # dependencies
-├── config/
-│   └── settings.py                  # ค่าตั้ง: symbols, risk, session
-│
-├── strategy/                        # 🎯 Brain 1: SMC Strategy
-│   ├── smc_strategy.py              # Main strategy engine
-│   ├── indicators.py                # RSI, MACD, ADX, etc.
-│   ├── order_blocks.py              # OB detection
-│   ├── fair_value_gaps.py           # FVG detection
-│   ├── liquidity_sweeps.py          # Sweep detection
-│   └── market_structure.py          # BOS/CHoCH
-│
-├── ml/                              # 🔬🎓 Brain 2+3: ML + RL
-│   ├── signal_quality.py            # GBM wrapper (Brain 2)
-│   ├── rl_agent.py                  # RL inference (Brain 3)
-│   ├── signal_filter_env.py         # Gymnasium env สำหรับเทรน
-│   └── strategy_backtester.py       # Generate signal pool
-│
-├── scripts/                         # 🛠️ Training scripts
-│   ├── build_signal_pool.py         # Step 1: Pool generation
-│   ├── train_signal_quality.py      # Step 2: Train GBM
-│   ├── train_signal_filter.py       # Step 3: Train RL
-│   └── fetch_mt5_data.py            # Data fetching
-│
-├── execution/                       # 💱 Trade execution
-│   ├── mt5_connector.py             # MT5 API wrapper
-│   └── trade_executor.py            # Order management
-│
-├── core/                            # 🛡️ Risk management
-│   └── risk_manager.py              # DD tracking, cooldown
-│
-├── analytics/                       # 📊 Analytics
-│   ├── trade_logger.py              # (disabled — ไม่ใช้แล้ว ดึงจาก MT5 แทน)
-│   └── performance.py               # Win rate, Sharpe, etc.
-│
-├── models/                          # 🧠 Trained AI
-│   ├── ppo_signal_filter.zip        # RL agent
-│   ├── vec_normalize_sf.pkl         # Obs normalization
-│   └── checkpoints_sf/              # Training checkpoints
-│
-├── data/                            # 💾 Data
-│   ├── ohlcv/                       # ราคา (27 CSVs)
-│   ├── signal_pool_3000.pkl         # Pre-generated signals
-│   └── signal_quality_model.pkl     # GBM ML model
-│
-└── logs/                            # 📝 Logs
-    ├── tb_signal_filter/            # TensorBoard
-    ├── bot_state.json               # Bot state (FTMO anchor + DD + cooldowns)
-    └── (ftmo_trades.xlsx ไม่ใช้แล้ว — trade history ดึงจาก MT5 API ตรง)
+BOT-FTMO/
+├── readme.md                          # คู่มือผู้ใช้ (ภาษาไทย — ไฟล์นี้)
+├── context.md                         # Project hub/index (English, สำหรับ AI assistants)
+├── CLAUDE.md                          # AI assistant instructions
+├── wiki/                              # Technical docs (English)
+│   ├── 01-architecture.md
+│   ├── 02-modules.md
+│   ├── 03-rl-training.md
+│   ├── 04-operations.md
+│   └── 05-invariants.md
+└── ftmo_trading_bot/                  # Source code
+    ├── main.py                        # 🎯 Live bot loop
+    ├── requirements.txt               # Pinned dependencies
+    │
+    ├── config/
+    │   ├── settings.py                # FTMO/Symbol/Session config
+    │   ├── news_calendar.json         # Imported news events
+    │   └── news_inbox/                # Drop ForexFactory CSV here
+    │
+    ├── strategy/                      # 🎯 Brain 1: SMC
+    │   ├── smc_strategy.py
+    │   ├── market_structure.py
+    │   ├── order_blocks.py
+    │   ├── fair_value_gaps.py
+    │   ├── liquidity_sweeps.py
+    │   └── indicators.py
+    │
+    ├── ml/                            # 🔬🎓 Brain 2 + 3: ML + RL
+    │   ├── signal_quality.py          # GBM wrapper (with calibrator)
+    │   ├── rl_agent.py                # PPO inference wrapper
+    │   ├── signal_filter_env.py       # Gymnasium env (27 dims)
+    │   ├── aux_aware_policy.py        # PPO + aux head
+    │   ├── aux_aware_ppo.py           # PPO subclass + aux loss
+    │   ├── aux_rollout_buffer.py      # RolloutBuffer + aux_targets
+    │   └── strategy_backtester.py     # Pool generator (run SMC on history)
+    │
+    ├── execution/                     # 💱 Trade execution + management
+    │   ├── trade_executor.py          # Open/close orders + sync MT5 deals
+    │   └── trade_manager.py           # BE move, partial close, trailing
+    │
+    ├── core/                          # 🛡️ Core infrastructure
+    │   ├── mt5_connector.py           # MT5 API + Mock Mode
+    │   ├── risk_manager.py            # FTMO anchor + DD + cooldown
+    │   ├── position_sizer.py          # Lot calc (3-case JPY/USD/cross)
+    │   ├── time_manager.py            # EET/UTC convert + sessions
+    │   ├── news_scheduler.py          # Auto-import news CSV
+    │   └── notifier.py                # Discord webhooks
+    │
+    ├── analytics/                     # 📊 Logging
+    │   ├── trade_logger.py            # Excel logger (4 sheets)
+    │   └── performance.py             # Win rate / Sharpe / Profit Factor
+    │
+    ├── scripts/                       # 🛠️ Training + utilities
+    │   ├── fetch_mt5_data.py          # Step 0: ดึง OHLCV CSV
+    │   ├── build_signal_pool.py       # Step 1: Generate pool
+    │   ├── train_signal_quality.py    # Step 2: Train GBM
+    │   ├── train_signal_filter.py     # Step 3: Train PPO + Eval
+    │   └── import_forexfactory_csv.py # News calendar manual import
+    │
+    ├── models/                        # 🧠 Trained AI checkpoints
+    │   ├── ppo_signal_filter.zip      # Final PPO agent
+    │   ├── ppo_signal_filter_p1.zip   # Phase 1 only
+    │   ├── vec_normalize_sf.pkl       # ⚠️ CRITICAL: obs scale (ห้ามลืม commit)
+    │   ├── vec_normalize_sf_p1.pkl
+    │   └── checkpoints_sf/            # Mid-train backups
+    │
+    ├── data/
+    │   ├── ohlcv/                     # 27 CSV files (9 symbols × 3 TF)
+    │   ├── signal_pool_3000.pkl       # Pre-generated signal pool
+    │   └── signal_quality_model.pkl   # GBM (with calibrator inside)
+    │
+    ├── logs/
+    │   ├── ftmo_trades.xlsx           # Live trade + signal log (auto-create)
+    │   ├── bot_state.json             # FTMO anchor + DD state (ห้ามลบ mid-challenge)
+    │   ├── tb_signal_filter/          # TensorBoard logs
+    │   └── news_scheduler_state.json
+    │
+    └── tests/                         # pytest suite
 ```
+
+---
+
+## 📥 ติดตั้ง (สำคัญ — pin versions)
+
+### ⚠️ เหตุผลที่ต้อง pin versions
+
+PPO agent ที่ verified ได้ Pass Rate 10.0% **train ด้วย package versions เฉพาะเจาะจง**:
+
+```
+torch==2.11.0           gymnasium==1.2.3
+stable-baselines3==2.8.0  numpy==2.4.4
+scikit-learn==1.8.0     pandas==3.0.2
+```
+
+ถ้า version ต่างกัน → neural net forward pass อาจคลาด ~1e-6 (CPU BLAS) → action ส่วนใหญ่เหมือน แต่ **borderline cases (prob 0.49 vs 0.51) อาจ flip** → Pass Rate drift
+
+[`requirements.txt`](ftmo_trading_bot/requirements.txt) **pin versions ครบทุกตัวแล้ว** — ใช้ `pip install -r` ตามนี้
+
+### Step 1: Clone
+
+```bash
+git clone <repo-url>
+cd BOT-FTMO
+```
+
+### Step 2: Python version
+
+ต้องการ **Python 3.11+** (แนะนำ 3.14.4 ให้ตรงกับเครื่อง train)
+
+```bash
+python3 --version    # ตรวจ version
+```
+
+### Step 3: สร้าง venv
+
+**macOS / Linux:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate           # หรือใช้ .venv/bin/python ตรงๆ
+```
+
+**Windows (VPS):**
+```cmd
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+### Step 4: ติดตั้ง dependencies
+
+```bash
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r ftmo_trading_bot/requirements.txt
+```
+
+### Step 5: ติดตั้ง MetaTrader5 (เฉพาะ Windows)
+
+```cmd
+.venv\Scripts\pip install MetaTrader5
+```
+
+⚠️ MetaTrader5 library **ใช้ได้เฉพาะ Windows** — บน macOS/Linux จะเข้า Mock Mode อัตโนมัติ (ใช้สำหรับ training/dev เท่านั้น, ไม่สามารถเทรดจริง)
+
+### Step 6: ตรวจสอบ install สำเร็จ
+
+```bash
+.venv/bin/pip freeze | grep -E "^(torch|stable|gymnasium|numpy|scikit)"
+```
+
+ผลลัพธ์ที่ถูก:
+```
+gymnasium==1.2.3
+numpy==2.4.4
+scikit-learn==1.8.0
+stable_baselines3==2.8.0
+torch==2.11.0
+```
+
+### Step 7: Quick smoke test
+
+```bash
+.venv/bin/python ftmo_trading_bot/main.py --status
+```
+
+ถ้าเห็น banner + version + symbols list → install สำเร็จ
+
+---
+
+## 🚀 Deploy บน VPS — ห้ามผิดเวอร์ชัน
+
+VPS Live trading ต้อง:
+
+1. **ใช้ Windows VPS** (เพื่อให้ MetaTrader5 library ทำงานได้)
+2. **Python version match** — แนะนำ 3.11+ (3.14.4 ตรงเครื่อง train ดีที่สุด)
+3. **Pin versions match** — ห้าม upgrade packages โดยไม่ retrain
+
+### ขั้นตอน deploy
+
+```cmd
+# 1. Clone repo (มี models/ + data/ + logs/ครบ)
+git clone <repo-url>
+cd BOT-FTMO
+
+# 2. สร้าง venv + install ตาม pinned versions
+python -m venv .venv
+.venv\Scripts\activate
+pip install --upgrade pip
+pip install -r ftmo_trading_bot\requirements.txt
+pip install MetaTrader5
+
+# 3. ตรวจ versions ตรงกับเครื่อง train
+pip freeze > vps_versions.txt
+# เปรียบเทียบกับ dev machine — ถ้าต่างมีปัญหาแน่
+```
+
+### ⚠️ ไฟล์ที่ต้องมีบน VPS (commit ขึ้น git ครบ)
+
+| ไฟล์ | ทำไมต้องมี |
+|------|-----------|
+| `ftmo_trading_bot/models/ppo_signal_filter.zip` | RL agent weights |
+| `ftmo_trading_bot/models/vec_normalize_sf.pkl` | Obs normalization stats — **ขาดไม่ได้** ไม่งั้น obs scale ผิด → agent พัง |
+| `ftmo_trading_bot/data/signal_quality_model.pkl` | GBM + calibrator |
+| `ftmo_trading_bot/config/settings.py` | Risk/symbols config |
+
+ถ้าใน `.gitignore` มี `*.zip` หรือ `*.pkl` → ต้องลบออก หรือใช้ `git lfs` แทน
+
+### รัน live bot บน VPS
+
+```cmd
+.venv\Scripts\python ftmo_trading_bot\main.py
+```
+
+จะรัน loop ทุก 5 วินาที + scan signals ทุก 1 นาที + log ทุก trade ลง Excel
+
+แนะนำให้รันใน **Windows Task Scheduler** หรือ **NSSM** เพื่อ auto-restart เวลา crash
+
+---
+
+## 📊 เตรียมข้อมูล (เฉพาะตอน train ใหม่)
+
+⚠️ ถ้า**ไม่ retrain** ข้ามไปได้เลย — repo มี models เทรนเสร็จแล้ว (Pass Rate 10%)
+
+### วิธี 1: ดึงจาก MT5 อัตโนมัติ (Windows + MT5 connected)
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/fetch_mt5_data.py
+```
+
+ดึง OHLCV ของ 9 symbols × 3 TF (M15, H1, H4, D1) → save ลง [`data/ohlcv/`](ftmo_trading_bot/data/ohlcv/)
+
+### วิธี 2: ใช้ CSV ของตัวเอง
+
+วาง CSV ใน [`data/ohlcv/`](ftmo_trading_bot/data/ohlcv/) ตามรูปแบบ:
+
+- ชื่อไฟล์: `EURUSD_M15.csv`, `EURUSD_H1.csv`, ..., `XAUUSD_D1.csv`
+- คอลัมน์: `time, open, high, low, close, tick_volume, real_volume, spread`
+- แนะนำ ≥ 6 ปีย้อนหลัง สำหรับ pool ขนาด 3000 episodes
+
+---
+
+## 🏋️ Training Pipeline
+
+3 ขั้นตอน — **ห้ามข้าม ห้ามสลับลำดับ**
+
+### Step 1 — Build Signal Pool
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py \
+    --pool_size 3000 --workers 8 --max_days 45
+```
+
+**ทำอะไร:** simulate SMC strategy run บน historical data → save 3000 episodes (แต่ละ ep = 45 วัน, มี 0–N signals พร้อม outcome) ลง `data/signal_pool_3000.pkl`
+
+**เวลา:** ~30–45 นาทีบน CPU 8 cores
+
+### Step 2 — Train ML Quality Model (GBM + Calibrator)
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
+```
+
+**ทำอะไร:**
+1. Load `signal_pool_3000.pkl`
+2. Train GBM ด้วย `GroupKFold cross_val_predict` (group = episode_id) → OOF predictions
+3. Fit `IsotonicRegression` calibrator บน OOF
+4. Save `data/signal_quality_model.pkl` (มี GBM + calibrator)
+5. Re-score pool → update `ml_score` ของทุก signal
+
+**เวลา:** ~5 นาที
+
+### Step 3 — Train PPO Agent (with Auxiliary Task)
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py \
+    --pool_size 3000 \
+    --ml_threshold 0.36 \
+    --risk_per_trade 0.007 \
+    --timesteps_p1 300000 \
+    --timesteps_p2 200000
+```
+
+**Curriculum 2-phase:**
+
+- **P1 (300K steps):** Quality-first reward — เน้น win rate/profit, no DD penalty
+- **P2 (200K steps):** Risk-aware — เพิ่ม DD penalty + activity floor + early-stop on value loss
+
+**Auxiliary Task:** policy ทำนาย `outcome_pnl_ratio` (`aux_head`) เพิ่ม MSE loss weight=0.5 — บังคับให้ representation รู้จัก signal quality (จาก paper "Auxiliary task helps PPO converge")
+
+**เวลา:** ~2–3 ชม. บน CPU (CPU เพียงพอ — ไม่ต้องใช้ GPU)
+
+**Output:**
+- `models/ppo_signal_filter.zip` — final agent
+- `models/vec_normalize_sf.pkl` — obs/reward normalization stats
+- `models/checkpoints_sf/` — backup ทุก 50K steps
+
+---
+
+## 🧪 Evaluation
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py \
+    --eval_only \
+    --pool_size 3000 \
+    --ml_threshold 0.36 \
+    --risk_per_trade 0.007
+```
+
+รัน 5000 episodes (default) แล้ว report:
+
+```
+ Eval Result (5000 episodes)
+   Pass (hit 10%):     500  (10.0%)    ← target
+   Breach (DD limit):   25  ( 0.5%)    ← FTMO breach (ต้อง < 5%)
+   Survive, no target: 4475 (89.5%)
+```
+
+⚠️ ใช้ `.venv/bin/python` เสมอ (หรือ activate venv) — ถ้าใช้ Python คนละ env, RNG seed จะต่าง → Pass Rate drift
+
+---
+
+## 💰 Live Trading
+
+### Step 1 — ตั้งค่า .env (Windows VPS)
+
+```bash
+# ftmo_trading_bot/.env
+MT5_LOGIN=12345678
+MT5_PASSWORD=your_password
+MT5_SERVER=FTMO-Demo
+
+# Discord webhook (optional)
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
+```
+
+### Step 2 — Sync config
+
+ตรวจ [`ftmo_trading_bot/config/settings.py`](ftmo_trading_bot/config/settings.py) ให้ตรงกับ challenge:
+
+| Field | Value | คำอธิบาย |
+|-------|-------|---------|
+| `DEFAULT_RISK_PER_TRADE_PCT` | 0.007 | 0.7% (verified optimal) |
+| `MAX_DRAWDOWN_HARD_STOP_PCT` | 0.08 | 8% (buffer 2% จาก FTMO 10%) |
+| `DAILY_LOSS_HARD_STOP_PCT` | 0.04 | 4% (buffer 1% จาก FTMO 5%) |
+| `PROFIT_TARGET_PCT` | 0.10 | 10% target |
+| `CONSISTENCY_RULE_THRESHOLD` | 1.0 | 2-step Standard ไม่มีกฎนี้ |
+| `MAX_OPEN_POSITIONS` | 3 | สูงสุด 3 positions พร้อมกัน |
+
+### Step 3 — รัน bot
+
+```bash
+.venv/bin/python ftmo_trading_bot/main.py
+```
+
+**Console output (quiet mode — v6.9):**
+- Banner + init logs (ครั้งเดียวตอน start)
+- `📡 [Agent] TAKE ...` — ทุกครั้งที่ agent ตัดสินใจเปิดเทรด
+- `✅ [Bot] เปิดเทรดสำเร็จ: Ticket xxx`
+- `🟢/🔴 [Logger] บันทึกเทรดปิด: ... P/L=$xxx`
+- `🔒 [Bot] Daily Halt — รอวันถัดไป` (ครั้งเดียวตอน entry — announce-once)
+- `🌙 [Bot] Weekend Sleep` (ครั้งเดียวตอน entry)
+- Errors / FTMO breach alerts
+
+**ไม่ปริ้นแล้ว:** per-signal SKIP, per-loop status repeat (เก็บใน Excel + Discord แทน)
+
+### Step 4 — Stop bot
+
+`Ctrl+C` — bot จะ graceful shutdown (ปิด Excel, save state)
+
+---
+
+## 📝 Live Logging (Excel)
+
+ทุก trade + signal scan → log ลง [`ftmo_trading_bot/logs/ftmo_trades.xlsx`](ftmo_trading_bot/logs/) (auto-create เมื่อรันครั้งแรก)
+
+### 4 Sheets
+
+#### 1. **Trades** — 63 columns
+
+| Group | Columns |
+|-------|---------|
+| Core (1–19) | Ticket, Symbol, Type, Entry/SL/TP, Lot, Risk%, RR, Confluence, ATR, Times, P/L, Reasons |
+| ML features (20–32) | Session, DoW, Hour, Spread, HTF Bias, Vol Regime, ConsecLoss, DD%, MAE, MFE, TimeInTrade, ExitPath |
+| Decision (33–37) | ML Score (cal/raw), Agent Action, Decision, Threshold |
+| Confluence breakdown (38–42) | HTF/MTF/OB/FVG/Sweep pts |
+| Trade mgmt (43–46) | BE Moved, Partial Closed, Trailing, Final SL |
+| Live exec (47–51) | Bid/Ask @Entry/Exit, Spread (pips) |
+| Market (52–55) | ADX H1/H4, MTF/D1 Bias |
+| Account (56–58) | Balance@Entry/Close, Equity Peak |
+| Overtrading (59–62) | Trades Today, Trades 1h, Sec Since Last Open (any/same-sym) |
+| **Retrain** (63) | **Obs27 JSON** ← full 27-dim obs vector → reconstruct state สำหรับ retrain |
+
+#### 2. **Signals** — 20 columns
+ทุก scan event (รวม `AGENT_SKIP`, `REJECTED`, `NO_SIGNAL`) — ใช้วิเคราะห์ signal frequency + reject distribution
+
+#### 3. **Daily** — สรุปรายวัน
+Date, Trades, Wins, Losses, Win Rate, P/L, DD, Balance EOD
+
+#### 4. **Stats** — สถิติรวม
+Win Rate, Sharpe, Profit Factor, etc.
+
+### ⚠️ Schema migration
+
+ถ้าไฟล์ `ftmo_trades.xlsx` เดิมเป็น schema เก่า (62 cols) → bot จะ append ผิดคอลัมน์
+**วิธีแก้:** rename ไฟล์เดิมก่อน start bot — `mv logs/ftmo_trades.xlsx logs/ftmo_trades_old.xlsx`
+
+---
+
+## 📅 News Calendar Update
+
+### Auto-Import (Sunday 23:30 EET)
+
+`NewsScheduler.check_and_run()` ตรวจทุกอาทิตย์: ถ้ามี CSV ใน [`config/news_inbox/`](ftmo_trading_bot/config/news_inbox/) → import → save ลง `config/news_calendar.json`
+
+### Manual Import
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/import_forexfactory_csv.py \
+    --csv path/to/calendar.csv
+```
+
+**ขั้นตอน weekly:**
+1. ดาวน์โหลด CSV จาก [forexfactory.com](https://forexfactory.com)
+2. วางไฟล์ใน `config/news_inbox/`
+3. รอ Sunday 23:30 EET — bot import auto, หรือรัน manual
+
+---
+
+## 🔄 เริ่ม FTMO Challenge ใหม่
+
+⛔ **ห้ามลบ `logs/bot_state.json` ขณะ challenge ยังรัน** — `_initial_balance` (FTMO anchor) จะหายไป → DD calc พัง
+
+### ขั้นตอน reset (เริ่มรอบใหม่)
+
+```bash
+# 1. Backup state เดิม (กรณีต้องดูประวัติ)
+mv ftmo_trading_bot/logs/bot_state.json ftmo_trading_bot/logs/bot_state.json.bak_$(date +%s)
+
+# 2. Backup Excel เดิม
+mv ftmo_trading_bot/logs/ftmo_trades.xlsx ftmo_trading_bot/logs/ftmo_trades_challenge1.xlsx
+
+# 3. ตั้งค่า MT5 account ใหม่ใน .env
+# 4. รัน bot — bot_state.json + ftmo_trades.xlsx จะ auto-create จาก balance ใหม่
+.venv/bin/python ftmo_trading_bot/main.py
+```
+
+---
+
+## ⚙️ Configuration Reference
+
+### Symbols (9 forex + 1 metal)
+
+```python
+EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD,
+EURJPY, GBPJPY,             # JPY pairs (pip = 0.01)
+XAUUSD                      # Gold (digits=2, contract=100 oz)
+```
+
+แก้ใน `config/settings.py:SymbolConfig.symbols` (ต้อง symbol ตรงกับ broker)
+
+### Risk Settings
+
+```python
+DEFAULT_RISK_PER_TRADE_PCT = 0.007   # 0.7% per trade
+MIN_RISK_PER_TRADE_PCT = 0.005       # floor
+MAX_RISK_PER_TRADE_PCT = 0.008       # cap
+
+# FTMO buffers
+MAX_DRAWDOWN_HARD_STOP_PCT = 0.08    # 8% (FTMO rule = 10%)
+DAILY_LOSS_HARD_STOP_PCT = 0.04      # 4% (FTMO rule = 5%)
+PROFIT_TARGET_PCT = 0.10             # 10%
+```
+
+### Anti-Overtrading
+
+```python
+MAX_CORRELATED_POSITIONS = 1            # 1 ตำแหน่งต่อกลุ่ม
+MIN_CONFLUENCE_SCORE = 70.0             # ขั้นต่ำ
+COOLDOWN_AFTER_LOSS_MIN = 60            # 60 นาทีก่อนเปิดคู่เดิมหลัง SL
+CONSECUTIVE_LOSS_PAUSE_COUNT = 2        # หยุด 60 นาทีหลังแพ้ติด 2 ครั้ง
+CONSECUTIVE_LOSS_HALT_COUNT = 3         # halt ทั้งวันหลังแพ้ติด 3 ครั้ง
+```
+
+### Post-TP Lock (anti-FOMO)
+
+หลัง TP hit → block direction เดิมใน symbol นั้นจนกว่า price จะ pullback ≥ 0.3×ATR หรือแตะ EMA20 M15 หรือ TTL 60 นาที
 
 ---
 
 ## ❓ FAQ
 
-### Q: ต้องรัน macOS/Windows?
+### Q: เครื่อง dev (Mac) ใช้ Mock Mode — ใช้ test ก่อน deploy ได้ไหม?
 
-| งาน            | macOS/Linux            | Windows |
-| -------------- | ---------------------- | ------- |
-| เทรน model     | ✅                     | ✅      |
-| Backtest       | ✅                     | ✅      |
-| เทรดจริงบน MT5 | ❌ (MT5 library ไม่มี) | ✅      |
+A: **ใช้ Mock Mode** ทดสอบ logic / training / eval ได้ครบ แต่ **เทรดจริงไม่ได้** — ต้องใช้ Windows VPS + MetaTrader5 เท่านั้น
 
-### Q: ใช้เวลาเทรนนานแค่ไหน?
+### Q: ทำไม Pass Rate ต่างกันเวลารัน eval หลายๆ รอบ?
 
-| ขั้นตอน              | เวลา (M-series Mac, 8 workers) |
-| -------------------- | ------------------------------ |
-| Build signal pool    | ~8 นาที                        |
-| Train ML (GBM)       | ~2-3 นาที                      |
-| Train RL (15M steps) | ~20-25 นาที                    |
-| **รวม**              | **~30-35 นาที**                |
+A: env ไม่ได้ pin seed (`signal_filter_env.reset(seed=None)`) → แต่ละรอบ sample episodes คนละชุด → fluctuate ±1–2%. ผลที่ verified (Pass 10%) วัดจาก 5000 eps avg
 
-### Q: Model เก่าใช้ต่อได้ไหม หลัง update?
+### Q: รัน eval ด้วย `python` แทน `.venv/bin/python` ได้คะแนนต่างกัน?
 
-⚠️ **ไม่ได้** เพราะ observation space เปลี่ยนต่อเนื่อง (23 → 24 → **27 dims** ใน v6, เพิ่ม cost/flip/HTF)  
-→ ต้องเทรนใหม่ด้วย `--fresh`
+A: เป็นไปได้ — ถ้า `python` resolve ไป interpreter อื่น (system Python หรือ Homebrew) ที่ไม่มี packages versions ตรงกัน. **วิธีแก้:**
+1. ใช้ `.venv/bin/python` ตรงๆ เสมอ
+2. หรือ `source .venv/bin/activate` ก่อน
 
-### Q: ถ้า ML model พัง/หายไปล่ะ?
+### Q: VPS ต้องใช้ GPU ไหม?
 
-Bot มี **graceful fallback**:
+A: **ไม่ต้อง** — PPO + GBM ทำงาน CPU พอ. Live inference เร็วมาก (<10ms ต่อ signal) ใน VPS 2 core
 
-- RL agent ใส่ `ml_score = 0.5` (neutral) → agent ยังทำงานได้
-- แต่ performance ลดลงเพราะขาดข้อมูลคุณภาพ signal
+### Q: Bot ปิดบางส่วน 50% + ย้าย SL มา BE → ชน BE-SL = WIN หรือ LOSS?
 
-### Q: ต้องการ GPU ไหม?
+A: **WIN** (ถ้า partial profit > 0) — `TradeExecutor.sync_with_mt5` accumulate profit จากทุก deals ของ position. ตัวอย่าง: partial @ 1R = +$50, remainder @ BE = $0 → `ExecutedTrade.profit = +$50` → WIN. ดูรายละเอียดที่ [`wiki/05-invariants.md` FAQ](wiki/05-invariants.md)
 
-**ไม่จำเป็น** — network เล็ก ([256, 128]) รันบน CPU ได้สบาย  
-PyTorch ใช้ multi-core อัตโนมัติ
+### Q: ใช้ FTMO Swing/Pro แทน 2-step Standard ได้ไหม?
 
-### Q: เทรดจริงควรใช้ lot เท่าไร?
+A: ได้ แต่ต้องแก้ `CONSISTENCY_RULE_THRESHOLD` เป็น `0.45` (Swing/Pro มีกฎ max day ≤ 50% ของ total profit). ตอนนี้ตั้ง `1.0` = ปิด check (Standard ไม่มีกฎนี้)
 
-Bot train ด้วย `--risk_per_trade 0.006` (0.6% ต่อเทรด) — optimal balance  
-→ แนะนำ **เริ่มที่ 0.3-0.4%** ก่อน (ต่ำกว่า sim) ดู performance 1-2 สัปดาห์  
-→ ถ้าผล live ตรงกับ backtest → ขยับขึ้น 0.5-0.6% ตาม train settings  
-→ ไม่ควรเกิน 0.7% (DD risk ใกล้ 8% limit)
+### Q: VPS ต้อง sync NTP เวลาไหม?
 
-**Risk vs Pass Rate trade-off** (จาก benchmark):
+A: **ต้อง** — Bot ใช้ EET ของ broker เทียบ UTC ของ system. คลาดเคลื่อน > 5s อาจทำให้ session detect ผิด, friday close miss
 
-| Risk     | Pass Rate | DD max   | เหมาะกับ                             |
-| -------- | --------- | -------- | ------------------------------------ |
-| 0.3%     | 4%        | 3.9%     | Conservative (funded account)        |
-| 0.5%     | 8%        | 5.7%     | Balanced (live demo)                 |
-| **0.6%** | **8.6%**  | **8.3%** | **Optimal (trained w/ Option B)** ⭐ |
-| 0.7%+    | est 10%   | ~7%      | Aggressive (close to 8% limit)       |
-
-### Q: Bot รัน 24/7 บน VPS ยังไง?
-
-1. เช่า Windows VPS (2 vCPU, 4GB RAM, SSD)
-2. ติดตั้ง MT5 + Python + project
-3. ใช้ `run_bot.bat` auto-restart:
-
-```bat
-:START
-python main.py
-echo Bot crashed! Restarting...
-timeout /t 10
-goto START
-```
-
-4. ปิด Windows Update automatic + Sleep mode
-5. Remote Desktop ให้กด **Disconnect** (ไม่ใช่ Shut down/Sign out)
-6. **ตั้ง NTP time sync** (ดูหัวข้อถัดไป ⬇️)
-
-### Q: VPS ต้อง sync เวลา (NTP) ยังไง?
-
-**สำคัญมาก**: VPS clock drift → FTMO time checks ผิดเพี้ยน → **เสี่ยง breach rule**
-
-⚠️ VPS clocks ปกติ drift **0.1-2 วินาที/วัน** ถ้าไม่ sync NTP → สะสม **> 1 นาที/เดือน** → Friday force close (20:45 EET) อาจพลาดเวลา
-
-### 🔧 Setup ครั้งเดียว (บน Windows VPS, Run as Administrator)
-
+**Windows Setup:**
 ```cmd
-REM 1. Start Windows Time service + auto-start
-sc config w32time start=auto
-net start w32time
-
-REM 2. ตั้ง NTP servers (ใช้ Google/Cloudflare — Stratum 1, ต่ำ latency)
-w32tm /config /manualpeerlist:"time.google.com,time.cloudflare.com,pool.ntp.org" /syncfromflags:manual /reliable:yes /update
-
-REM 3. Force sync ทันที
-w32tm /resync /force
-
-REM 4. ตรวจสอบ
-w32tm /query /status
+w32tm /config /manualpeerlist:"time.windows.com" /syncfromflags:manual /reliable:yes /update
+w32tm /resync
 ```
 
-**Expected Output** (ที่สำคัญ):
-```
-Last Successful Sync Time: <เวลาใกล้ปัจจุบัน>
-Source: time.google.com,...
-Stratum: 2-3  (ยิ่งต่ำยิ่งดี)
-Root Dispersion: < 1s  (ยิ่งต่ำยิ่งแม่น)
-Poll Interval: 10 (1024s)  ← auto-sync ทุก 17 นาที
-```
+### Q: Model เก่าใช้ต่อได้ไหมหลัง update repo?
 
-### ✅ Auto-sync ต่อเนื่อง
+A: ขึ้นกับ:
+- ถ้า **obs space (27 dims) ไม่เปลี่ยน** → ใช้ `ppo_signal_filter.zip` ต่อได้
+- ถ้า **เปลี่ยน obs** → ต้อง retrain ทั้งหมด (Brain 1 SMC + Brain 2 GBM + Brain 3 RL) เพื่อให้ wiring ตรงกัน
 
-หลัง setup:
-- Windows จะ sync อัตโนมัติ **ทุก 17 นาที**
-- ไม่ต้อง run คำสั่งเองทุกวัน
-- หลัง VPS reboot → service start อัตโนมัติ
+ดู `wiki/05-invariants.md § Hard Invariants § Observation Space Sync`
 
-### 📋 Maintenance (Optional)
+### Q: Console เงียบไป — ทำไมไม่เห็น scan ของ 9 symbols?
 
-**Spot check ทุก 1-2 สัปดาห์**:
-```cmd
-w32tm /query /status
-```
-- Last Sync ต้อง **< 30 นาที** ก่อนหน้า
-- Root Dispersion ต้อง **< 1 วินาที**
-
-**ถ้า dispersion สูง / ไม่ sync > 1 ชม.**:
-```cmd
-w32tm /resync /rediscover /force
-```
-
-### 🛡️ Redundant Safety (แนะนำสำหรับ FTMO)
-
-**Task Scheduler** — sync เพิ่มทุกคืนเที่ยงคืน:
-1. Win+R → `taskschd.msc`
-2. Create Basic Task:
-   - Name: `Daily NTP Sync`
-   - Trigger: **Daily at 00:00**
-   - Action: `cmd.exe /c w32tm /resync /force`
-   - ✅ Run whether user is logged on or not
-   - ✅ Run with highest privileges
-
-### ⚠️ Common Issues
-
-| Problem | Solution |
-|---------|----------|
-| `Service has not been started (0x80070426)` | รัน `net start w32time` as Admin |
-| `The computer did not resync because no time data was available` | Service เพิ่ง start → รอ 30 วิ แล้ว `w32tm /resync` ใหม่ |
-| Stratum 5+ | เปลี่ยน NTP เป็น Google/Cloudflare |
-| Dispersion > 5s | รอ 1-2 ชม. ให้ sync หลายรอบ → ลดลงเอง |
-
-### 💡 ทำไมสำคัญ?
-
-**Scenario**: ถ้า VPS clock ช้ากว่า broker 2 นาที
-- Bot คิดว่า Friday **20:43** (ยังปกติ) แต่จริง **20:45** (ถึงเวลา force close)
-- Bot ไม่ปิด position → เกินเวลา → **อาจ breach FTMO weekend rule** ❌
-
-**หลัง NTP sync**: drift **< 1 วินาที** → ปลอดภัย 100% ✅
-
-### Q: Performance จริงเทียบกับ backtest?
-
-Backtest edge: ~48-57% win rate at ML threshold 0.40  
-Live: อาจลดลง ~2-5% จาก slippage + spread จริง  
-→ Expected live win rate: **45-55%**
+A: v6.9 เปลี่ยนเป็น **quiet mode** — per-signal SKIP/scan logs ไปอยู่ใน `Signals` sheet ของ Excel แทน. ดูได้ใน `logs/ftmo_trades.xlsx` sheet "Signals" — มี SCAN/SKIP/TAKE/REJECT records ครบ
 
 ---
 
-## 🤝 Credits & License
+## 🔗 ลิงก์อ้างอิง
 
-- สร้างด้วย ❤️ โดย kittipong.n
-- Framework: [Stable-Baselines3](https://stable-baselines3.readthedocs.io/), [Gymnasium](https://gymnasium.farama.org/), [scikit-learn](https://scikit-learn.org/)
-- SMC concepts inspired by Inner Circle Trader (ICT)
+- **Project Hub:** [`context.md`](context.md) — index ของ wiki + headline numbers
+- **Architecture:** [`wiki/01-architecture.md`](wiki/01-architecture.md)
+- **Modules ref:** [`wiki/02-modules.md`](wiki/02-modules.md)
+- **RL Training:** [`wiki/03-rl-training.md`](wiki/03-rl-training.md)
+- **Operations:** [`wiki/04-operations.md`](wiki/04-operations.md)
+- **Invariants:** [`wiki/05-invariants.md`](wiki/05-invariants.md) ⛔ ห้ามฝ่าฝืน
 
 ---
 
-**⚠️ Disclaimer**: การเทรดมีความเสี่ยง past performance ไม่ garantee future results  
-ใช้ bot ด้วยความรับผิดชอบของตัวเอง
+## 📜 License
+
+ใช้สำหรับ FTMO Challenge ของเจ้าของบัญชีเท่านั้น — ไม่อนุญาตให้แจกจ่ายหรือใช้เชิงพาณิชย์

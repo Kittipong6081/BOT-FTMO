@@ -80,6 +80,29 @@ Inside `TradeExecutor._check_correlation`:
 
 ---
 
+## ❓ FAQ / Common Misunderstandings
+
+### Q: Partial close + BE → ชน SL = WIN หรือ LOSS?
+
+**A: WIN** (ถ้า partial profit > 0 และ accumulated net profit > 0).
+
+`TradeExecutor.sync_with_mt5` ดึง **ทุก deals** ของ position ผ่าน `MT5Connector.get_deals_by_position(ticket)` แล้ว accumulate ทั้ง `profit + swap + commission` ของทุก deal. ดังนั้น partial close ($+50) + BE-SL remainder ($0) → `ExecutedTrade.profit = +$50` → WIN.
+
+3 จุดที่ classify ใช้สูตรเดียวกัน (`profit > 0` บน cumulative value):
+
+- `TradeLogger.log_daily_summary` — daily wins counter
+- `TradeExecutor.get_stats` — overall win rate
+- `RiskManager.update_daily_pnl` — `consecutive_losses` reset เมื่อ `pnl > 0`
+
+ตัวอย่าง: risk = $100, RR target = 2.0
+- Partial 50% @ 1R → realized +$50
+- SL เลื่อนมา BE → remainder ชน BE-SL → realized $0
+- `ExecutedTrade.profit = +$50` → WIN, `consecutive_losses = 0`, daily P/L +$50
+
+⚠️ ถ้าโดน **swap/commission** ทำให้ accumulated < 0 → จะกลายเป็น LOSS ตามกฎเดียวกัน (cumulative-based, ไม่ใช่ remainder-only).
+
+---
+
 ## ⚠️ Soft Invariants (best practice)
 
 - **Risk per trade**: train with `--risk_per_trade 0.007` → live `DEFAULT_RISK_PER_TRADE_PCT = 0.007` (must match).
@@ -221,6 +244,14 @@ Re-enabled `TradeLogger` for live demo deployment. Schema v3 = 58-col Trades she
 **Smoke test:** TradeLogger smoke test passed — 58 trade cols + 19 signal cols, all 4 sheets created (Trades, Daily, Stats, Signals).
 
 **Output:** `ftmo_trading_bot/logs/ftmo_trades.xlsx` updated in real time during live run.
+
+**Console quiet mode (added 2026-04-25):**
+
+- Idle states (Daily Halt / Friday close / Weekend / Daily Close 23:30 / Rollover) ใช้ pattern **announce-once** แทน `if loop_count % N == 0` — print ครั้งเดียวตอน entry, silence จนกว่าออกแล้วเข้าใหม่.
+- `FTMOTradingBot.__init__` มี 5 flags: `_daily_halt_announced`, `_friday_announced`, `_weekend_announced`, `_daily_close_announced`, `_rollover_announced` (init=False). Reset = False อัตโนมัติใน `else` branch ของแต่ละ state guard.
+- Per-signal `AGENT_SKIP` print ลบทิ้ง — ข้อมูลครบใน `Signals` sheet (`AGENT_SKIP` row พร้อม ml_score, confidence, reasons).
+- Per-signal `NO_AGENT` print ลบทิ้ง — fallback path เมื่อไม่มี RL agent loaded; logged ใน Signals sheet เช่นกัน.
+- เก็บ `📡 [Agent] TAKE` print ไว้ — เป็น event สำคัญที่บอกว่าเทรดกำลังจะเปิด.
 
 **Retrain unlock (added 2026-04-25, schema bump 62 → 63 trade cols, 19 → 20 signal cols):**
 
