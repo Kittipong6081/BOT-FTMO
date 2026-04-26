@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-04-24 | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions
+> Last Updated: 2026-04-26 | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -9,6 +9,8 @@
 - Default risk per trade = **0.7 %** (verified at 5000 eps).
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
 - News block: weekly auto-import every Sunday 23:30 EET from `config/news_inbox/`.
+- **Console quiet mode (v6.9)**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
+- **Live logging**: `TradeLogger` writes `logs/ftmo_trades.xlsx` (4 sheets: Trades 63 cols, Signals 20 cols, Daily, Stats). Includes `Obs27 JSON` for offline retrain.
 
 ## Quick Reference
 
@@ -38,11 +40,57 @@
 | 2 | Session check | `TimeManager.is_trading_session` | outside London/NY or after Friday cutoff → skip |
 | 3 | News scheduler | `NewsCalendarScheduler.check_and_run` | Sunday 23:30 EET → auto-import CSV (non-blocking) |
 | 4 | News filter | `news_events` / `news_calendar.json` | within ±30 / 15 min of a high-impact event → skip |
-| 5 | Strategy scan | `SMCStrategy.scan_all_symbols` | confluence < `MIN_CONFLUENCE_SCORE` → drop |
-| 6 | ML quality | `SignalQualityModel.score` | never skips — just attaches `ml_score` |
-| 7 | RL decision | `SelfLearningAgent.should_take_signal` | SKIP → drop signal |
-| 8 | Execute | `TradeExecutor.execute_trade` | final risk / correlation / cooldown check |
-| 9 | Manage open | `TradeManager.update_positions` | trailing / BE / partial / session close |
+| 5 | Strategy scan | `SMCStrategy.scan_all_symbols` | every 12 loops (~1 min); confluence < `MIN_CONFLUENCE_SCORE` → drop |
+| 6 | ML quality | `SignalQualityModel.score` | calibrated prob < `--ml_threshold 0.36` → drop |
+| 7 | RL decision | `SelfLearningAgent.should_take_signal` | SKIP → drop signal (logged to `Signals` sheet as AGENT_SKIP) |
+| 8 | Build live context | `FTMOTradingBot._build_live_context(sig)` | computes ml_score, ADX, biases, balance, overtrading metrics, **`obs_27_json`** |
+| 9 | Execute | `TradeExecutor.execute_signal(sig, live_context)` | final risk / correlation / cooldown check; logs to Trades sheet |
+| 10 | Manage open | `TradeManager.update_positions` | trailing / BE / partial / session close |
+
+---
+
+## Console Quiet Mode (v6.9 announce-once)
+
+`FTMOTradingBot.__init__` initializes 5 announce-once flags:
+
+| Flag | State | Auto-reset |
+|------|-------|-----------|
+| `_daily_halt_announced` | DAILY_HALT (FTMO daily DD reached) | when state ≠ DAILY_HALT |
+| `_friday_announced` | Friday 20:45 EET force-close | when not Friday close time |
+| `_weekend_announced` | Saturday/Sunday market closed | when not weekend |
+| `_daily_close_announced` | Daily Close 23:30 EET (Mon-Thu, Zero-Overnight) | when not daily-close time |
+| `_rollover_announced` | Rollover/spread expansion 23:55–01:05 EET | when not rollover |
+
+Each idle-state guard prints **once on entry** (sets flag = True), then silences until the state exits (auto-resets in `else` branch). Discord risk alerts still fire once at entry (no regression).
+
+**Removed prints (now silent — logged to Excel only):**
+
+- `⏭️ [Agent] SKIP ...` per-signal — `Signals` sheet `AGENT_SKIP` row
+- `📡 [Bot] สัญญาณ ... NO_AGENT` per-signal — `Signals` sheet `AGENT_TAKE` row (when no RL agent loaded)
+
+**Kept prints:**
+
+- `📡 [Agent] TAKE ...` — agent decided to open trade (event with consequence)
+- `✅ [Bot] เปิดเทรดสำเร็จ: Ticket ...` — trade open confirm
+- `🟢/🔴 [Logger] บันทึกเทรดปิด ... P/L=$...` — close confirm
+- All errors / warnings / FTMO breach alerts — never silenced
+
+---
+
+## Live Logging (`TradeLogger` Excel)
+
+`logs/ftmo_trades.xlsx` — auto-create on first scan/trade. 4 sheets:
+
+| Sheet | Cols | What goes in |
+|-------|-----:|--------------|
+| `Trades` | 63 | Per-trade: ticket, entry/SL/TP, lot, RR, ML scores, agent decision, confluence breakdown, trade-mgmt state (`be_moved`, `partial_closed_flag`, `trailing_active`), bid/ask @entry/exit, market context (ADX H1/H4, MTF/D1 bias), account state, overtrading metrics, **`Obs27 JSON`** (full obs vector at decision time) |
+| `Signals` | 20 | Per-scan event: time, symbol, direction, result (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`), confluence, ml_score, agent decision, ADX, biases, reasons, **`Obs27 JSON`** |
+| `Daily` | 11 | Date, Trades, Wins, Losses, WR%, Gross P/L, Net P/L, DD%, Daily DD%, Balance EOD |
+| `Stats` | 2 | Metric / Value (Win Rate, Sharpe, Profit Factor, etc., refreshed by `update_stats_sheet`) |
+
+**Win/Loss classification**: `profit > 0` on cumulative net (sum of all deals from `MT5Connector.get_deals_by_position(ticket)`). Partial close + BE-SL = WIN if cumulative > 0. See [05-invariants.md FAQ](05-invariants.md).
+
+**Schema migration warning**: pre-v6.9 `ftmo_trades.xlsx` has 62 / 19 cols → append misaligns. Rename or delete before first run.
 
 ---
 

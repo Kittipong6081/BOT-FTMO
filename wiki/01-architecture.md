@@ -1,13 +1,14 @@
 # 01 — Architecture (3-Brain Pipeline)
-> Last Updated: 2026-04-24 | Scope: system overview + data flow
+> Last Updated: 2026-04-26 | Scope: system overview + data flow
 
 ## TL;DR (30-second scan)
 
-- Three brains: **SMC Strategy** (rule-based) → **ML Quality** (GBM filter) → **RL Agent** (PPO TAKE/SKIP).
+- Three brains: **SMC Strategy** (rule-based) → **ML Quality** (GBM + Isotonic calibrator) → **RL Agent** (PPO + Auxiliary Task — TAKE/SKIP).
 - Live entry point: `FTMOTradingBot` in `ftmo_trading_bot/main.py`.
 - Training pipeline: `build_signal_pool.py` → `train_signal_quality.py` → `train_signal_filter.py`.
 - Observation = 27 dims (v6, 2026-04-22). Must stay in sync across `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, and `SelfLearningAgent.OBS_DIM`.
 - Every live decision flows through gates in this order: **Risk → Session → Strategy → ML → RL → Execute → Manage**.
+- v6.9 verified: Pass Rate **10.0 %** (5000-eps eval) via PPO + auxiliary head predicting `outcome_pnl_ratio` (MSE weight=0.5). 3× baseline.
 
 ## Quick Reference
 
@@ -15,13 +16,17 @@
 |------|-------|-----------------|
 | Live entry class | `FTMOTradingBot` | `main.py` |
 | Strategy brain | `SMCStrategy` | `strategy/smc_strategy.py` |
-| ML brain | `SignalQualityModel` (GBM) | `ml/signal_quality.py` |
+| ML brain | `SignalQualityModel` (GBM + isotonic calibrator) | `ml/signal_quality.py` |
 | RL brain | `SelfLearningAgent` (PPO inference) | `ml/rl_agent.py` |
 | RL training env | `FTMOSignalFilterEnv` | `ml/signal_filter_env.py` |
+| RL training PPO | `AuxAwarePPO` (PPO + aux MSE loss) | `ml/aux_aware_ppo.py` |
+| RL policy | `AuxAwareACPolicy` (actor + value + aux head) | `ml/aux_aware_policy.py` |
+| RL rollout buffer | `AuxRolloutBuffer` (adds `aux_targets`) | `ml/aux_rollout_buffer.py` |
 | Pool generator | `StrategyBacktester` | `ml/strategy_backtester.py` |
 | Risk gate | `RiskManager` | `core/risk_manager.py` |
 | Order gate | `TradeExecutor` | `execution/trade_executor.py` |
 | Position lifecycle | `TradeManager` | `execution/trade_manager.py` |
+| Live logger | `TradeLogger` (Excel: 4 sheets, 63+20 cols) | `analytics/trade_logger.py` |
 
 ---
 
@@ -58,11 +63,13 @@ Do not reorder — the Risk gate must come first:
 1. **`RiskManager.check_state()`** — skip the tick if state is DAILY_HALT / MAX_DRAWDOWN_HALT / MANUAL_HALT.
 2. **`TimeManager.is_trading_session()`** — verify session window (London/NY) and Friday cutoff.
 3. **`NewsCalendarScheduler.check_and_run()`** — import CSV on Sunday 23:30 EET; blackout around news events.
-4. **`SMCStrategy.scan_all_symbols()`** — generate signals that pass `MIN_CONFLUENCE_SCORE`.
-5. **`SignalQualityModel.score()`** — attach `ml_score` to each signal.
+4. **`SMCStrategy.scan_all_symbols()`** — generate signals that pass `MIN_CONFLUENCE_SCORE` (every 12 loops ≈ 1 min, not every tick).
+5. **`SignalQualityModel.score()`** — attach `ml_score` to each signal (GBM raw → isotonic calibrator → calibrated probability).
 6. **`SelfLearningAgent.should_take_signal()`** — decide TAKE / SKIP.
-7. **`TradeExecutor.execute_trade()`** — final risk check + lot sizing + send order.
-8. **`TradeManager.update_positions()`** — trailing / BE / partial close for every open position.
+7. **`TradeExecutor.execute_signal()`** — receives `live_context` (ml_score, ADX, biases, account state, **`obs_27_json`** for retrain) → final risk check + lot sizing + send order. Logs to `TradeLogger` Trades sheet.
+8. **`TradeManager.update_positions()`** — trailing / BE / partial close for every open position; mirrors state to `ExecutedTrade.be_moved`/`partial_closed_flag`/`trailing_active` for logging.
+
+**Console quiet mode (v6.9):** idle states (Daily Halt / Friday close / Weekend / Daily Close 23:30 / Rollover) print **once on entry** via `_*_announced` flags, not per-loop. Per-signal `AGENT_SKIP` and `NO_AGENT` fall-through go to `Signals` Excel sheet only. Only `📡 [Agent] TAKE` and trade open/close events surface to console. See [04-operations.md § Quiet Mode](04-operations.md).
 
 ---
 
@@ -73,8 +80,8 @@ Three steps, in order. The order matters: pool must exist before ML training; ML
 | Step | Script | Class / function | Output |
 |------|--------|------------------|--------|
 | 1 | `scripts/build_signal_pool.py` | `StrategyBacktester.generate_episode_signals` × N (multiprocessing) | `data/signal_pool_3000.pkl` |
-| 2 | `scripts/train_signal_quality.py` | `SignalQualityModel.train_from_pool` | `data/signal_quality_model.pkl` + in-place pool re-score |
-| 3 | `scripts/train_signal_filter.py` | PPO + `FTMOSignalFilterEnv` (2-phase curriculum) | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` |
+| 2 | `scripts/train_signal_quality.py` | GBM + `GroupKFold cross_val_predict` (OOF) → `IsotonicRegression` calibrator | `data/signal_quality_model.pkl` (model + calibrator) + in-place pool re-score |
+| 3 | `scripts/train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` + `FTMOSignalFilterEnv` (2-phase curriculum, aux loss weight=0.5) | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` |
 
 Details on PPO config, reward, and curriculum → [03-rl-training.md](03-rl-training.md).
 
@@ -90,11 +97,11 @@ ftmo_trading_bot/
 ├── ml/                      ← ML+RL brain (signal_quality, rl_agent, env, backtester)
 ├── core/                    ← risk_manager, mt5_connector, time_manager, position_sizer, news_scheduler, notifier
 ├── execution/               ← trade_executor, trade_manager
-├── analytics/               ← performance, trade_logger
+├── analytics/               ← performance + trade_logger (Excel: Trades 63 cols / Signals 20 cols / Daily / Stats)
 ├── scripts/                 ← training + data fetch scripts
-├── data/                    ← OHLCV CSVs + signal_pool + ml_model pkl
-├── models/                  ← ppo_signal_filter.zip + vec_normalize_sf.pkl
-└── logs/                    ← bot_state.json + tensorboard + news_scheduler_state
+├── data/                    ← OHLCV CSVs + signal_pool + ml_model pkl (with isotonic calibrator)
+├── models/                  ← ppo_signal_filter.zip + vec_normalize_sf.pkl (aux-aware policy weights)
+└── logs/                    ← bot_state.json + ftmo_trades.xlsx + tensorboard + news_scheduler_state
 ```
 
 ---

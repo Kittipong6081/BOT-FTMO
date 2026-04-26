@@ -1,14 +1,15 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-04-25 | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-04-26 | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
 - **Goal**: pass the FTMO 2-step Standard Challenge (10 % profit, 4 % daily DD, 8 % total DD).
-- **3 brains**: `SMCStrategy` (rules) → `SignalQualityModel` (GBM, AUC ~0.59) → `SelfLearningAgent` (PPO TAKE/SKIP).
-- **Live entry**: `python main.py` → `FTMOTradingBot.run` loops every 5 s.
+- **3 brains**: `SMCStrategy` (rules) → `SignalQualityModel` (GBM + Isotonic calibrator) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
+- **Live entry**: `python main.py` → `FTMOTradingBot.run` loops every 5 s. Console runs in **quiet mode** (announce-once for idle states; per-signal SKIP/NO_AGENT logged to Excel `Signals` sheet, not console).
 - **Obs = 27 dims** (v6, 2026-04-22). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
 - **Runs on**: macOS/Linux (train + backtest), Windows + MT5 (live).
-- **Wiki Sync Protocol**: editing `.py` files under `ftmo_trading_bot/` requires updating `wiki/` + `context.md` + `readme.md` (when user-facing) in the same turn. See `CLAUDE.md`.
+- **Live logging**: `TradeLogger` (re-enabled v6.9) writes Excel — Trades 63 cols (incl. `Obs27 JSON` for retrain), Signals 20 cols (per-scan log), Daily, Stats.
+- **Wiki Sync Protocol**: editing `.py` files under `ftmo_trading_bot/` requires updating `wiki/` + `context.md` + `readme.md` (when user-facing) in the same turn. Stop hook enforces (`decision: block`). See `CLAUDE.md`.
 
 ## Headline Numbers
 
@@ -32,17 +33,18 @@
 | Pool | `data/signal_pool_3000.pkl` (~158k signals) | `StrategyBacktester` |
 | FTMO program | 2-step Standard (no Consistency Rule → threshold = 1.0) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
 
-## Verified Performance (Option B, risk 0.7 %, 5000 eps, 2026-04-20)
+## Verified Performance (Phase E2 — Auxiliary Task, risk 0.7 %, 5000 eps, 2026-04-25)
 
 | Metric | Value |
 |--------|-------|
-| Pass Rate | **12.5 %** |
-| Profit avg | +2.59 % |
-| Win Rate | 46.2 % |
-| DD avg | 0.47 % |
-| DD max | 8.50 % |
-| Breach rate | **0 %** |
-| Days to pass (avg) | 29.5 |
+| Pass Rate | **10.0 %** ⭐ (3× baseline 3.5 %) |
+| ML threshold | 0.36 (calibrated) |
+| Approach | PPO + auxiliary head predicting `outcome_pnl_ratio` (MSE weight=0.5) |
+| Breach rate | low (verified safe) |
+
+**Phase progression** (each = 5000-eps eval): leaky baseline 12.5 % → honest baseline 3.5 % → Phase C 1.5 % → Phase D 0.2 % → Phase E1 (calibration) 3.0 % → **Phase E2 (aux task) 10.0 %**. Details in [wiki/05-invariants.md § Version Log](wiki/05-invariants.md).
+
+**Note**: the old "Option B 12.5 %" baseline was leaky (eval seeded with same pool used for GBM training). Honest baseline = 3.5 %. E2 is verified leak-free via runtime hook + obs feature audit.
 
 ---
 
@@ -70,11 +72,11 @@ ftmo_trading_bot/
 ├── ml/                      ← SignalQualityModel, SelfLearningAgent, FTMOSignalFilterEnv, StrategyBacktester
 ├── core/                    ← RiskManager, MT5Connector, TimeManager, PositionSizer, NewsCalendarScheduler, DiscordNotifier
 ├── execution/               ← TradeExecutor, TradeManager
-├── analytics/               ← PerformanceAnalyzer (+ TradeLogger disabled)
+├── analytics/               ← PerformanceAnalyzer + TradeLogger (Excel: Trades 63 cols / Signals 20 cols / Daily / Stats)
 ├── scripts/                 ← build_signal_pool, train_signal_quality, train_signal_filter, fetch_mt5_data
-├── data/                    ← OHLCV CSVs + signal_pool + ml_model pkl
-├── models/                  ← ppo_signal_filter.zip + vec_normalize_sf.pkl
-└── logs/                    ← bot_state.json + tensorboard + news_scheduler_state
+├── data/                    ← OHLCV CSVs + signal_pool + ml_model pkl (with isotonic calibrator)
+├── models/                  ← ppo_signal_filter.zip + vec_normalize_sf.pkl (aux-aware policy weights)
+└── logs/                    ← bot_state.json + ftmo_trades.xlsx + tensorboard + news_scheduler_state
 ```
 
 Full module details → [wiki/02-modules.md](wiki/02-modules.md).
@@ -89,18 +91,21 @@ Full module details → [wiki/02-modules.md](wiki/02-modules.md).
 python scripts/build_signal_pool.py --pool_size 3000 --workers 8
 python scripts/train_signal_quality.py
 python scripts/train_signal_filter.py --fresh \
-    --timesteps_p1 10000000 --timesteps_p2 5000000 \
-    --n_envs 8 --pool_size 3000 --outcome_noise 0.02 \
-    --ml_threshold 0.33 --risk_per_trade 0.007
+    --timesteps_p1 300000 --timesteps_p2 200000 \
+    --n_envs 4 --pool_size 3000 --outcome_noise 0.02 \
+    --ml_threshold 0.36 --risk_per_trade 0.007
 ```
+
+Phase E2 trainer uses `AuxAwarePPO` + `AuxAwareACPolicy` automatically (aux loss weight = 0.5).
 
 **Evaluation:**
 
 ```bash
 python scripts/train_signal_filter.py --eval_only \
-    --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.007 \
-    --eval_episodes 500
+    --pool_size 3000 --ml_threshold 0.36 --risk_per_trade 0.007
 ```
+
+Default 5000 episodes. Use `.venv/bin/python` (not bare `python`) — version mismatch can shift Pass Rate.
 
 **Live:**
 

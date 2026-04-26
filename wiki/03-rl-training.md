@@ -1,11 +1,13 @@
-# 03 — RL Training (Obs 27 dims, Reward, PPO)
-> Last Updated: 2026-04-24 | Scope: RL env, obs space v6, reward shaping, PPO hyperparams, curriculum
+# 03 — RL Training (Obs 27 dims, Reward, PPO + Auxiliary Task)
+> Last Updated: 2026-04-26 | Scope: RL env, obs space v6, reward shaping, PPO hyperparams, curriculum, aux task (E2)
 
 ## TL;DR (30-second scan)
 
 - Obs = **27 dims** (v6, 2026-04-22) — adds `spread_pct_of_atr`, `has_opposite_recently_closed`, `htf_trend_alignment` on top of the previous 24.
 - Action continuous [−1, 1] — `>0 = TAKE`, `≤0 = SKIP`.
 - **2-phase curriculum**: Phase 1 (Alpha, no DD penalty, oracle SKIP) → Phase 2 (Risk, DD penalty active).
+- **Phase E2 — Auxiliary Task** (verified 2026-04-25, Pass Rate **10.0 %**): policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
+- ML threshold = **0.36** (calibrated probability). Signals below this are rejected before RL.
 - Live inference must normalize obs with the `vec_normalize_sf.pkl` stats captured during training.
 - VecNormalize: `norm_obs=True`, `norm_reward=True`, `clip_obs=10.0`, `clip_reward=20.0`.
 
@@ -16,8 +18,12 @@
 | Obs dims | 27 | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
 | Action space | Box(−1, 1, shape=(1,)) | `FTMOSignalFilterEnv.action_space` |
 | VecNormalize stats | `models/vec_normalize_sf.pkl` | loaded by `SelfLearningAgent._load_normalize_stats` |
-| RL model | `models/ppo_signal_filter.zip` | loaded by `SelfLearningAgent.initialize_model` |
+| RL model | `models/ppo_signal_filter.zip` (aux-aware policy) | loaded by `SelfLearningAgent.initialize_model` |
+| RL training PPO | `AuxAwarePPO` (aux loss weight = 0.5) | `ml/aux_aware_ppo.py` |
+| RL policy | `AuxAwareACPolicy` (actor + value + `aux_head`) | `ml/aux_aware_policy.py` |
+| Aux target | `info['aux_target']` = `outcome_pnl_ratio` | `FTMOSignalFilterEnv.step()` |
 | Pool | `data/signal_pool_3000.pkl` | loaded by `FTMOSignalFilterEnv` |
+| ML threshold | 0.36 (calibrated) | CLI `--ml_threshold 0.36` |
 
 ---
 
@@ -179,34 +185,48 @@ Sum if pass  : +7.0 max
 
 ```bash
 # Step 1: Pool (~8 min, 8 workers)
-python scripts/build_signal_pool.py --pool_size 3000 --workers 8
+.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 3000 --workers 8
 
-# Step 2: ML GBM (~2–3 min, re-scores pool in place)
-python scripts/train_signal_quality.py
+# Step 2: ML GBM + Isotonic Calibrator (~5 min, re-scores pool in place)
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
 
-# Step 3: RL PPO (~20–25 min, 2 phases)
-python scripts/train_signal_filter.py --fresh \
-    --timesteps_p1 10000000 --timesteps_p2 5000000 \
-    --n_envs 8 --pool_size 3000 --outcome_noise 0.02 \
-    --ml_threshold 0.33 --risk_per_trade 0.007
+# Step 3: RL PPO + Auxiliary Task (~2–3 hr CPU, 2 phases)
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
+    --timesteps_p1 300000 --timesteps_p2 200000 \
+    --n_envs 4 --pool_size 3000 --outcome_noise 0.02 \
+    --ml_threshold 0.36 --risk_per_trade 0.007
 ```
 
-**Evaluation**:
+The trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5). P2 stability tuning: LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20.
+
+**Evaluation** (default 5000 episodes):
 
 ```bash
-python scripts/train_signal_filter.py --eval_only \
-    --pool_size 3000 --ml_threshold 0.33 --risk_per_trade 0.007 \
-    --eval_episodes 500
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --eval_only \
+    --pool_size 3000 --ml_threshold 0.36 --risk_per_trade 0.007
 ```
 
-**Targets** (500-eps evaluation):
+⚠️ Always invoke via `.venv/bin/python` (or activate venv) — system `python` may resolve to a different interpreter with non-pinned package versions, shifting Pass Rate by 1–3 pp due to RNG init / BLAS differences.
 
-- Pass rate ≥ 7–9 % (excellent > 10 %)
+**Targets** (5000-eps evaluation):
+
+- Pass rate ≥ 5 % (excellent > 8 %)
 - Breach rate < 2 %
 - Win rate > 45 %
 - Take rate 50–60 % (ML filter active)
 
-**Verified Option B** (risk 0.7 %, 5000 eps, 2026-04-20): Pass 12.5 %, Profit +2.59 %, WR 46.2 %, DD max 8.50 %, Breach 0 %, Days to pass avg 29.5 ⭐.
+**Verified Phase E2 (Auxiliary Task)** — risk 0.7 %, ml_threshold 0.36, 5000 eps, 2026-04-25: **Pass Rate 10.0 %** ⭐ (3× honest baseline 3.5 %). Verified leak-free via runtime hook + obs feature audit.
+
+**Phase progression history**:
+
+| Phase | Pass Rate | Note |
+|-------|----------:|------|
+| Old "Option B" | 12.5 % | Leaky baseline (eval seeded with same pool used for GBM training) |
+| Honest baseline (B1v2) | 3.5–3.7 % | Leak removed |
+| Phase C (SMC 4 principles) | 1.5 % | Reverted — over-filtered pool |
+| Phase D (BE+partial+trail in train) | 0.2 % | Reverted — capped winner tail |
+| Phase E1 (calibration) | 3.0 % | Calibrator stable, but no Pass Rate boost |
+| **Phase E2 (auxiliary task)** | **10.0 %** | Current verified |
 
 ---
 

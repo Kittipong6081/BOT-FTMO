@@ -154,7 +154,11 @@
       "Bash(python -c \"import torch, numpy, stable_baselines3, gymnasium; print\\(f'torch={torch.__version__}, numpy={numpy.__version__}, sb3={stable_baselines3.__version__}, gym={gymnasium.__version__}'\\)\")",
       "Bash(grep -E \"\\\\.zip$|\\\\.pkl$\")",
       "Bash(grep -E \"\\\\.pkl$\")",
-      "Bash(grep -E \"\\(ppo_signal_filter|vec_normalize_sf\\)\\\\.\\(zip|pkl\\)$\")"
+      "Bash(grep -E \"\\(ppo_signal_filter|vec_normalize_sf\\)\\\\.\\(zip|pkl\\)$\")",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(bash .claude/hooks/check_wiki_sync.sh)",
+      "Bash(echo \"exit=$?\")"
     ],
     "additionalDirectories": [
       "/tmp",

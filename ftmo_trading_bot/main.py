@@ -430,7 +430,7 @@ class FTMOTradingBot:
 
     def _build_signal_observation(self, sig) -> np.ndarray:
         """
-        สร้าง 14-dim observation จาก TradeSignal + portfolio state สำหรับ Signal Filter Agent
+        สร้าง 27-dim observation จาก TradeSignal + portfolio state สำหรับ Signal Filter Agent
         ต้อง match กับ FTMOSignalFilterEnv._get_obs() ลำดับและ scale
         """
         try:

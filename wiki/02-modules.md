@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-25 | Scope: every module + key class / method / variable
+> Last Updated: 2026-04-26 | Scope: every module + key class / method / variable
 
 ## TL;DR (30-second scan)
 
@@ -78,12 +78,15 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 
 | File | Key symbols | Role |
 |------|-------------|------|
-| `signal_quality.py` | `SignalQualityModel.score`, `SignalQualityModel.train_from_pool` | sklearn `GradientBoostingClassifier` wrapper — P(win) prediction (AUC ~0.59) |
-| `strategy_backtester.py` | `StrategyBacktester.generate_episode_signals`, `StrategyBacktester._resolve_trade`, `StrategyBacktester._quality_model` | Pool generation + outcome resolution with **trade management** (BE move / partial close / trailing) mirroring `TradeManager`. v6.5 Phase D. |
-| `signal_filter_env.py` | `FTMOSignalFilterEnv` (gym.Env), `._get_obs`, `.step`, `.reset` | Gymnasium env for RL training — pool sampler + reward shaper |
-| `rl_agent.py` | `SelfLearningAgent.OBS_DIM` (= 27), `.should_take_signal`, `.initialize_model`, `._normalize_obs` | PPO inference wrapper for live — loads `vec_normalize_sf.pkl` so obs normalization matches training |
+| `signal_quality.py` | `SignalQualityModel.score`, `SignalQualityModel.train_from_pool`, `SignalQualityModel._calibrate` | sklearn `GradientBoostingClassifier` + optional `IsotonicRegression` calibrator (loaded from payload). `score()` returns calibrated probability. |
+| `strategy_backtester.py` | `StrategyBacktester.generate_episode_signals`, `StrategyBacktester._resolve_trade`, `StrategyBacktester._quality_model` | Pool generation + outcome resolution. v6.7 rolled back to SL/TP/timeout/gap only (no BE/partial/trail in training — live still does them). |
+| `signal_filter_env.py` | `FTMOSignalFilterEnv` (gym.Env), `._get_obs`, `.step`, `.reset` | Gymnasium env. `step()` writes `info['aux_target'] = float(sig['outcome_pnl_ratio'])` for the auxiliary head to learn. |
+| `aux_aware_policy.py` | `AuxAwareACPolicy(ActorCriticPolicy)`, `aux_head: nn.Linear(latent_dim_pi, 1)`, `predict_aux(obs)` | PPO policy extended with auxiliary regression head off the actor trunk. Predicts `outcome_pnl_ratio`. |
+| `aux_aware_ppo.py` | `AuxAwarePPO(PPO)`, `aux_loss_weight=0.5` | PPO subclass. `collect_rollouts` extracts `info['aux_target']` into `AuxRolloutBuffer.aux_targets`; `train()` adds `MSE(aux_pred, aux_target) * 0.5` to the policy loss. |
+| `aux_rollout_buffer.py` | `AuxRolloutBuffer(RolloutBuffer)`, `.aux_targets: np.ndarray` | RolloutBuffer extended with per-step `aux_targets` (parallels `rewards`/`values`). |
+| `rl_agent.py` | `SelfLearningAgent.OBS_DIM` (= 27), `.should_take_signal`, `.get_action_confidence`, `.initialize_model`, `._normalize_obs` | PPO inference wrapper for live — loads `vec_normalize_sf.pkl` so obs normalization matches training. Uses `AuxAwareACPolicy` weights at inference (aux head ignored at predict). |
 
-**Quality model loading**: `StrategyBacktester.__init__` auto-loads `data/signal_quality_model.pkl` if present, so pool signals always include `ml_score` (defaults to 0.5 = neutral when unavailable).
+**Quality model loading**: `StrategyBacktester.__init__` auto-loads `data/signal_quality_model.pkl` if present, so pool signals always include `ml_score` (defaults to 0.5 = neutral when unavailable). Payload format: `{"model": GBM, "calibrator": IsotonicRegression, "feature_names": [...], ...}`.
 
 ### v6.3 ML + RL fixes (2026-04-24 audit)
 
@@ -171,8 +174,9 @@ Always floor-round the lot size (never ceil) — safety margin against broker st
 
 | Symbol | Role |
 |--------|------|
-| `TradeExecutor.execute_trade` | Final gate: re-check risk → calc lot → send order → log |
-| `ExecutedTrade` (dataclass v2) | Schema carries ML features (session, day_of_week, HTF bias, MAE/MFE, spread, slippage) for retraining |
+| `TradeExecutor.execute_signal(sig, live_context=None)` | Final gate: re-check risk → calc lot → send order → log. Accepts `live_context` dict from `main.py` and applies fields to `ExecutedTrade`. |
+| `TradeExecutor.sync_with_mt5` | Cumulative profit accumulator: pulls **all deals** of a position via `MT5Connector.get_deals_by_position(ticket)`, sums `profit + swap + commission`. Partial-close + BE-SL = WIN if cumulative > 0 (see [05-invariants.md FAQ](05-invariants.md)). |
+| `ExecutedTrade` (dataclass v3 — v6.9 enhanced, 60+ fields) | Schema carries everything for live analysis: ML features (cal/raw scores, agent decision), confluence breakdown (HTF/MTF/OB/FVG/Sweep pts), trade-mgmt state (`be_moved`, `partial_closed_flag`, `trailing_active`, `final_sl_at_close`), bid/ask @entry/exit, market context (ADX H1/H4, MTF/D1 bias), account state, overtrading metrics, **`obs_27_json`** (full 27-dim obs at decision time → unlock retrain). |
 | `TradeExecutor._check_correlation` | Groups: USD_WEAK / USD_STRONG / JPY_CROSS / EUR_PAIRS / GBP_PAIRS — `MAX_CORRELATED_POSITIONS` per group per direction |
 
 **Hard rule**: every order must have SL — never send orderless.
@@ -182,7 +186,9 @@ Always floor-round the lot size (never ceil) — safety margin against broker st
 | Symbol | Role |
 |--------|------|
 | `TradeManager.update_positions` | Called every tick — syncs MT5 positions + trailing + partial close |
-| `TrailingState` (dataclass) | Per-position state: `initial_sl`, `current_sl`, `best_price`, `trailing_active`, `partial_closed` |
+| `TrailingState` (dataclass) | Per-position state: `initial_sl`, `current_sl`, `best_price`, `trailing_active`, `partial_closed`, `breakeven_moved` |
+| `TradeManager._move_to_breakeven` | At RR=1.0: moves SL to entry, mirrors to `trade.be_moved=True` and `trade.final_sl_at_close=new_sl` for logging |
+| `TradeManager._partial_close` | At RR=1.0: closes 50%, mirrors to `trade.partial_closed_flag=True` and `trade.partial_close_count += 1` |
 | Constants | `BE_TRIGGER_RR=1.0` (move SL → entry), `PARTIAL_CLOSE_PCT=0.5` (50 % at 1:1), `TRAIL_ACTIVATION_RR=1.5` |
 
 ---
@@ -232,8 +238,22 @@ Key dataclasses:
 
 ### `trade_logger.py`
 
-⚠️ **Disabled** in `FTMOTradingBot.__init__` (`self._logger = None`) — trade history is read via MT5 `history_deals_get()` instead.
-- To re-enable: schema v2 (30+ columns), requires `openpyxl`, monthly files at `logs/ftmo_trades_YYYY_MM.xlsx`.
+✅ **Re-enabled (v6.9 2026-04-25)** in `FTMOTradingBot.__init__` for live demo data capture.
+
+| Symbol | Role |
+|--------|------|
+| `TradeLogger.__init__(log_dir)` | Auto-creates `logs/` folder; writes to single consolidated `ftmo_trades.xlsx` (no monthly split). |
+| `TradeLogger.log_trade_opened(trade_data)` | Appends row to `Trades` sheet (63 cols). Color-codes BUY=green/SELL=red. |
+| `TradeLogger.log_trade_closed(trade_data)` | Updates close columns (price, time, P/L, MAE/MFE, exit path) on existing row. |
+| `TradeLogger.log_signal_scan(scan_data)` | Per-scan event log → `Signals` sheet (20 cols, includes `AGENT_SKIP`/`AGENT_TAKE`/`REJECTED`/`NO_SIGNAL` results, color-coded). |
+| `TradeLogger.log_daily_summary(balance, daily_dd, max_dd)` | Daily roll-up → `Daily` sheet (Date/Trades/Wins/WR%/PL/DD/Balance). Wins counter uses `profit > 0` on cumulative (not last deal). |
+| `TradeLogger.update_stats_sheet(stats)` | Refreshes `Stats` sheet from `PerformanceAnalyzer` output. |
+| `TRADE_HEADERS` | 63 cols (Schema v3 + Obs27 JSON). Last col = JSON-encoded 27-dim obs vector for offline retrain. |
+| `SIGNAL_HEADERS` | 20 cols. Last col = same Obs27 JSON. |
+
+**Schema migration**: existing `ftmo_trades.xlsx` from before v6.9 has 62 cols / 19 cols — append will misalign. Rename or delete pre-v6.9 file before first start (`mv logs/ftmo_trades.xlsx logs/ftmo_trades_pre_obs27.xlsx`).
+
+**Excel file**: `ftmo_trading_bot/logs/ftmo_trades.xlsx`. 4 sheets: Trades, Signals, Daily, Stats. Auto-creates on first scan/trade.
 
 ---
 
@@ -242,8 +262,8 @@ Key dataclasses:
 | Script | Role |
 |--------|------|
 | `build_signal_pool.py` | Multiprocessing 8 workers — calls `StrategyBacktester.generate_episode_signals` × N → `data/signal_pool_3000.pkl` |
-| `train_signal_quality.py` | Trains GBM (`SignalQualityModel.train_from_pool`) → saves model + re-scores pool in place |
-| `train_signal_filter.py` | PPO 2-phase curriculum (Phase 1 Alpha → Phase 2 Risk) → `models/ppo_signal_filter.zip` |
+| `train_signal_quality.py` | GBM + `GroupKFold cross_val_predict` (group=episode_id, OOF) → fits `IsotonicRegression` calibrator on OOF probs → saves `{model, calibrator, ...}` payload + re-scores pool with calibrated probs in place |
+| `train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` 2-phase curriculum (P1 Alpha 300K steps → P2 Risk 200K steps, aux loss weight=0.5, LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20) → `models/ppo_signal_filter.zip` |
 | `fetch_mt5_data.py` | (Windows only) fetches OHLCV from MT5 → CSV under `data/ohlcv/` |
 | `import_forexfactory_csv.py` | Manual CSV → `news_calendar.json` import (alternative to `NewsCalendarScheduler`) |
 
@@ -253,10 +273,12 @@ Key dataclasses:
 
 | Symbol | Role |
 |--------|------|
-| `FTMOTradingBot.__init__` | Builds every subsystem (connector, risk, sizer, strategy, executor, manager, RL agent, ML model, news scheduler, notifier) |
+| `FTMOTradingBot.__init__` | Builds every subsystem (connector, risk, sizer, strategy, executor, manager, RL agent, ML model, news scheduler, notifier, **TradeLogger**). Initializes 5 announce-once flags: `_daily_halt_announced`, `_friday_announced`, `_weekend_announced`, `_daily_close_announced`, `_rollover_announced`. Initializes `_trade_open_history: list` (cap 200, for overtrading metrics). |
 | `FTMOTradingBot.connect` | MT5 login + load state |
-| `FTMOTradingBot.run` | Main loop (runs every `main_loop_interval` seconds, default 5 s) |
-| `FTMOTradingBot._build_signal_observation` | Builds the 27-dim obs from a `TradeSignal` + portfolio state — must match `FTMOSignalFilterEnv._get_obs` |
+| `FTMOTradingBot.run` | Main loop (runs every `main_loop_interval` seconds, default 5 s). Idle-state guards use announce-once pattern (print on entry only, auto-reset in `else` branch). |
+| `FTMOTradingBot._build_signal_observation` | Builds the 27-dim obs from a `TradeSignal` + portfolio state — must match `FTMOSignalFilterEnv._get_obs`. Same path used to populate `live_context["obs_27_json"]` for retrain logging. |
+| `FTMOTradingBot._build_live_context(sig)` | Gathers `ml_score` (cal/raw), bid/ask snapshot, ADX H1/H4, MTF/D1 bias, balance, overtrading metrics (`trades_today`, `secs_since_last_*`), and JSON-encoded obs vector → passed to `TradeExecutor.execute_signal` and `TradeLogger.log_signal_scan`. |
+| `FTMOTradingBot._log_signal_scan(sig, ctx, result)` | Wrapper: builds `scan_data` from signal + context + result label (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`), calls `TradeLogger.log_signal_scan`. |
 | `FTMOTradingBot._build_spread_pct_of_atr` | Computes obs[24] (cost awareness) |
 | `FTMOTradingBot._has_opposite_recently_closed` | Computes obs[25] (flip-lock context) |
 | `FTMOTradingBot.shutdown` | Graceful shutdown — saves state, closes connector |
