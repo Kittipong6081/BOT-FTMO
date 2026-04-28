@@ -80,7 +80,9 @@ class TradeLogger:
         # Overtrading detection (cols 57-60)
         "Trades Today @Open", "Trades 1h @Open",
         "Sec Since Last Open", "Sec Since Last Same-Sym",
-        # Retrain capability — full obs vector at decision time (col 61)
+        # v6.10: Partial close skipped flag (col 63 — distinguish from "Partial Closed" fired)
+        "Partial Skipped",
+        # Retrain capability — full obs vector at decision time (col 64, last)
         "Obs27 JSON",
     ]
 
@@ -95,7 +97,11 @@ class TradeLogger:
         "ADX H1", "HTF Bias", "MTF Bias", "D1 Bias",
         "Session", "Spread (pips)",
         "Reject/Skip Reasons",
-        # Retrain capability — full obs vector at decision time (col 20)
+        # v6.10: Executor reject reason (col 20 — for AGENT_TAKE_FAIL events)
+        # values: signal_invalid / correlation:* / lot_calc_failed / risk_manager:* /
+        #         price_fetch_failed / spread_high:* / final_validation:* / order_send_failed
+        "Executor Reject",
+        # Retrain capability — full obs vector at decision time (col 21, last)
         "Obs27 JSON",
     ]
 
@@ -214,6 +220,8 @@ class TradeLogger:
                 trade_data.get("trades_last_hour_at_open", 0),
                 trade_data.get("secs_since_last_trade_open", 0),
                 trade_data.get("secs_since_last_trade_same_symbol", 0),
+                # v6.10: partial close skipped flag (lot too small for partial)
+                bool(trade_data.get("partial_close_skipped", False)),
                 # --- Obs vector (JSON) — for offline retrain ---
                 str(trade_data.get("obs_27_json", ""))[:600],
             ]
@@ -392,6 +400,7 @@ class TradeLogger:
                 scan_data.get("session", ""),
                 scan_data.get("spread_pips", 0),
                 reasons[:500],  # truncate to avoid Excel cell overflow
+                str(scan_data.get("executor_reject_reason", ""))[:80],
                 str(scan_data.get("obs_27_json", ""))[:600],
             ]
             ws.append(row)
@@ -432,7 +441,7 @@ class TradeLogger:
             cell.fill = header_fill
             cell.alignment = header_align
 
-        # Column widths (matches SIGNAL_HEADERS length 20)
+        # Column widths (matches SIGNAL_HEADERS length 21)
         col_widths = [
             20, 10, 6, 18,        # Time, Symbol, Direction, Result
             10, 10, 10,           # Confluence, ATR, RR Target
@@ -441,6 +450,7 @@ class TradeLogger:
             8, 9, 9, 8,           # ADX H1, HTF/MTF/D1 Bias
             10, 10,               # Session, Spread
             60,                   # Reject/Skip Reasons
+            30,                   # Executor Reject (v6.10)
             60,                   # Obs27 JSON
         ]
         for idx, width in enumerate(col_widths, 1):
@@ -584,7 +594,7 @@ class TradeLogger:
             cell.alignment = header_align
             cell.border = thin_border
 
-        # กำหนดความกว้างคอลัมน์ (Schema v3 — 61 คอลัมน์ พร้อม Obs27 JSON)
+        # กำหนดความกว้างคอลัมน์ (Schema v3 — 64 คอลัมน์ พร้อม Partial Skipped + Obs27 JSON)
         col_widths = [
             # core (1-19)
             12, 10, 6, 10, 10, 10, 7, 7, 10, 6, 10, 10, 20, 10, 20, 12, 8, 20, 40,
@@ -600,6 +610,7 @@ class TradeLogger:
             8, 8, 9, 8,                        # Market context (4)
             12, 12, 12,                        # Account state (3)
             14, 14, 18, 20,                    # Overtrading metrics (4)
+            12,                                # Partial Skipped (v6.10)
             60,                                # Obs27 JSON (1)
         ]
         for idx, width in enumerate(col_widths, 1):

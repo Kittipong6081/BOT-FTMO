@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-25 | Scope: red flags, version log, migration notes (latest: obs_27_json retrain unlock)
+> Last Updated: 2026-04-27 | Scope: red flags, version log, migration notes (latest: v6.10 executor reject reason + partial_close_skipped)
 
 ## TL;DR (30-second scan)
 
@@ -252,6 +252,68 @@ Re-enabled `TradeLogger` for live demo deployment. Schema v3 = 58-col Trades she
 - Per-signal `AGENT_SKIP` print ลบทิ้ง — ข้อมูลครบใน `Signals` sheet (`AGENT_SKIP` row พร้อม ml_score, confidence, reasons).
 - Per-signal `NO_AGENT` print ลบทิ้ง — fallback path เมื่อไม่มี RL agent loaded; logged ใน Signals sheet เช่นกัน.
 - เก็บ `📡 [Agent] TAKE` print ไว้ — เป็น event สำคัญที่บอกว่าเทรดกำลังจะเปิด.
+
+**v6.10c (Phase 1b) — Symbol coverage fix: pre-select Market Watch (added 2026-04-27):**
+
+Live demo Day-1 analysis เจอว่า **5 ใน 10 symbols ไม่มี scan event เลย:** XAUUSD (0), USDCHF (0), USDJPY (2), EURJPY (0), GBPJPY (0).
+
+**Root cause:** `MT5Connector.connect()` ไม่ pre-select symbols ใน Market Watch หลัง login. ผลคือ:
+
+- `analyze()` เรียก `get_current_price(symbol)` → `mt5.symbol_info_tick(symbol)` คืน None ถ้า symbol ไม่อยู่ใน Market Watch
+- `analyze()` return no_signal ทันที (line 343-344) — **ก่อน** จะถึง `get_symbol_info(symbol)` ที่จะ trigger `mt5.symbol_select()`
+- บอท skip silently ตลอด — ไม่มี scan event ใน Excel
+
+**Fix:** ใน `MT5Connector.connect()` หลัง login สำเร็จ → loop `bot_config.symbols.symbols` ทั้งหมดเรียก `mt5.symbol_select(sym, True)` ครั้งเดียว. Print summary `📌 Market Watch: enabled N/M symbols` + warn ถ้า broker ไม่รองรับ symbol บางตัว.
+
+**Verify after deploy:** หลัง bot start ดู console message — ต้องเห็น `📌 Market Watch: enabled 10/10 symbols`. ถ้า < 10 → ดู warning ว่า broker ไม่รองรับ symbol อะไร (อาจเป็นชื่อต่าง เช่น `XAUUSD.r` แทน `XAUUSD`).
+
+**v6.10c — Timezone fix: Excel timestamps ใช้ broker time (EEST) (added 2026-04-27):**
+
+Live demo Day-1 analysis เปรียบเทียบ Excel `Open Time`/`Close Time` กับ MT5 history เจอว่า **Excel timestamps มี offset +4 ชม. จาก MT5** (Excel 16:39 vs MT5 12:39).
+
+Root cause: production code หลายจุดใช้ `datetime.now()` (Python system local time = Bangkok VPS UTC+7) แทนที่จะใช้ broker time (EEST UTC+3). ทำให้ Excel timestamps คนละ wall-clock กับ MT5 history → debug ยาก + Friday/Daily close logic อาจ trigger ผิด.
+
+Pattern: `TimeManager.get_server_time().replace(tzinfo=None)` — ได้ naive datetime ที่ display เป็น EEST wall clock (ตรงกับ MT5).
+
+**Files patched:**
+
+- `execution/trade_executor.py` — `execute_signal` capture entry time, `sync_with_mt5` close_time, `update_close` close_time. + import `TimeManager`.
+- `main.py` — `_build_signal_observation` challenge_day calc, `_build_live_context` overtrading window, `_trade_open_history.append` (เก็บ EEST timestamp), Daily Halt print message.
+
+**ที่ไม่แตะ (intentionally `datetime.now()` ยังใช้ได้):**
+
+- `mt5_connector.py` `history_deals_get(today_start, datetime.now())` — MT5 API doc บอกใช้ naive UTC, library auto-convert
+- mock data / test helpers / shutdown uptime calc — ไม่กระทบ FTMO logic
+- `_signal_handler` / `__repr__` — diagnostic only
+
+**Verify after deploy:** Excel `Open Time` ของ trade ใหม่ ต้อง match MT5 history mobile screen (วินาทีตรงกัน). ถ้ายังต่าง 4 ชม. → VPS NTP ไม่ sync หรือ timezone setting ผิด.
+
+**v6.10b — Daily/Stats sheets fix (added 2026-04-27):**
+
+Live demo Day-1 analysis เจอว่า Daily sheet + Stats sheet **ว่างเปล่า** ทั้งวัน ทั้งที่มี 6 trades. Root cause: `log_daily_summary()` + `update_stats_sheet()` ถูกเรียกแค่ใน `_run_phase4_tests()` (test function) — **ไม่เคยเรียกใน production loop** ตลอด.
+
+**Fix:** เพิ่ม 3 hooks ใน `FTMOTradingBot`:
+
+- `__init__`: `self._last_logged_day = None`
+- `run()` ต้น loop iteration ก่อน `check_risk()`: ถ้า `broker_today != _last_logged_day` → flush ของวันก่อน (`log_daily_summary` + `update_stats_sheet`) → set `_last_logged_day = broker_today`. ครั้งแรกที่ loop รัน (None → today) ไม่ flush เพราะไม่มีวันก่อน
+- `run()` ใน loop: ทุก 720 loops (~1 ชม. @ 5s) → `update_stats_sheet()` only (สำหรับ live monitor — user เปิด Excel ดูสถานะปัจจุบันได้)
+- `shutdown()`: ทั้ง `log_daily_summary` + `update_stats_sheet` ก่อน save state — กัน user Ctrl+C แล้วข้อมูลวันสุดท้ายหาย
+
+**Verify after deploy:** รัน bot ≥ 1 ชม. → ตรวจ `Stats` sheet ต้องมี data; รัน cross-day → ตรวจ `Daily` sheet มี row ของวันก่อน.
+
+**v6.10 — Executor reject reason logging (added 2026-04-27, schema bump 63 → 64 trade cols, 20 → 21 signal cols):**
+
+Live demo day 1 analysis revealed **62% of scans = AGENT_TAKE_FAIL** but reject reason ไม่ถูกบันทึก — Signals sheet's "Reject/Skip Reasons" column เก็บ SMC signal reasons แทน. Blind spot ใหญ่ เพราะไม่รู้ว่า cooldown / spread / correlation / DD halt / post-TP lock / order_send_failed อันไหน reject signal.
+
+Changes:
+
+- `TradeExecutor.execute_signal` — ตั้ง `self._last_reject_reason` ที่ทุก rejection point (signal_invalid / correlation:* / lot_calc_failed / risk_manager:* / price_fetch_failed / spread_high:* / final_validation:* / order_send_failed). Reset ที่ต้นของแต่ละ call.
+- `FTMOTradingBot.run` — หลัง `executor.execute_signal()` คืน None → อ่าน `executor._last_reject_reason` → save เข้า `live_context["executor_reject_reason"]` → log ลง Signals sheet col 20 ใหม่ "Executor Reject".
+- `FTMOTradingBot._build_live_context` — เพิ่ม raw account state (`balance_at_entry`, `equity_at_entry`, `floating_pnl_at_entry`, `daily_start_equity`) สำหรับ debug ตัวเลข `dd_at_entry_pct` ที่อาจ misleading (เช่น แสดง 11% ตอนที่ net P/L บวก).
+- `ExecutedTrade.partial_close_skipped: bool` (col 63 ใหม่) — distinguish "Partial Closed = True (fired)" จาก "Partial Skipped = True (lot too small ข้ามไป)". `TradeManager._partial_close` set flag เมื่อ `remaining < lot_min` หรือ `close_volume < lot_min`.
+- `TradeLogger.SIGNAL_HEADERS` 20 → 21 cols (เพิ่ม "Executor Reject" ก่อน "Obs27 JSON"). `TRADE_HEADERS` 63 → 64 cols (เพิ่ม "Partial Skipped" ก่อน "Obs27 JSON" — ไม่กระทบ hardcoded col index ของ `log_trade_closed`).
+
+⚠️ **Schema migration:** VPS ต้อง **rename หรือลบ `logs/ftmo_trades.xlsx` เดิมก่อน restart** ไม่งั้น append ผิด column.
 
 **Retrain unlock (added 2026-04-25, schema bump 62 → 63 trade cols, 19 → 20 signal cols):**
 

@@ -115,14 +115,34 @@ class MT5Connector:
 
         self._connected = True
         account_info = mt5.account_info()
-        
+
         print(f"✅ [MT5] เชื่อมต่อสำเร็จ!")
         print(f"   📊 บัญชี: {account_info.login}")
         print(f"   💰 Balance: ${account_info.balance:,.2f}")
         print(f"   💎 Equity: ${account_info.equity:,.2f}")
         print(f"   🏢 Server: {account_info.server}")
         print(f"   📈 Leverage: 1:{account_info.leverage}")
-        
+
+        # === v6.10c: Pre-select all configured symbols into Market Watch ===
+        # Reason: ถ้า symbol ไม่ได้อยู่ใน Market Watch → mt5.symbol_info_tick() คืน None
+        #          → SMC analyze() return no_signal silently → คู่อย่าง XAUUSD/JPY/USDCHF
+        #          ไม่ถูก scan แม้แต่ครั้งเดียว (เจอใน live demo Day-1)
+        # Fix: loop เลือกทุก symbol ใน config.symbols.symbols ทันทีหลัง login
+        try:
+            from config.settings import bot_config as _bc
+            configured = list(_bc.symbols.symbols)
+            ok_syms, fail_syms = [], []
+            for sym in configured:
+                if mt5.symbol_select(sym, True):
+                    ok_syms.append(sym)
+                else:
+                    fail_syms.append(sym)
+            print(f"   📌 Market Watch: enabled {len(ok_syms)}/{len(configured)} symbols")
+            if fail_syms:
+                print(f"   ⚠️ Symbols ที่ broker ไม่รองรับ: {', '.join(fail_syms)}")
+        except Exception as e:
+            print(f"   ⚠️ Pre-select symbols ล้มเหลว: {e} — จะ select on-demand ตอน get_symbol_info")
+
         return True
 
     def disconnect(self) -> None:

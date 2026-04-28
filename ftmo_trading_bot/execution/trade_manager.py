@@ -278,6 +278,10 @@ class TradeManager:
         if remaining < lot_min or close_volume < lot_min:
             # Volume น้อยเกินไป — ไม่ปิดบางส่วน
             state.partial_closed = True  # ถือว่าผ่านไปแล้ว
+            # v6.10: distinguish skip vs fire in logging
+            trade.partial_close_skipped = True
+            print(f"⚠️ [Trade Manager] Partial close ข้าม Ticket {trade.ticket}: "
+                  f"close_volume={close_volume:.3f} หรือ remaining={remaining:.3f} < lot_min={lot_min}")
             return
 
         # ส่งคำสั่งปิดบางส่วน

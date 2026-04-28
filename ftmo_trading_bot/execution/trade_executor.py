@@ -25,6 +25,7 @@ from config.settings import bot_config
 from core.mt5_connector import MT5Connector
 from core.risk_manager import RiskManager
 from core.position_sizer import PositionSizer
+from core.time_manager import TimeManager
 from strategy.smc_strategy import TradeSignal, SignalType
 
 try:
@@ -101,7 +102,8 @@ class ExecutedTrade:
 
     # Trade management state (TradeManager interactions, final at close)
     be_moved: bool = False                  # SL moved to entry (BE)
-    partial_closed_flag: bool = False       # 50% partial executed
+    partial_closed_flag: bool = False       # 50% partial executed (fired)
+    partial_close_skipped: bool = False     # v6.10: partial trigger but skipped (lot too small)
     trailing_active: bool = False           # trail SL activated
     final_sl_at_close: float = 0.0          # SL price at exit time
 
@@ -181,6 +183,7 @@ class ExecutedTrade:
             "sweep_pts": self.sweep_pts,
             "be_moved": self.be_moved,
             "partial_closed_flag": self.partial_closed_flag,
+            "partial_close_skipped": self.partial_close_skipped,
             "trailing_active": self.trailing_active,
             "final_sl_at_close": self.final_sl_at_close,
             "bid_at_entry": self.bid_at_entry,
@@ -343,9 +346,13 @@ class TradeExecutor:
         Returns:
             ExecutedTrade หรือ None: ข้อมูลเทรดที่เปิดสำเร็จ
         """
+        # v6.10: reset reject reason for every call → main.py reads after None return
+        self._last_reject_reason: Optional[str] = None
+
         # === ด่านที่ 1: ตรวจสอบสัญญาณ ===
         if not signal.is_valid:
             print("❌ [Executor] สัญญาณไม่ Valid — ยกเลิก")
+            self._last_reject_reason = "signal_invalid"
             return None
 
         symbol = signal.symbol
@@ -361,6 +368,7 @@ class TradeExecutor:
         )
         if not allowed_corr:
             print(f"🚫 [Executor] Correlation Risk: {corr_reason}")
+            self._last_reject_reason = f"correlation:{corr_reason}"
             self._total_rejected += 1
             return None
 
@@ -372,6 +380,7 @@ class TradeExecutor:
 
         if lot_result is None:
             print("❌ [Executor] คำนวณ Lot Size ล้มเหลว — ยกเลิก")
+            self._last_reject_reason = "lot_calc_failed"
             self._total_rejected += 1
             return None
 
@@ -391,6 +400,7 @@ class TradeExecutor:
 
         if not allowed:
             print(f"🚫 [Executor] Risk Manager ปฏิเสธ: {reason}")
+            self._last_reject_reason = f"risk_manager:{reason}"
             self._total_rejected += 1
             return None
 
@@ -398,6 +408,7 @@ class TradeExecutor:
         price_info = self._connector.get_current_price(symbol)
         if price_info is None:
             print("❌ [Executor] ดึงราคาปัจจุบันล้มเหลว — ยกเลิก")
+            self._last_reject_reason = "price_fetch_failed"
             self._total_rejected += 1
             return None
 
@@ -408,6 +419,7 @@ class TradeExecutor:
             current_spread_pts = price_info["spread"] / symbol_info["point"]
             if current_spread_pts > max_spread:
                 print(f"🚫 [Executor] Spread สูงเกินไป ({current_spread_pts:.0f} > {max_spread}) — รอ Spread ลด")
+                self._last_reject_reason = f"spread_high:{current_spread_pts:.0f}>{max_spread}"
                 self._total_rejected += 1
                 return None
 
@@ -422,6 +434,7 @@ class TradeExecutor:
 
         if not valid:
             print(f"🚫 [Executor] Final Validation ล้มเหลว: {val_reason}")
+            self._last_reject_reason = f"final_validation:{val_reason}"
             self._total_rejected += 1
             return None
 
@@ -436,6 +449,7 @@ class TradeExecutor:
 
         if order_result is None:
             print("❌ [Executor] ส่งคำสั่งล้มเหลวหลังจาก Retry ทุกครั้ง")
+            self._last_reject_reason = "order_send_failed"
             self._total_rejected += 1
             return None
 
@@ -475,7 +489,9 @@ class TradeExecutor:
                     print(f"📏 [Executor] Tier-{fallback_tier} slippage: {slip:.5f}")
 
         # === Capture ML features ณ เวลาเปิดเทรด ===
-        now = datetime.now()
+        # v6.10b: ใช้ broker time (EEST) — match กับ MT5 close time + Friday/Daily close logic
+        # strip tzinfo เพื่อ openpyxl เขียน Excel ได้สะอาด (และเทียบกับ open_time/close_time ได้)
+        now = TimeManager.get_server_time().replace(tzinfo=None)
         entry_ctx = self._capture_entry_context(signal, resolved_entry, symbol_info, price_info)
 
         # === ด่านที่ 7: บันทึกผลลัพธ์ ===
@@ -782,7 +798,8 @@ class TradeExecutor:
                 trade.ask_at_exit = float(price_info.get("ask", 0.0))
 
             trade.is_open = False
-            trade.close_time = datetime.now()
+            # v6.10b: ใช้ broker time (EEST) — same as open_time
+            trade.close_time = TimeManager.get_server_time().replace(tzinfo=None)
             trade.close_reason = reason
             # v6.9: capture balance + final SL at close
             try:
@@ -868,7 +885,8 @@ class TradeExecutor:
             trade = self._active_trades[ticket]
             trade.is_open = False
             trade.close_price = close_price
-            trade.close_time = datetime.now()
+            # v6.10b: ใช้ broker time (EEST)
+            trade.close_time = TimeManager.get_server_time().replace(tzinfo=None)
             trade.profit = profit
             trade.close_reason = reason
             # Finalize ML features ตอนปิด

@@ -144,6 +144,11 @@ class FTMOTradingBot:
         self._daily_close_announced = False
         self._rollover_announced = False
 
+        # === v6.10: Daily summary + Stats sheet trigger ===
+        # _last_logged_day = วันสุดท้ายที่ log_daily_summary ถูกเรียก
+        # None = ยังไม่เคย log → ตั้งครั้งแรกใน loop (ไม่ flush ของวันก่อน)
+        self._last_logged_day = None
+
         # === จัดการ Signal สำหรับ Graceful Shutdown ===
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -485,8 +490,9 @@ class FTMOTradingBot:
         ml_score_norm = (ml_score - 0.5) * 2.0  # map [0,1] → [-1,+1]
 
         # Portfolio features
+        # v6.10b: ใช้ broker date (EEST) — กัน timezone offset จาก VPS local time
         try:
-            challenge_day = self._get_challenge_day(datetime.now().date())
+            challenge_day = self._get_challenge_day(TimeManager.get_server_time().date())
         except Exception:
             challenge_day = 0
         day_progress = float(challenge_day) / 45.0
@@ -683,8 +689,9 @@ class FTMOTradingBot:
 
         # === Overtrading metrics ===
         # นับ trade history vs current time → detect overtrading patterns
+        # v6.10b: ใช้ broker time (EEST) → ตรงกับ trade open_time ที่บันทึกไว้
         try:
-            now = datetime.now()
+            now = TimeManager.get_server_time().replace(tzinfo=None)
             today = now.date()
             one_hour_ago = now - timedelta(hours=1)
 
@@ -722,6 +729,26 @@ class FTMOTradingBot:
                 )
         except Exception:
             ctx["obs_27_json"] = ""
+
+        # === v6.10: Account state audit (verify DD@Entry calculation) ===
+        # เก็บ raw equity / balance / floating + daily_start_equity เพื่อ debug
+        # กรณี DD@Entry % ดูแปลก (เช่น 11% ทั้งที่ net P/L บวก)
+        try:
+            acc = self._connector.get_account_info() or {}
+            bal = float(acc.get("balance", 0) or 0)
+            eq = float(acc.get("equity", 0) or 0)
+            ctx["balance_at_entry"] = bal
+            ctx["equity_at_entry"] = eq
+            ctx["floating_pnl_at_entry"] = eq - bal
+        except Exception:
+            pass
+
+        try:
+            ctx["daily_start_equity"] = float(
+                getattr(self._risk_manager, "_daily_start_equity", 0) or 0
+            )
+        except Exception:
+            pass
 
         return ctx
 
@@ -828,6 +855,39 @@ class FTMOTradingBot:
                 # Exception-safe: ไม่ block main loop แม้ scheduler พัง
                 self._news_scheduler.check_and_run()
 
+                # === v6.10: Daily summary on day rollover ===
+                # Detect day change ก่อน check_risk() (เพราะ check_risk จะ reset _daily_closed_pnl)
+                # → log ของวันก่อนต้อง snapshot ก่อน reset
+                try:
+                    broker_today = TimeManager.get_server_time().date()
+                    if self._last_logged_day != broker_today:
+                        if self._last_logged_day is not None and self._logger is not None:
+                            risk_status = self._risk_manager.get_risk_status() or {}
+                            self._logger.log_daily_summary(
+                                balance=risk_status.get("current_balance", 0),
+                                daily_dd_pct=risk_status.get("daily_loss_pct", 0),
+                                max_dd_pct=risk_status.get("overall_drawdown_pct", 0),
+                            )
+                            try:
+                                stats = self._analyzer.get_full_report()
+                                self._logger.update_stats_sheet(stats)
+                            except Exception as e:
+                                print(f"⚠️ [Bot] Update Stats sheet failed: {e}")
+                        self._last_logged_day = broker_today
+                except Exception as e:
+                    print(f"⚠️ [Bot] Daily summary check failed: {e}")
+
+                # === v6.10: Periodic Stats update (every 720 loops = 1h @ 5s) ===
+                # ทำให้ Stats sheet update realtime — user เปิด Excel ดูสถานะได้
+                if (self._logger is not None
+                        and self._loop_count % 720 == 0
+                        and self._loop_count > 0):
+                    try:
+                        stats = self._analyzer.get_full_report()
+                        self._logger.update_stats_sheet(stats)
+                    except Exception as e:
+                        print(f"⚠️ [Bot] Hourly Stats update failed: {e}")
+
                 # === ขั้นตอนที่ 1: ตรวจสอบความเสี่ยง (สำคัญที่สุด) ===
                 bot_state = self._risk_manager.check_risk()
                 
@@ -839,7 +899,7 @@ class FTMOTradingBot:
                     
                 if bot_state == BotState.DAILY_HALT:
                     if not self._daily_halt_announced:
-                        print(f"🔒 [Bot] Daily Halt — รอวันถัดไป (เวลาปัจจุบัน: {datetime.now().strftime('%H:%M:%S')})")
+                        print(f"🔒 [Bot] Daily Halt — รอวันถัดไป (เวลาปัจจุบัน: {TimeManager.get_server_time().strftime('%H:%M:%S')} EEST)")
                         self._notifier.send_risk_alert("🔒 DAILY LOSS LIMIT", "พอร์ตชนค่าจำกัดขาดทุนรายวัน (Daily Drawdown) บอทเข้าโหมดระงับการเทรดชั่วคราวจนกว่าจะขึ้นวันใหม่รอยัลโอเวอร์")
                         self._daily_halt_announced = True
                     time_module.sleep(bot_config.main_loop_interval)
@@ -950,11 +1010,17 @@ class FTMOTradingBot:
                                 print(f"✅ [Bot] เปิดเทรดสำเร็จ: Ticket {executed.ticket}")
                                 self._log_signal_scan(sig, live_context, result="AGENT_TAKE")
                                 # v6.9: บันทึก trade open history สำหรับ overtrading detection
-                                self._trade_open_history.append((datetime.now(), sig.symbol))
+                                # v6.10b: ใช้ broker time (EEST) — ตรงกับ executed.open_time
+                                self._trade_open_history.append(
+                                    (TimeManager.get_server_time().replace(tzinfo=None), sig.symbol)
+                                )
                                 # cap ที่ 200 entries (กัน memory leak run นาน ๆ)
                                 if len(self._trade_open_history) > 200:
                                     self._trade_open_history = self._trade_open_history[-200:]
                             else:
+                                # v6.10: capture executor reject reason for log
+                                reject_reason = getattr(self._executor, "_last_reject_reason", None) or "unknown"
+                                live_context["executor_reject_reason"] = reject_reason
                                 self._log_signal_scan(sig, live_context, result="AGENT_TAKE_FAIL")
                     except Exception as e:
                         print(f"⚠️ [Bot] Strategy/Execution error: {e}")
@@ -1023,6 +1089,22 @@ class FTMOTradingBot:
         
         self._notifier.send_shutdown()
         self._running = False
+
+        # === v6.10: Final Daily/Stats flush ก่อน shutdown ===
+        # User กด Ctrl+C → flush latest data ลง Excel
+        if self._logger is not None and self._analyzer is not None:
+            try:
+                stats = self._analyzer.get_full_report()
+                self._logger.update_stats_sheet(stats)
+                risk_status = self._risk_manager.get_risk_status() or {}
+                self._logger.log_daily_summary(
+                    balance=risk_status.get("current_balance", 0),
+                    daily_dd_pct=risk_status.get("daily_loss_pct", 0),
+                    max_dd_pct=risk_status.get("overall_drawdown_pct", 0),
+                )
+                print("✅ [Bot] บันทึก Daily + Stats sheets ก่อน shutdown")
+            except Exception as e:
+                print(f"⚠️ [Bot] Final logging ก่อน shutdown ล้มเหลว: {e}")
 
         # บันทึก state ล่าสุดก่อนปิด (atomic write)
         try:

@@ -159,7 +159,13 @@
       "Skill(update-config:*)",
       "Bash(bash .claude/hooks/check_wiki_sync.sh)",
       "Bash(echo \"exit=$?\")",
-      "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/main.py)"
+      "Bash(python3 -m py_compile /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/main.py)",
+      "Bash(unzip -l /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/logs/ftmo_trades.xlsx)",
+      "Bash(.venv/bin/python)",
+      "Bash(grep -nB2 -A5 \"dd_pct\" /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/execution/trade_executor.py)",
+      "Bash(grep -nB1 -A8 \"def get_risk_status\\\\|daily_loss_pct\" /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/core/risk_manager.py)",
+      "Bash(grep -nB2 -A20 \"def execute_signal\" /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/execution/trade_executor.py)",
+      "Bash(awk '/def execute_signal/,/^    def [a-z]/' /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/execution/trade_executor.py)"
     ],
     "additionalDirectories": [
       "/tmp",

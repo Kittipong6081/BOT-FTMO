@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-26 | Scope: every module + key class / method / variable
+> Last Updated: 2026-04-27 | Scope: every module + key class / method / variable
 
 ## TL;DR (30-second scan)
 
@@ -174,9 +174,10 @@ Always floor-round the lot size (never ceil) — safety margin against broker st
 
 | Symbol | Role |
 |--------|------|
-| `TradeExecutor.execute_signal(sig, live_context=None)` | Final gate: re-check risk → calc lot → send order → log. Accepts `live_context` dict from `main.py` and applies fields to `ExecutedTrade`. |
+| `TradeExecutor.execute_signal(sig, live_context=None)` | Final gate: re-check risk → calc lot → send order → log. Accepts `live_context` dict from `main.py` and applies fields to `ExecutedTrade`. v6.10: ตั้ง `self._last_reject_reason` ที่ทุก rejection point (correlation/lot/risk/spread/validation/order). |
+| `TradeExecutor._last_reject_reason` (v6.10) | String key ของ rejection point ล่าสุด. Reset ต้น `execute_signal`. main.py อ่านหลัง None return → log ลง Signals sheet "Executor Reject" col. |
 | `TradeExecutor.sync_with_mt5` | Cumulative profit accumulator: pulls **all deals** of a position via `MT5Connector.get_deals_by_position(ticket)`, sums `profit + swap + commission`. Partial-close + BE-SL = WIN if cumulative > 0 (see [05-invariants.md FAQ](05-invariants.md)). |
-| `ExecutedTrade` (dataclass v3 — v6.9 enhanced, 60+ fields) | Schema carries everything for live analysis: ML features (cal/raw scores, agent decision), confluence breakdown (HTF/MTF/OB/FVG/Sweep pts), trade-mgmt state (`be_moved`, `partial_closed_flag`, `trailing_active`, `final_sl_at_close`), bid/ask @entry/exit, market context (ADX H1/H4, MTF/D1 bias), account state, overtrading metrics, **`obs_27_json`** (full 27-dim obs at decision time → unlock retrain). |
+| `ExecutedTrade` (dataclass v3 — v6.10 enhanced, 60+ fields) | Schema carries everything for live analysis: ML features (cal/raw scores, agent decision), confluence breakdown (HTF/MTF/OB/FVG/Sweep pts), trade-mgmt state (`be_moved`, `partial_closed_flag`, `partial_close_skipped` v6.10, `trailing_active`, `final_sl_at_close`), bid/ask @entry/exit, market context (ADX H1/H4, MTF/D1 bias), account state, overtrading metrics, **`obs_27_json`** (full 27-dim obs at decision time → unlock retrain). |
 | `TradeExecutor._check_correlation` | Groups: USD_WEAK / USD_STRONG / JPY_CROSS / EUR_PAIRS / GBP_PAIRS — `MAX_CORRELATED_POSITIONS` per group per direction |
 
 **Hard rule**: every order must have SL — never send orderless.
@@ -246,10 +247,10 @@ Key dataclasses:
 | `TradeLogger.log_trade_opened(trade_data)` | Appends row to `Trades` sheet (63 cols). Color-codes BUY=green/SELL=red. |
 | `TradeLogger.log_trade_closed(trade_data)` | Updates close columns (price, time, P/L, MAE/MFE, exit path) on existing row. |
 | `TradeLogger.log_signal_scan(scan_data)` | Per-scan event log → `Signals` sheet (20 cols, includes `AGENT_SKIP`/`AGENT_TAKE`/`REJECTED`/`NO_SIGNAL` results, color-coded). |
-| `TradeLogger.log_daily_summary(balance, daily_dd, max_dd)` | Daily roll-up → `Daily` sheet (Date/Trades/Wins/WR%/PL/DD/Balance). Wins counter uses `profit > 0` on cumulative (not last deal). |
-| `TradeLogger.update_stats_sheet(stats)` | Refreshes `Stats` sheet from `PerformanceAnalyzer` output. |
-| `TRADE_HEADERS` | 63 cols (Schema v3 + Obs27 JSON). Last col = JSON-encoded 27-dim obs vector for offline retrain. |
-| `SIGNAL_HEADERS` | 20 cols. Last col = same Obs27 JSON. |
+| `TradeLogger.log_daily_summary(balance, daily_dd, max_dd)` | Daily roll-up → `Daily` sheet (Date/Trades/Wins/WR%/PL/DD/Balance). Wins counter uses `profit > 0` on cumulative (not last deal). **v6.10 trigger:** `FTMOTradingBot.run` ตรวจ `broker_today != _last_logged_day` ตอนต้น loop → flush ของวันก่อนก่อน `check_risk()` reset state. + เรียกตอน `shutdown()` |
+| `TradeLogger.update_stats_sheet(stats)` | Refreshes `Stats` sheet from `PerformanceAnalyzer` output. **v6.10 trigger:** ทุก 720 loops (~1 ชม. @ 5s interval) ใน main loop + ตอน day rollover + `shutdown()` |
+| `TRADE_HEADERS` | **64 cols** (v6.10): Schema v3 + Partial Skipped (col 63) + Obs27 JSON (col 64). |
+| `SIGNAL_HEADERS` | **21 cols** (v6.10): + Executor Reject (col 20) + Obs27 JSON (col 21). |
 
 **Schema migration**: existing `ftmo_trades.xlsx` from before v6.9 has 62 cols / 19 cols — append will misalign. Rename or delete pre-v6.9 file before first start (`mv logs/ftmo_trades.xlsx logs/ftmo_trades_pre_obs27.xlsx`).
 
@@ -273,7 +274,7 @@ Key dataclasses:
 
 | Symbol | Role |
 |--------|------|
-| `FTMOTradingBot.__init__` | Builds every subsystem (connector, risk, sizer, strategy, executor, manager, RL agent, ML model, news scheduler, notifier, **TradeLogger**). Initializes 5 announce-once flags: `_daily_halt_announced`, `_friday_announced`, `_weekend_announced`, `_daily_close_announced`, `_rollover_announced`. Initializes `_trade_open_history: list` (cap 200, for overtrading metrics). |
+| `FTMOTradingBot.__init__` | Builds every subsystem (connector, risk, sizer, strategy, executor, manager, RL agent, ML model, news scheduler, notifier, **TradeLogger**). Initializes 5 announce-once flags: `_daily_halt_announced`, `_friday_announced`, `_weekend_announced`, `_daily_close_announced`, `_rollover_announced`. Initializes `_trade_open_history: list` (cap 200, for overtrading metrics). **v6.10:** เพิ่ม `_last_logged_day` (None) สำหรับ trigger Daily summary flush ตอนข้ามวัน. |
 | `FTMOTradingBot.connect` | MT5 login + load state |
 | `FTMOTradingBot.run` | Main loop (runs every `main_loop_interval` seconds, default 5 s). Idle-state guards use announce-once pattern (print on entry only, auto-reset in `else` branch). |
 | `FTMOTradingBot._build_signal_observation` | Builds the 27-dim obs from a `TradeSignal` + portfolio state — must match `FTMOSignalFilterEnv._get_obs`. Same path used to populate `live_context["obs_27_json"]` for retrain logging. |
