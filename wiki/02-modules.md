@@ -244,9 +244,9 @@ Key dataclasses:
 | Symbol | Role |
 |--------|------|
 | `TradeLogger.__init__(log_dir)` | Auto-creates `logs/` folder; writes to single consolidated `ftmo_trades.xlsx` (no monthly split). |
-| `TradeLogger.log_trade_opened(trade_data)` | Appends row to `Trades` sheet (63 cols). Color-codes BUY=green/SELL=red. |
+| `TradeLogger.log_trade_opened(trade_data)` | Appends row to `Trades` sheet (64 cols). Color-codes BUY=green/SELL=red. |
 | `TradeLogger.log_trade_closed(trade_data)` | Updates close columns (price, time, P/L, MAE/MFE, exit path) on existing row. |
-| `TradeLogger.log_signal_scan(scan_data)` | Per-scan event log → `Signals` sheet (20 cols, includes `AGENT_SKIP`/`AGENT_TAKE`/`REJECTED`/`NO_SIGNAL` results, color-coded). |
+| `TradeLogger.log_signal_scan(scan_data)` | Per-scan event log → `Signals` sheet (21 cols, includes `AGENT_SKIP`/`AGENT_TAKE`/`REJECTED`/`NO_SIGNAL` results, color-coded). |
 | `TradeLogger.log_daily_summary(balance, daily_dd, max_dd)` | Daily roll-up → `Daily` sheet (Date/Trades/Wins/WR%/PL/DD/Balance). Wins counter uses `profit > 0` on cumulative (not last deal). **v6.10 trigger:** `FTMOTradingBot.run` ตรวจ `broker_today != _last_logged_day` ตอนต้น loop → flush ของวันก่อนก่อน `check_risk()` reset state. + เรียกตอน `shutdown()` |
 | `TradeLogger.update_stats_sheet(stats)` | Refreshes `Stats` sheet from `PerformanceAnalyzer` output. **v6.10 trigger:** ทุก 720 loops (~1 ชม. @ 5s interval) ใน main loop + ตอน day rollover + `shutdown()` |
 | `TRADE_HEADERS` | **64 cols** (v6.10): Schema v3 + Partial Skipped (col 63) + Obs27 JSON (col 64). |

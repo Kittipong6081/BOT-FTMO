@@ -8,13 +8,14 @@ Gymnasium Environment สำหรับ RL Agent ที่ตัดสินใ
 1 step  = 1 signal decision (take or skip)
 1 episode = 1 FTMO Challenge (45 วัน, pre-generated signals)
 
-Observation (24 dims) — ต้องตรงกับ SelfLearningAgent.OBS_DIM และ main._build_signal_observation:
+Observation (27 dims, v6 2026-04-22) — ต้องตรงกับ SelfLearningAgent.OBS_DIM และ main._build_signal_observation:
   Signal core       [0-11]:  confluence, rr, direction, atr, ob_score, bias_align,
                              sl_atr, rsi, macd, trend_strength, ob_size_atr, adx
   Market regime     [12-15]: stoch_k, bb_pctb, atr_change_ratio, price_roc
   ML quality        [16]:    ml_score (P(win) จาก GBM model, AUC~0.59) ⭐
   Portfolio state   [17-23]: total_dd, daily_dd, progress, day_progress,
                              trades_today, recent_wr, consecutive_losses
+  Cost/Flip/HTF     [24-26]: spread_pct_of_atr, has_opposite_recently_closed, htf_trend_alignment
 
 Action (1 dim, continuous [-1, 1]):
   > 0 → TAKE signal

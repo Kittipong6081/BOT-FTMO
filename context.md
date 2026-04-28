@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-04-26 | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-04-28 | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
@@ -8,7 +8,7 @@
 - **Live entry**: `python main.py` → `FTMOTradingBot.run` loops every 5 s. Console runs in **quiet mode** (announce-once for idle states; per-signal SKIP/NO_AGENT logged to Excel `Signals` sheet, not console).
 - **Obs = 27 dims** (v6, 2026-04-22). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
 - **Runs on**: macOS/Linux (train + backtest), Windows + MT5 (live).
-- **Live logging**: `TradeLogger` (re-enabled v6.9) writes Excel — Trades 63 cols (incl. `Obs27 JSON` for retrain), Signals 20 cols (per-scan log), Daily, Stats.
+- **Live logging**: `TradeLogger` (re-enabled v6.9, schema bumped v6.10) writes Excel — Trades 64 cols (incl. `Obs27 JSON` for retrain), Signals 21 cols (per-scan log), Daily, Stats.
 - **Wiki Sync Protocol**: editing `.py` files under `ftmo_trading_bot/` requires updating `wiki/` + `context.md` + `readme.md` (when user-facing) in the same turn. Stop hook enforces (`decision: block`). See `CLAUDE.md`.
 
 ## Headline Numbers
@@ -72,7 +72,7 @@ ftmo_trading_bot/
 ├── ml/                      ← SignalQualityModel, SelfLearningAgent, FTMOSignalFilterEnv, StrategyBacktester
 ├── core/                    ← RiskManager, MT5Connector, TimeManager, PositionSizer, NewsCalendarScheduler, DiscordNotifier
 ├── execution/               ← TradeExecutor, TradeManager
-├── analytics/               ← PerformanceAnalyzer + TradeLogger (Excel: Trades 63 cols / Signals 20 cols / Daily / Stats)
+├── analytics/               ← PerformanceAnalyzer + TradeLogger (Excel: Trades 64 cols / Signals 21 cols / Daily / Stats)
 ├── scripts/                 ← build_signal_pool, train_signal_quality, train_signal_filter, fetch_mt5_data
 ├── data/                    ← OHLCV CSVs + signal_pool + ml_model pkl (with isotonic calibrator)
 ├── models/                  ← ppo_signal_filter.zip + vec_normalize_sf.pkl (aux-aware policy weights)

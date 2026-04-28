@@ -13,10 +13,26 @@ Claude Code loads this file automatically in every conversation for this project
 
 ---
 
+## 🚀 Conversation Start Protocol (MANDATORY)
+
+**Before answering the first project-related question in any new conversation**, you must:
+
+1. **Read `context.md` directly** with the `Read` tool — not via Explore/general-purpose subagent. `context.md` is the Hub/Index and is short (≤ 250 lines).
+2. **Read the relevant `wiki/*.md` directly** with the `Read` tool, using the § Wiki Navigation table in `context.md` to pick the right file(s) for the topic. Do not rely on subagent summaries for wiki content.
+3. **Subagents augment, they do not substitute.** You may use Explore for searching `.py` source, grep, file lookups, or non-wiki data files — but the main agent must read `context.md` and the relevant `wiki/*.md` itself before reasoning about the answer.
+
+**Why** — subagent summaries are lossy and have caused real misses: e.g. reporting only `Trades` sheet 2 rows while missing `Signals` sheet 177 rows in `ftmo_trades.xlsx`, and missing the `Obs27 JSON for retrain` design intent stated in `context.md`. The user notices.
+
+**Triggers** — any question that touches: code, data, architecture, modules, training, RL/ML, FTMO rules, MT5, config, obs dim/features, reward, invariants, operations, or workflow.
+
+**Skip when** — pure chitchat unrelated to the project (greetings, current date, generic non-project questions).
+
+---
+
 ## 📚 Project Overview
 
 - **FTMO Trading Bot** — 3-brain system (SMC rules + ML GBM + RL PPO) for passing the FTMO 2-step Standard Challenge.
-- Start at `context.md` (Hub/Index), then drill into `wiki/*` as needed.
+- **MANDATORY at conversation start**: Read `context.md` directly with the Read tool before answering the first project-related question (see § Conversation Start Protocol above). Drill into `wiki/*.md` for topic-specific detail using the same Read-direct rule.
 - Live entry: `python main.py` → `FTMOTradingBot.run` loop every 5 s.
 
 ---

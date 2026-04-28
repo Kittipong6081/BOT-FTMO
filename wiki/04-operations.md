@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-04-26 | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-04-28 | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -10,7 +10,7 @@
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
 - News block: weekly auto-import every Sunday 23:30 EET from `config/news_inbox/`.
 - **Console quiet mode (v6.9)**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
-- **Live logging**: `TradeLogger` writes `logs/ftmo_trades.xlsx` (4 sheets: Trades 63 cols, Signals 20 cols, Daily, Stats). Includes `Obs27 JSON` for offline retrain.
+- **Live logging**: `TradeLogger` writes `logs/ftmo_trades.xlsx` (4 sheets: Trades 64 cols, Signals 21 cols, Daily, Stats). Schema bumped v6.10 (added `Partial Skipped` + `Executor Reject`). Includes `Obs27 JSON` for offline retrain.
 
 ## Quick Reference
 
@@ -83,14 +83,14 @@ Each idle-state guard prints **once on entry** (sets flag = True), then silences
 
 | Sheet | Cols | What goes in |
 |-------|-----:|--------------|
-| `Trades` | 63 | Per-trade: ticket, entry/SL/TP, lot, RR, ML scores, agent decision, confluence breakdown, trade-mgmt state (`be_moved`, `partial_closed_flag`, `trailing_active`), bid/ask @entry/exit, market context (ADX H1/H4, MTF/D1 bias), account state, overtrading metrics, **`Obs27 JSON`** (full obs vector at decision time) |
-| `Signals` | 20 | Per-scan event: time, symbol, direction, result (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`), confluence, ml_score, agent decision, ADX, biases, reasons, **`Obs27 JSON`** |
+| `Trades` | 64 | Per-trade: ticket, entry/SL/TP, lot, RR, ML scores, agent decision, confluence breakdown, trade-mgmt state (`be_moved`, `partial_closed_flag`, `partial_close_skipped` v6.10, `trailing_active`), bid/ask @entry/exit, market context (ADX H1/H4, MTF/D1 bias), account state, overtrading metrics, **`Obs27 JSON`** (full obs vector at decision time) |
+| `Signals` | 21 | Per-scan event: time, symbol, direction, result (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`), confluence, ml_score, agent decision, ADX, biases, reasons, `Executor Reject` (v6.10), **`Obs27 JSON`** |
 | `Daily` | 11 | Date, Trades, Wins, Losses, WR%, Gross P/L, Net P/L, DD%, Daily DD%, Balance EOD |
 | `Stats` | 2 | Metric / Value (Win Rate, Sharpe, Profit Factor, etc., refreshed by `update_stats_sheet`) |
 
 **Win/Loss classification**: `profit > 0` on cumulative net (sum of all deals from `MT5Connector.get_deals_by_position(ticket)`). Partial close + BE-SL = WIN if cumulative > 0. See [05-invariants.md FAQ](05-invariants.md).
 
-**Schema migration warning**: pre-v6.9 `ftmo_trades.xlsx` has 62 / 19 cols → append misaligns. Rename or delete before first run.
+**Schema migration warning**: pre-v6.10 `ftmo_trades.xlsx` has 63 / 20 cols (and pre-v6.9 has 62 / 19 cols) → append misaligns. Rename or delete before first run.
 
 ---
 

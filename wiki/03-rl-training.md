@@ -1,5 +1,5 @@
 # 03 — RL Training (Obs 27 dims, Reward, PPO + Auxiliary Task)
-> Last Updated: 2026-04-26 | Scope: RL env, obs space v6, reward shaping, PPO hyperparams, curriculum, aux task (E2)
+> Last Updated: 2026-04-28 | Scope: RL env, obs space v6, reward shaping, PPO hyperparams, curriculum, aux task (E2)
 
 ## TL;DR (30-second scan)
 

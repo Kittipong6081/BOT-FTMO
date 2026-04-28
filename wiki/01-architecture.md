@@ -1,5 +1,5 @@
 # 01 — Architecture (3-Brain Pipeline)
-> Last Updated: 2026-04-26 | Scope: system overview + data flow
+> Last Updated: 2026-04-28 | Scope: system overview + data flow
 
 ## TL;DR (30-second scan)
 
@@ -26,7 +26,7 @@
 | Risk gate | `RiskManager` | `core/risk_manager.py` |
 | Order gate | `TradeExecutor` | `execution/trade_executor.py` |
 | Position lifecycle | `TradeManager` | `execution/trade_manager.py` |
-| Live logger | `TradeLogger` (Excel: 4 sheets, 63+20 cols) | `analytics/trade_logger.py` |
+| Live logger | `TradeLogger` (Excel: 4 sheets, 64+21 cols) | `analytics/trade_logger.py` |
 
 ---
 
@@ -97,7 +97,7 @@ ftmo_trading_bot/
 ├── ml/                      ← ML+RL brain (signal_quality, rl_agent, env, backtester)
 ├── core/                    ← risk_manager, mt5_connector, time_manager, position_sizer, news_scheduler, notifier
 ├── execution/               ← trade_executor, trade_manager
-├── analytics/               ← performance + trade_logger (Excel: Trades 63 cols / Signals 20 cols / Daily / Stats)
+├── analytics/               ← performance + trade_logger (Excel: Trades 64 cols / Signals 21 cols / Daily / Stats)
 ├── scripts/                 ← training + data fetch scripts
 ├── data/                    ← OHLCV CSVs + signal_pool + ml_model pkl (with isotonic calibrator)
 ├── models/                  ← ppo_signal_filter.zip + vec_normalize_sf.pkl (aux-aware policy weights)
