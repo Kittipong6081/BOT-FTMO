@@ -1,21 +1,48 @@
 {
   "state": "ACTIVE",
-  "initial_balance": 100000.0,
-  "highest_balance": 100000.0,
-  "daily_start_equity": 100000.0,
-  "daily_start_balance": 100000.0,
-  "peak_daily_equity": 100000.0,
-  "current_day": "2026-04-26",
+  "initial_balance": 10000.0,
+  "highest_balance": 10251.87,
+  "daily_start_equity": 10098.62,
+  "daily_start_balance": 10098.62,
+  "peak_daily_equity": 10098.62,
+  "current_day": "2026-04-28",
   "daily_closed_pnl": 0.0,
   "daily_trades_count": 0,
-  "last_loss_time_per_symbol": {},
+  "last_loss_time_per_symbol": {
+    "EURUSD": "2026-04-27T20:19:35.005813+03:00",
+    "USDCAD": "2026-04-27T21:55:06.605166+03:00"
+  },
   "consecutive_losses": 0,
   "halt_until": null,
-  "daily_pnl_history": {},
-  "mt5_login": null,
-  "challenge_start_date": "2026-04-24",
+  "daily_pnl_history": {
+    "2026-04-27": 98.62000000000002
+  },
+  "mt5_login": 1513216845,
+  "challenge_start_date": "2026-04-26",
   "last_tp_per_symbol_dir": {},
-  "flip_lock": {},
+  "flip_lock": {
+    "GBPUSD": {
+      "closed_direction": "BUY",
+      "close_price": 1.35472,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 1.35472,
+      "min_unlock_time": "2026-04-27T18:27:06.886046+03:00"
+    },
+    "EURUSD": {
+      "closed_direction": "BUY",
+      "close_price": 1.17208,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 1.17208,
+      "min_unlock_time": "2026-04-27T20:24:35.006248+03:00"
+    },
+    "USDCAD": {
+      "closed_direction": "SELL",
+      "close_price": 1.36275,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 1.36275,
+      "min_unlock_time": "2026-04-27T22:00:06.605393+03:00"
+    }
+  },
   "schema_version": 6,
-  "last_updated": "2026-04-26T22:06:53.008356"
+  "last_updated": "2026-04-28T04:00:01.179255"
 }

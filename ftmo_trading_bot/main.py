@@ -777,6 +777,11 @@ class FTMOTradingBot:
                 "session": "",  # filled by TimeManager if needed
                 "spread_pips": live_context.get("spread_pips_actual", 0),
                 "reasons": sig.reasons[:5] if isinstance(sig.reasons, list) else str(sig.reasons),
+                # v6.10d: propagate executor reject reason ลง Signals sheet col 20
+                # main.py scan loop ตั้ง live_context["executor_reject_reason"] หลัง execute_signal คืน None
+                "executor_reject_reason": live_context.get("executor_reject_reason", ""),
+                # v6.10b: propagate obs_27_json ลง Signals sheet col 21 (สำหรับ retrain)
+                "obs_27_json": live_context.get("obs_27_json", ""),
             }
             self._logger.log_signal_scan(scan_data)
         except Exception as e:

@@ -26,7 +26,9 @@
       "Bash(python3 -m py_compile ftmo_trading_bot/strategy/smc_strategy.py)",
       "Bash(grep -n \"FVG\\\\|Fair Value Gap\\\\|Liquidity\\\\|Sweep\\\\|Cluster\" /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/strategy/*.py)",
       "Bash(python -c ' *)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(grep -nB2 -A8 \"_log_signal_scan\" /Users/kittipong.n/Desktop/BOT/BOT-FTMO/ftmo_trading_bot/main.py)",
+      "Bash(.venv/bin/python -m py_compile ftmo_trading_bot/main.py)"
     ]
   }
 }

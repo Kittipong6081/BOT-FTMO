@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-27 | Scope: every module + key class / method / variable
+> Last Updated: 2026-04-28 | Scope: every module + key class / method / variable
 
 ## TL;DR (30-second scan)
 
@@ -279,7 +279,7 @@ Key dataclasses:
 | `FTMOTradingBot.run` | Main loop (runs every `main_loop_interval` seconds, default 5 s). Idle-state guards use announce-once pattern (print on entry only, auto-reset in `else` branch). |
 | `FTMOTradingBot._build_signal_observation` | Builds the 27-dim obs from a `TradeSignal` + portfolio state — must match `FTMOSignalFilterEnv._get_obs`. Same path used to populate `live_context["obs_27_json"]` for retrain logging. |
 | `FTMOTradingBot._build_live_context(sig)` | Gathers `ml_score` (cal/raw), bid/ask snapshot, ADX H1/H4, MTF/D1 bias, balance, overtrading metrics (`trades_today`, `secs_since_last_*`), and JSON-encoded obs vector → passed to `TradeExecutor.execute_signal` and `TradeLogger.log_signal_scan`. |
-| `FTMOTradingBot._log_signal_scan(sig, ctx, result)` | Wrapper: builds `scan_data` from signal + context + result label (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`), calls `TradeLogger.log_signal_scan`. |
+| `FTMOTradingBot._log_signal_scan(sig, ctx, result)` | Wrapper: builds `scan_data` from signal + context + result label (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`), calls `TradeLogger.log_signal_scan`. **v6.10d:** scan_data includes `executor_reject_reason` (col 20) + `obs_27_json` (col 21) จาก live_context — กัน Signals sheet col 20/21 ว่างเปล่า. |
 | `FTMOTradingBot._build_spread_pct_of_atr` | Computes obs[24] (cost awareness) |
 | `FTMOTradingBot._has_opposite_recently_closed` | Computes obs[25] (flip-lock context) |
 | `FTMOTradingBot.shutdown` | Graceful shutdown — saves state, closes connector |

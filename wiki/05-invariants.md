@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-27 | Scope: red flags, version log, migration notes (latest: v6.10 executor reject reason + partial_close_skipped)
+> Last Updated: 2026-04-28 | Scope: red flags, version log, migration notes (latest: v6.10d _log_signal_scan propagation fix)
 
 ## TL;DR (30-second scan)
 
@@ -252,6 +252,33 @@ Re-enabled `TradeLogger` for live demo deployment. Schema v3 = 58-col Trades she
 - Per-signal `AGENT_SKIP` print ลบทิ้ง — ข้อมูลครบใน `Signals` sheet (`AGENT_SKIP` row พร้อม ml_score, confidence, reasons).
 - Per-signal `NO_AGENT` print ลบทิ้ง — fallback path เมื่อไม่มี RL agent loaded; logged ใน Signals sheet เช่นกัน.
 - เก็บ `📡 [Agent] TAKE` print ไว้ — เป็น event สำคัญที่บอกว่าเทรดกำลังจะเปิด.
+
+**v6.10d — Fix `_log_signal_scan` propagation bug (added 2026-04-28):**
+
+Day-2 live demo analysis เจอว่า `Executor Reject` column ใน Signals sheet ทุกแถวเป็น None (104 AGENT_TAKE_FAIL events). Root cause: `FTMOTradingBot._log_signal_scan` สร้าง `scan_data` dict ครอบคลุมแค่ 19 keys (time, symbol, direction, ml_score, ฯลฯ) — **ไม่ copy `executor_reject_reason` และ `obs_27_json` จาก `live_context`** → `scan_data.get(...)` คืน "" → Excel cell empty.
+
+**Fix:** เพิ่ม 2 keys ใน `_log_signal_scan()` scan_data:
+
+```python
+scan_data = {
+    # ... existing 19 keys ...
+    "executor_reject_reason": live_context.get("executor_reject_reason", ""),
+    "obs_27_json": live_context.get("obs_27_json", ""),
+}
+```
+
+ผลคือ col 20 (Executor Reject) + col 21 (Obs27 JSON) ของ Signals sheet จะมีค่าหลัง deploy. **Trade-level Obs27 JSON (col 64 ของ Trades sheet) ทำงานปกติอยู่แล้ว** เพราะ flow ผ่าน `ExecutedTrade.to_dict()` ที่ copy field จาก live_context ครบ.
+
+**Verify after deploy:** หลัง bot รัน + เกิด AGENT_TAKE_FAIL → ตรวจ Signals sheet col 20 ต้องมี reject reason เช่น `spread_high:18>15` / `risk_manager:Cooldown active ...` / `correlation:USD pair max`. ถ้ายัง None → bug อื่น
+
+**Day-2 fixes ที่ verified working:**
+
+- ✅ Schema 64/21 cols deployed
+- ✅ Stats sheet update hourly
+- ✅ Timezone fix — DD@Entry แสดงค่าติดลบ (-0.32%) ตอน gain ✓ ตรงกับ MT5 reality
+- ⚠️ Symbol coverage partial — GBPJPY scan ได้แล้ว (Day-1 = 0, Day-2 = 7) แต่ XAUUSD/USDJPY/USDCHF/EURJPY ยัง = 0 (อาจเพราะ broker rename — ต้องดู console output)
+
+---
 
 **v6.10c (Phase 1b) — Symbol coverage fix: pre-select Market Watch (added 2026-04-27):**
 
