@@ -607,7 +607,7 @@ class FTMOTradingBot:
             "ml_score_raw": 0.5,
             "agent_action_value": 0.0,
             "agent_decision": "",
-            "ml_threshold_used": 0.0,
+            "ml_threshold_used": float(bot_config.ftmo.ML_FILTER_THRESHOLD),
             "htf_score": int(getattr(sig, "htf_score", 0)),
             "mtf_score": int(getattr(sig, "mtf_score", 0)),
             "ob_pts": int(getattr(sig, "ob_pts", 0)),
@@ -683,12 +683,10 @@ class FTMOTradingBot:
         except Exception:
             pass
 
-        # ML threshold (จาก agent if available)
-        try:
-            if self._rl_agent and hasattr(self._rl_agent, "ml_filter_threshold"):
-                ctx["ml_threshold_used"] = float(self._rl_agent.ml_filter_threshold)
-        except Exception:
-            pass
+        # ML threshold (v6.12 — อ่านจาก bot_config.ftmo เพื่อ sync live ↔ training)
+        # เดิม: try getattr(self._rl_agent, "ml_filter_threshold") — แต่ attribute นี้
+        # อยู่บน FTMOSignalFilterEnv ไม่ใช่ SelfLearningAgent → ตกค่า 0.0 ตลอด
+        ctx["ml_threshold_used"] = float(bot_config.ftmo.ML_FILTER_THRESHOLD)
 
         # === Overtrading metrics ===
         # นับ trade history vs current time → detect overtrading patterns
@@ -991,6 +989,15 @@ class FTMOTradingBot:
                         for sig in signals:
                             # === v6.9: Build live_context สำหรับ logging + executor ===
                             live_context = self._build_live_context(sig)
+
+                            # === v6.12: ML quality gate (live ↔ training distribution sync) ===
+                            # FTMOSignalFilterEnv กรอง signals ที่ ml_score < 0.36 ตอน train
+                            # → live ก็ต้องกรองเดียวกัน ไม่งั้น agent เห็น distribution กว้างกว่าที่ฝึก
+                            ml_threshold = float(bot_config.ftmo.ML_FILTER_THRESHOLD)
+                            if ml_threshold > 0.0 and live_context.get("ml_score", 0.0) < ml_threshold:
+                                live_context["agent_decision"] = "ML_FILTERED"
+                                self._log_signal_scan(sig, live_context, result="ML_FILTERED")
+                                continue
 
                             agent_decision = "NO_AGENT"
                             agent_action_value = 0.0

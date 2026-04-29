@@ -102,6 +102,12 @@ class FTMOConfig:
     # เริ่มบังคับใช้เมื่อ total_profit ≥ 2% ของ initial (ต่ำกว่านี้ข้าม เพื่อไม่ block วันแรกๆ)
     CONSISTENCY_MIN_PROFIT_PCT: float = 0.02
 
+    # === ML Quality Filter (live ↔ training distribution sync, v6.12) ===
+    # Live ต้องบังคับ ML threshold ให้ตรงกับค่า --ml_threshold ที่ใช้ตอน train
+    # ค่าปัจจุบัน 0.36 = Phase E2 calibrated threshold (matches FTMOSignalFilterEnv.ml_filter_threshold)
+    # หากปรับค่านี้ → ต้อง retrain RL ทั้ง pipeline (build_signal_pool → train_signal_quality → train_signal_filter)
+    ML_FILTER_THRESHOLD: float = 0.36
+
     # === Cooldown / Anti-Revenge-Trading ===
     # หลังโดน SL บนคู่เงินใดคู่เงินหนึ่ง ต้องรอกี่นาทีก่อนเปิดคู่เดิมอีกครั้ง
     # ตั้ง 60 นาที (2026-04-23): กัน "BUY→SL→BUY อีก 1 ชม." pattern ที่เจอใน USDJPY

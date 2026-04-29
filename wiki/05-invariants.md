@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: **v6.11.3** — IDM penalty 5→2, ADX H4 22→20 → Pass Rate 2.7→3.4 %, WR 65.6→68.8 %, DD safer 4.46→3.23 %)
+> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: **v6.12** — live ML threshold gate fix to sync live ↔ training distribution; **v6.11.3** baseline Pass Rate 3.4 %)
 
 ## TL;DR (30-second scan)
 
@@ -71,7 +71,16 @@ Inside `TradeExecutor._check_correlation`:
 - Swing/Pro = 0.45 (max day ≤ 50 % of total profit).
 - ⚠️ Switching programs requires updating this value before starting the new challenge.
 
-### 10. ATR Floor vs MIN_SL — separate mechanisms
+### 10. ML Filter Threshold Sync (live ↔ training, v6.12)
+
+- `bot_config.ftmo.ML_FILTER_THRESHOLD` ใน live **must equal** `--ml_threshold` ที่ใช้ตอน train (`scripts/train_signal_filter.py`).
+- Training: `FTMOSignalFilterEnv` กรอง signals ที่ `ml_score < ml_filter_threshold` ก่อน feed ให้ agent — agent เรียนเฉพาะ post-threshold distribution.
+- Live: `FTMOTradingBot.run` ต้องมี gate เดียวกัน ก่อนเรียก `SelfLearningAgent.should_take_signal` ไม่งั้น agent เห็น distribution กว้างกว่าที่ฝึก = silent regression.
+- ⛔ Bug ที่เคยเกิด: เดิม `_build_live_context` พยายาม `getattr(self._rl_agent, "ml_filter_threshold")` แต่ attribute นั้นอยู่บน env ไม่ใช่ agent → ตกค่า 0.0 = no gate.
+- ⛔ Pre-agent ML reject log เป็น `Result = "ML_FILTERED"` ใน `Signals` sheet (light-blue row).
+- ✅ เปลี่ยนค่านี้ → ต้อง retrain ทั้ง pipeline (`build_signal_pool` → `train_signal_quality` → `train_signal_filter --ml_threshold <new>`).
+
+### 11. ATR Floor vs MIN_SL — separate mechanisms
 
 - `SymbolConfig.symbol_overrides[X].atr_floor_pips` = **signal gate** inside `SMCStrategy.scan_signal`. If `atr_pips < floor` → drop signal. Does **not** touch SL.
 - `SymbolConfig.symbol_overrides[X].min_sl_pips` = **SL clamp** inside `SMCStrategy` BUY/SELL branches (after OB override). Prevents spread from eating > ~15 % of SL.
@@ -142,6 +151,37 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-04-29 — v6.12 Live ML threshold gate fix (sync live ↔ training)
+
+หลัง analyze `logs/ftmo_trades.xlsx` (1 วัน, 3 trades, 128 signals) เจอ bug 2 จุดที่ทำให้ live ≠ training:
+
+**Bug A — ไม่มี ML gate ใน live**:
+
+- `FTMOSignalFilterEnv` มี `if ml_score < ml_filter_threshold (0.36): drop` ตอน train
+- `FTMOTradingBot.run` ส่ง signals ตรงให้ `SelfLearningAgent.should_take_signal` **ไม่มี** ML gate
+- ผล: agent เห็น distribution กว้างกว่าที่ฝึก = distribution mismatch = silent regression
+
+**Bug B — `ML Threshold` column = 0.0 ทุก row ใน `Signals` sheet**:
+
+- `_build_live_context` พยายาม `getattr(self._rl_agent, "ml_filter_threshold")` แต่ attribute นี้อยู่บน env ไม่ใช่ agent → fall to default 0.0 ตลอด
+
+**Fix (ใน 1 commit, ไม่ต้อง retrain)**:
+
+- เพิ่ม `FTMOConfig.ML_FILTER_THRESHOLD: float = 0.36` ใน `config/settings.py` (single source of truth)
+- `FTMOTradingBot._build_live_context` อ่าน `ctx["ml_threshold_used"]` จาก `bot_config.ftmo.ML_FILTER_THRESHOLD`
+- `FTMOTradingBot.run` เพิ่ม gate ก่อนเรียก agent: ถ้า `ml_score < ML_FILTER_THRESHOLD` → log `Result = "ML_FILTERED"` แล้ว `continue`
+- `TradeLogger.log_signal_scan` รับ `Result = "ML_FILTERED"` (light-blue color)
+
+**Risk**: ต่ำมาก — Signals sheet จริง ๆ มี ml_score min = 0.358 (≥ 0.36 อยู่แล้วเกือบทั้งหมด เพราะ confluence ≥ 70 มี correlation กับ ML score). แต่บัดนี้ live = train อย่างเป็นทางการ.
+
+**Verify**:
+
+- รัน live 30 นาที → `Signals` sheet column `ML Threshold` = 0.36 ทุก row
+- ไม่มี Trade ที่ ML Score (cal) < 0.36
+- eval Pass Rate ไม่เปลี่ยน (~3.4 %)
+
+**ที่ไม่แตะ**: SMC strategy, obs 27 dims, reward, PPO hyperparams, models — เพราะ fix นี้ไม่กระทบ training distribution
 
 ### 2026-04-29 — v6.11.3 Mild relaxation tune (IDM 5→2, ADX H4 22→20) — measurable improvement
 

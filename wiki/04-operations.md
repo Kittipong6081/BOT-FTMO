@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-04-28 | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-04-29 (v6.12) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -41,7 +41,8 @@
 | 3 | News scheduler | `NewsCalendarScheduler.check_and_run` | Sunday 23:30 EET → auto-import CSV (non-blocking) |
 | 4 | News filter | `news_events` / `news_calendar.json` | within ±30 / 15 min of a high-impact event → skip |
 | 5 | Strategy scan | `SMCStrategy.scan_all_symbols` | every 12 loops (~1 min); confluence < `MIN_CONFLUENCE_SCORE` → drop |
-| 6 | ML quality | `SignalQualityModel.score` | calibrated prob < `--ml_threshold 0.36` → drop |
+| 6 | ML quality | `SignalQualityModel.score` | populates `live_context["ml_score"]` (calibrated) |
+| 6b | **ML gate (v6.12)** | `FTMOTradingBot.run` checks `ml_score < bot_config.ftmo.ML_FILTER_THRESHOLD` | logged as `ML_FILTERED` in `Signals` sheet — **must equal `--ml_threshold` ตอน train (0.36)** |
 | 7 | RL decision | `SelfLearningAgent.should_take_signal` | SKIP → drop signal (logged to `Signals` sheet as AGENT_SKIP) |
 | 8 | Build live context | `FTMOTradingBot._build_live_context(sig)` | computes ml_score, ADX, biases, balance, overtrading metrics, **`obs_27_json`** |
 | 9 | Execute | `TradeExecutor.execute_signal(sig, live_context)` | final risk / correlation / cooldown check; logs to Trades sheet |

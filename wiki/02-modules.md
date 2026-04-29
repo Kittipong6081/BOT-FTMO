@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-29 | Scope: every module + key class / method / variable (v6.11.3 — IDM penalty 5→2, ADX H4 22→20)
+> Last Updated: 2026-04-29 (v6.12) | Scope: every module + key class / method / variable (v6.12 — live ML threshold gate fix; v6.11.3 baseline IDM 5→2, ADX H4 22→20)
 
 ## TL;DR (30-second scan)
 
@@ -311,8 +311,9 @@ Key dataclasses:
 | `FTMOTradingBot.connect` | MT5 login + load state |
 | `FTMOTradingBot.run` | Main loop (runs every `main_loop_interval` seconds, default 5 s). Idle-state guards use announce-once pattern (print on entry only, auto-reset in `else` branch). |
 | `FTMOTradingBot._build_signal_observation` | Builds the 27-dim obs from a `TradeSignal` + portfolio state — must match `FTMOSignalFilterEnv._get_obs`. Same path used to populate `live_context["obs_27_json"]` for retrain logging. |
-| `FTMOTradingBot._build_live_context(sig)` | Gathers `ml_score` (cal/raw), bid/ask snapshot, ADX H1/H4, MTF/D1 bias, balance, overtrading metrics (`trades_today`, `secs_since_last_*`), and JSON-encoded obs vector → passed to `TradeExecutor.execute_signal` and `TradeLogger.log_signal_scan`. |
-| `FTMOTradingBot._log_signal_scan(sig, ctx, result)` | Wrapper: builds `scan_data` from signal + context + result label (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`), calls `TradeLogger.log_signal_scan`. **v6.10d:** scan_data includes `executor_reject_reason` (col 20) + `obs_27_json` (col 21) จาก live_context — กัน Signals sheet col 20/21 ว่างเปล่า. |
+| `FTMOTradingBot._build_live_context(sig)` | Gathers `ml_score` (cal/raw), bid/ask snapshot, ADX H1/H4, MTF/D1 bias, balance, overtrading metrics (`trades_today`, `secs_since_last_*`), and JSON-encoded obs vector → passed to `TradeExecutor.execute_signal` and `TradeLogger.log_signal_scan`. **v6.12:** `ctx["ml_threshold_used"]` ดึงจาก `bot_config.ftmo.ML_FILTER_THRESHOLD` (single source of truth) — ไม่ใช่ `getattr(rl_agent, "ml_filter_threshold")` ที่ตกค่า 0.0 เพราะ attribute อยู่บน `FTMOSignalFilterEnv` ไม่ใช่ agent. |
+| `FTMOTradingBot.run` (ML gate v6.12) | ใน loop ก่อนเรียก `_rl_agent.should_take_signal`: ถ้า `ml_score < bot_config.ftmo.ML_FILTER_THRESHOLD` → log `Result = "ML_FILTERED"` แล้ว `continue`. ทำให้ live distribution = training distribution (env กรองเดียวกันตอน train). |
+| `FTMOTradingBot._log_signal_scan(sig, ctx, result)` | Wrapper: builds `scan_data` from signal + context + result label (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`/`ML_FILTERED` v6.12), calls `TradeLogger.log_signal_scan`. **v6.10d:** scan_data includes `executor_reject_reason` (col 20) + `obs_27_json` (col 21) จาก live_context — กัน Signals sheet col 20/21 ว่างเปล่า. |
 | `FTMOTradingBot._build_spread_pct_of_atr` | Computes obs[24] (cost awareness) |
 | `FTMOTradingBot._has_opposite_recently_closed` | Computes obs[25] (flip-lock context) |
 | `FTMOTradingBot.shutdown` | Graceful shutdown — saves state, closes connector |

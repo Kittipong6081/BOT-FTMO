@@ -363,7 +363,7 @@ class TradeLogger:
                 ml_threshold, adx_h1, htf_bias, mtf_bias, d1_bias,
                 session, spread_pips, reasons (list or str)
 
-            result values: NO_SIGNAL / REJECTED / AGENT_SKIP / AGENT_TAKE / AGENT_TAKE_FAIL
+            result values: NO_SIGNAL / REJECTED / AGENT_SKIP / AGENT_TAKE / AGENT_TAKE_FAIL / ML_FILTERED (v6.12)
         """
         if not OPENPYXL_AVAILABLE:
             return
@@ -414,6 +414,7 @@ class TradeLogger:
                 "REJECTED": "FFC7CE",         # red
                 "AGENT_TAKE_FAIL": "FFC7CE",  # red
                 "NO_SIGNAL": "F2F2F2",        # grey
+                "ML_FILTERED": "DDEBF7",      # light-blue (v6.12 — pre-agent ML gate)
             }
             if result in color_map:
                 ws.cell(row=last_row, column=4).fill = PatternFill(

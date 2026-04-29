@@ -64,7 +64,7 @@
 - **GBM Classifier** (sklearn `GradientBoostingClassifier`) เรียนทำนาย P(win) ของแต่ละ signal
 - **Isotonic Calibration** บนผล OOF (`GroupKFold cross_val_predict`) → ป้องกัน overconfident probabilities
 - ใช้ feature 30+ ตัว: confluence, ATR, RR, ADX, RSI, MACD, BB %B, MTF/HTF bias, session, day-of-week, ฯลฯ
-- **Threshold เริ่มต้น: 0.36** — signal ที่ score < 0.36 ถูก reject ทันที (ก่อนถึง RL agent)
+- **Threshold เริ่มต้น: 0.36** (`bot_config.ftmo.ML_FILTER_THRESHOLD`) — signal ที่ score < 0.36 ถูก reject ทันที (ก่อนถึง RL agent) ทั้งใน live และตอน train. **v6.12**: live ก็บังคับ threshold เดียวกันแล้ว (เดิม live ไม่ได้บังคับ — เป็น bug ที่ทำให้ distribution ต่างจากตอน train); reject log เป็น `Result = "ML_FILTERED"` ใน `Signals` sheet
 
 **Output:** `ml_score ∈ [0, 1]` (calibrated)
 
