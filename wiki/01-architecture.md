@@ -1,5 +1,5 @@
 # 01 — Architecture (3-Brain Pipeline)
-> Last Updated: 2026-04-28 | Scope: system overview + data flow
+> Last Updated: 2026-04-29 (v6.13) | Scope: system overview + data flow
 
 ## TL;DR (30-second scan)
 
@@ -7,8 +7,8 @@
 - Live entry point: `FTMOTradingBot` in `ftmo_trading_bot/main.py`.
 - Training pipeline: `build_signal_pool.py` → `train_signal_quality.py` → `train_signal_filter.py`.
 - Observation = 27 dims (v6, 2026-04-22). Must stay in sync across `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, and `SelfLearningAgent.OBS_DIM`.
-- Every live decision flows through gates in this order: **Risk → Session → Strategy → ML → RL → Execute → Manage**.
-- v6.9 verified: Pass Rate **10.0 %** (5000-eps eval) via PPO + auxiliary head predicting `outcome_pnl_ratio` (MSE weight=0.5). 3× baseline.
+- Every live decision flows through gates in this order: **Risk → Session → Strategy → ML gate (v6.12) → RL → Execute → Manage**.
+- v6.13 verified: Pass Rate **9.7 %** (5000-eps eval) via PPO + auxiliary head predicting `outcome_pnl_ratio` (MSE weight=0.5). +185 % vs v6.11.3 baseline 3.4 %.
 
 ## Quick Reference
 

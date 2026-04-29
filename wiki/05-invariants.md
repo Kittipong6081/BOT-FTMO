@@ -444,7 +444,7 @@ Live demo Day-3 (2026-04-28) เจอ EV ติดลบ (PF 0.96, Net −$19.6
 
 - ❌ Retrain RL/GBM — entry gate เปลี่ยนแล้ว → re-eval 5000 eps ก่อนตัดสิน. Pool distribution อาจต่าง แต่ fields obs_27 ไม่เปลี่ยน → existing model ยังใช้ได้
 - ❌ Tighten `MIN_CONFLUENCE_SCORE` 70 → 75 — Tier 1.3 + 1.4 ตัด ~30-40 % volume แล้ว, ตึงเพิ่มเสี่ยง undertrade
-- ❌ Reduce risk per trade — risk 0.7 % verified Pass Rate 10 % แล้ว, ปัญหาคือ entry quality ไม่ใช่ sizing
+- ❌ Reduce risk per trade — risk 0.7 % verified Pass Rate 9.7 % (v6.13) / 10.0 % (Phase E2 pre-v6.11), ปัญหาคือ entry quality ไม่ใช่ sizing
 
 ### 2026-04-25 — v6.4 SMC Phase C (4 professional principles)
 

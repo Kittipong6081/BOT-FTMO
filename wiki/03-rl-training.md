@@ -6,7 +6,7 @@
 - Obs = **27 dims** (v6, 2026-04-22) — adds `spread_pct_of_atr`, `has_opposite_recently_closed`, `htf_trend_alignment` on top of the previous 24.
 - Action continuous [−1, 1] — `>0 = TAKE`, `≤0 = SKIP`.
 - **2-phase curriculum**: Phase 1 (Alpha, no DD penalty, oracle SKIP) → Phase 2 (Risk, DD penalty active).
-- **Phase E2 — Auxiliary Task** (verified 2026-04-25, Pass Rate **10.0 %**): policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
+- **Phase E2 — Auxiliary Task** (verified Pass Rate **9.7 %** at v6.13, 2026-04-29; Phase E2 architecture intact since 2026-04-25): policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
 - ML threshold = **0.36** (calibrated probability). Signals below this are rejected before RL.
 - Live inference must normalize obs with the `vec_normalize_sf.pkl` stats captured during training.
 - VecNormalize: `norm_obs=True`, `norm_reward=True`, `clip_obs=10.0`, `clip_reward=20.0`.
@@ -219,7 +219,7 @@ The trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5)
 - Win rate > 45 %
 - Take rate 50–60 % (ML filter active)
 
-**Verified Phase E2 (Auxiliary Task)** — risk 0.7 %, ml_threshold 0.36, 5000 eps, 2026-04-25: **Pass Rate 10.0 %** ⭐ (3× honest baseline 3.5 %). Verified leak-free via runtime hook + obs feature audit.
+**Verified v6.13 (Phase E2 + Combined Patch)** — risk 0.7 %, ml_threshold 0.36, outcome_noise 0.05, 5000 eps, 2026-04-29: **Pass Rate 9.7 %** ⭐⭐⭐ (vs v6.11.3 baseline 3.4 % = +185 %). Leak-free verified via 5-point audit (obs/GBM/aux head/SKIP-oracle/eval sampling).
 
 **Phase progression history**:
 
@@ -230,7 +230,11 @@ The trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5)
 | Phase C (SMC 4 principles) | 1.5 % | Reverted — over-filtered pool |
 | Phase D (BE+partial+trail in train) | 0.2 % | Reverted — capped winner tail |
 | Phase E1 (calibration) | 3.0 % | Calibrator stable, but no Pass Rate boost |
-| **Phase E2 (auxiliary task)** | **10.0 %** | Current verified |
+| Phase E2 (auxiliary task, 2026-04-25) | 10.0 % | Pre-v6.11 SMC overhaul |
+| v6.11 SMC overhaul (hard gates) | 0.0 % | Pool collapsed -99 % — partial rollback |
+| v6.11.2 (rollback) | 2.7 % | Soft bonuses instead of hard gates |
+| v6.11.3 (mild relax IDM/ADX) | 3.4 % | Baseline before v6.13 |
+| **v6.13 (combined patch, 2026-04-29)** | **9.7 %** | Current verified ⭐ |
 
 ---
 
