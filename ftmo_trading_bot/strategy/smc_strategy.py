@@ -561,9 +561,10 @@ class SMCStrategy:
         # H4 ranging → SMC continuation pattern ไม่น่าเชื่อถือ
         if self._htf_data is not None and "adx" in self._htf_data.columns:
             adx_h4 = float(self._htf_data["adx"].iloc[-1])
-            if pd.notna(adx_h4) and adx_h4 < 22.0:
+            if pd.notna(adx_h4) and adx_h4 < 20.0:
+                # v6.11.3: lower from 22 → 20 (consistent with ADX H1 floor, +10-15% signal volume)
                 no_signal.confluence_score = 0
-                no_signal.reasons = [f"❌ [REJECT] ADX(H4) {adx_h4:.1f} < 22 — H4 ranging"]
+                no_signal.reasons = [f"❌ [REJECT] ADX(H4) {adx_h4:.1f} < 20 — H4 ranging"]
                 return no_signal
 
         # F. v6.11 (Tier 1.3) D1 bias hard veto — BUY ห้าม counter-D1
@@ -585,26 +586,10 @@ class SMCStrategy:
             ]
             return no_signal
 
-        # G. v6.11 (Tier 2.2) Recent Bullish Sweep prerequisite (within 8 bars)
-        # เหตุผล: SMC professional → ต้องมี smart-money sweep ก่อน OB tap, ไม่งั้น bot กลายเป็น liquidity
-        # bot has zero IDM detection (ดู Tier 3.1) → sweep prereq ลด stop-hunt rate
-        bullish_sweep_recent = self._sweep_detector.get_recent_bullish_sweep(max_bars_ago=8)
-        if bullish_sweep_recent is None:
-            no_signal.confluence_score = 0
-            no_signal.reasons = ["❌ [REJECT] ไม่มี Bullish Sweep ภายใน 8 bars — entry ไม่มี smart-money confirmation"]
-            return no_signal
-
-        # H. v6.11 (Tier 2.3) Fresh M15 BOS/CHoCH structural shift (within 6 bars)
-        # เหตุผล: SMC ต้องการ structural shift ยืนยันทิศทางก่อน entry, ไม่ใช่แค่ pullback to OB
-        # เปลี่ยน +5 bonus เดิม (ที่ใช้ MTF/H1 BOS) → hard gate บน LTF/M15
-        ltf_event = self._structure_ltf.get_latest_event()
-        ltf_len = len(ltf_df)
-        if ltf_event is None or not ltf_event.is_bullish or ltf_event.index < ltf_len - 6:
-            no_signal.confluence_score = 0
-            no_signal.reasons = [
-                "❌ [REJECT] ไม่มี Fresh M15 BOS/CHoCH Bullish ภายใน 6 bars — ไม่มี structural shift"
-            ]
-            return no_signal
+        # v6.11.2 (rollback Tier 2.2 + 2.3 hard gates → soft scoring)
+        # — eval ด้วย pool ที่ rebuild ด้วย hard gates ได้ Pass Rate 0.0% เพราะ
+        # Sweep + Fresh BOS prereq stack ทำให้ pool หาย 96% (avg 36.9 → 1.3 sigs/ep)
+        # Sweep ยังถูก score เป็น bonus ใน factor 3.6 (max +15), Fresh M15 BOS เป็น bonus ใน factor 2.5 ด้านล่าง
 
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == 1:
@@ -633,6 +618,14 @@ class SMCStrategy:
             mtf_pts = 5
             reasons.append("⚠️ MTF (H1) Neutral")
         score += mtf_pts
+
+        # === ปัจจัยที่ 2.5: Fresh M15 BOS/CHoCH (soft bonus, v6.11.2) ===
+        # — ทดแทน hard gate H ที่ rolled back. ถ้ามี structural shift ใน M15 ภายใน 6 bars → +5
+        ltf_event = self._structure_ltf.get_latest_event()
+        if ltf_event is not None and ltf_event.is_bullish and ltf_event.index >= len(ltf_df) - 6:
+            mtf_pts += 5  # rolled into mtf_pts สำหรับ logging
+            score += 5
+            reasons.append(f"✅ Fresh M15 BOS/CHoCH Bullish ({len(ltf_df) - 1 - ltf_event.index} bars ago, +5)")
 
         # === ปัจจัยที่ 3: Order Block (25 คะแนน) ===
         ob_pts_local = 0
@@ -683,8 +676,9 @@ class SMCStrategy:
             score += 10
             reasons.append(f"✅ IDM Bullish (wick/body={idm_event.wick_to_body_ratio:.2f}, {idm_event.bars_ago} bars ago)")
         else:
-            score -= 5
-            reasons.append("⚠️ ไม่มี IDM rejection ใน 8 bars — entry อาจเป็น obvious swing (-5)")
+            # v6.11.3: penalty 5 → 2 (mild) — กัน over-penalize ใน calm market
+            score -= 2
+            reasons.append("⚠️ ไม่มี IDM rejection ใน 8 bars — entry อาจเป็น obvious swing (-2)")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
         # Data-driven (2026-04-18): RSI < 30 WR=37.7%, 30-50 WR=28.3%, 50-60 WR=23%
@@ -928,9 +922,10 @@ class SMCStrategy:
         # E2. v6.11 (Tier 2.1) ADX(H4) ≥ 22 — H4 trend confirmation hard gate
         if self._htf_data is not None and "adx" in self._htf_data.columns:
             adx_h4 = float(self._htf_data["adx"].iloc[-1])
-            if pd.notna(adx_h4) and adx_h4 < 22.0:
+            if pd.notna(adx_h4) and adx_h4 < 20.0:
+                # v6.11.3: lower from 22 → 20 (consistent with ADX H1 floor, +10-15% signal volume)
                 no_signal.confluence_score = 0
-                no_signal.reasons = [f"❌ [REJECT] ADX(H4) {adx_h4:.1f} < 22 — H4 ranging"]
+                no_signal.reasons = [f"❌ [REJECT] ADX(H4) {adx_h4:.1f} < 20 — H4 ranging"]
                 return no_signal
 
         # F. v6.11 (Tier 1.3) D1 bias hard veto — SELL ห้าม counter-D1
@@ -950,22 +945,7 @@ class SMCStrategy:
             ]
             return no_signal
 
-        # G. v6.11 (Tier 2.2) Recent Bearish Sweep prerequisite (within 8 bars) — mirror ของ BUY
-        bearish_sweep_recent = self._sweep_detector.get_recent_bearish_sweep(max_bars_ago=8)
-        if bearish_sweep_recent is None:
-            no_signal.confluence_score = 0
-            no_signal.reasons = ["❌ [REJECT] ไม่มี Bearish Sweep ภายใน 8 bars — entry ไม่มี smart-money confirmation"]
-            return no_signal
-
-        # H. v6.11 (Tier 2.3) Fresh M15 BOS/CHoCH bearish structural shift (within 6 bars) — mirror ของ BUY
-        ltf_event = self._structure_ltf.get_latest_event()
-        ltf_len = len(ltf_df)
-        if ltf_event is None or ltf_event.is_bullish or ltf_event.index < ltf_len - 6:
-            no_signal.confluence_score = 0
-            no_signal.reasons = [
-                "❌ [REJECT] ไม่มี Fresh M15 BOS/CHoCH Bearish ภายใน 6 bars — ไม่มี structural shift"
-            ]
-            return no_signal
+        # v6.11.2 (rollback Tier 2.2 + 2.3 hard gates → soft scoring) — mirror ของ BUY
 
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == -1:
@@ -993,6 +973,13 @@ class SMCStrategy:
             mtf_pts = 5
             reasons.append("⚠️ MTF (H1) Neutral")
         score += mtf_pts
+
+        # === ปัจจัยที่ 2.5: Fresh M15 BOS/CHoCH (soft bonus, v6.11.2) — mirror ของ BUY ===
+        ltf_event = self._structure_ltf.get_latest_event()
+        if ltf_event is not None and not ltf_event.is_bullish and ltf_event.index >= len(ltf_df) - 6:
+            mtf_pts += 5
+            score += 5
+            reasons.append(f"✅ Fresh M15 BOS/CHoCH Bearish ({len(ltf_df) - 1 - ltf_event.index} bars ago, +5)")
 
         # === ปัจจัยที่ 3: Order Block (25 คะแนน) ===
         ob_pts_local = 0
@@ -1040,8 +1027,9 @@ class SMCStrategy:
             score += 10
             reasons.append(f"✅ IDM Bearish (wick/body={idm_event.wick_to_body_ratio:.2f}, {idm_event.bars_ago} bars ago)")
         else:
-            score -= 5
-            reasons.append("⚠️ ไม่มี IDM rejection ใน 8 bars — entry อาจเป็น obvious swing (-5)")
+            # v6.11.3: penalty 5 → 2 (mild) — mirror ของ BUY
+            score -= 2
+            reasons.append("⚠️ ไม่มี IDM rejection ใน 8 bars — entry อาจเป็น obvious swing (-2)")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
         # Data-driven (2026-04-18): SELL RSI 50-70 WR=37.3%, 30-50 WR=32.7%, >70 WR=25%

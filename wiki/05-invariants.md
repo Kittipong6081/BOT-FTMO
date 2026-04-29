@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: v6.11 SMC precision overhaul — Counter-D1 hard veto, Sweep+IDM+M15 BOS hard gates, BE best_price trigger, OB grading)
+> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: **v6.11.3** — IDM penalty 5→2, ADX H4 22→20 → Pass Rate 2.7→3.4 %, WR 65.6→68.8 %, DD safer 4.46→3.23 %)
 
 ## TL;DR (30-second scan)
 
@@ -142,6 +142,100 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-04-29 — v6.11.2 Partial rollback Tier 2.2 + 2.3 hard gates → soft bonuses
+
+หลัง v6.11.1 fix backtester แล้ว rebuild pool ด้วย v6.11 hard gates → eval result **Pass Rate 0.0 %** (จาก baseline 11.2 % cached pool). Pool stats เปิดเผย root cause:
+
+- Old pool (v6.10): 2887 episodes × 36.9 sigs/ep = **106,454 signals**
+- New pool (v6.11 hard gates): 867 episodes × 1.3 sigs/ep = **1,105 signals** (-99 %)
+- WR 35.9 % → 34.4 % (ใกล้เคียงกัน — gates ไม่ได้ลด loser, แค่ลดทุก signal)
+
+**ปัญหา**: Tier 2.2 (Sweep within 8 bars) + Tier 2.3 (Fresh M15 BOS within 6 bars) **stack คูณกัน** ทำให้ co-occurrence rate ต่ำมาก. Match กับ wiki precedent v6.4 Phase C (4 SMC principles → 3.7 → 1.5 % rolled back).
+
+**Fix (`strategy/smc_strategy.py`):**
+
+- **Tier 2.2 — ลบ pre-filter G** (Sweep prereq hard reject) ทั้ง BUY + SELL. Sweep ยังคงเป็น confluence bonus ใน factor 3.6 (max +15) เหมือนเดิม
+- **Tier 2.3 — ลบ pre-filter H** (Fresh M15 BOS prereq hard reject) ทั้ง BUY + SELL. แทนด้วย **factor 2.5 soft bonus +5** ใน confluence section: ถ้า `_structure_ltf.get_latest_event()` คืน BOS/CHoCH ในทิศที่ถูกต้องภายใน 6 bars → +5 (เพิ่มใน mtf_pts สำหรับ logging)
+
+**ที่เก็บไว้ (data-validated, ไม่ rollback):**
+
+- ✅ Tier 1.1/1.2 — TradeManager BE best_price + partial_closed_flag mirror (live-only, ไม่กระทบ pool)
+- ✅ Tier 1.3 — Counter-D1 hard veto (live demo evidence: 3/13 BUY ผิดทิศทั้งหมด)
+- ✅ Tier 1.4 — Quiet-vol × off-overlap (เฉพาะ 7-8/16-17 UTC, narrow scope)
+- ✅ Tier 2.1 — ADX H4 ≥ 22 hard gate (data-validated: ADX>35 quiet vol = 0% WR ใน live)
+- ✅ Tier 2.4 — Per-component logging fields
+- ✅ Tier 3.1 — IDM detector +10/-5 (soft scoring เท่านั้น ไม่ใช่ hard gate)
+- ✅ Tier 3.2 — OB grading × weight
+
+**Expected outcome**: Pool retention ขยับจาก 4 % → ~50-70 % → ~50k-75k signals (น้อยกว่า old 106k แต่พอ retrain ได้). Pass Rate เป้า ≥ 7 %
+
+**Verification**:
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 3000 --workers 8
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --eval_only \
+    --pool_size 3000 --ml_threshold 0.36 --risk_per_trade 0.007
+```
+
+ถ้ายัง Pass Rate ต่ำ → consider tune Tier 3.1 IDM penalty (-5 → -2)
+
+### 2026-04-29 — v6.11.1 Post-impl audit fixes (eval cache caveat + backtester _idm_detector)
+
+หลัง implement v6.11 รัน `train_signal_filter.py --eval_only` ได้ Pass Rate 11.2 % แต่ deep audit เจอ 2 issue:
+
+**Issue A — Eval cache caveat (DOCUMENTED, not bug)**
+
+- `data/signal_pool_3000.pkl` mtime = Apr 25 14:11 (ก่อน v6.11)
+- `FTMOSignalFilterEnv.reset` ถ้า `_signal_pool` มี → load idx จาก cache ไม่เรียก `backtester.generate_episode_signals()` (signal_filter_env.py:317-320)
+- ผลคือ eval นี้รัน pool ที่ **SMC v6.10 (ก่อน gates ใหม่)** สร้างไว้ → **11.2 % สะท้อนพฤติกรรม "old SMC + old RL"** ไม่ใช่ "v6.11 SMC + old RL"
+- Live deploy v6.11 จะกรอง signal ก่อน → agent เห็น distribution ใหม่ที่ไม่เคย eval → ผลจริงอาจ ≠ 11.2 %
+- **แก้: rebuild pool ด้วย v6.11 gates ก่อน eval ใหม่** (Issue B fix ทำให้ rebuild ได้)
+
+**Issue B — `StrategyBacktester._init_strategy` ขาด `_idm_detector` init (FIXED)**
+
+- เก่า: `_init_strategy` ตั้ง `_structure_mtf/_structure_ltf/_ob_detector/_fvg_detector/_sweep_detector` แต่ **ไม่มี `_idm_detector`**
+- ผลคือ `analyze_with_data` → `_evaluate_buy/sell_signal` → `self._idm_detector.detect_idm(...)` → **`AttributeError`** ทุก signal eval
+- กระทบ: `python scripts/build_signal_pool.py` รันไม่ได้ → ติดล็อก rebuild
+
+**Fix (`ml/strategy_backtester.py` `_init_strategy`):**
+
+```python
+from strategy.inducement import InducementDetector
+...
+self._strategy._idm_detector = InducementDetector(lookback=8)
+```
+
+ใต้ `self._strategy._sweep_detector = LiquiditySweepDetector()` ภายใน method `_init_strategy`. ตอนนี้ backtester `analyze_with_data` รันผ่าน v6.11 gates ครบ.
+
+**Caveats ที่ปล่อยไว้ (จะ tune ทีหลังถ้า data confirm):**
+
+- IDM -5 penalty ใน `_evaluate_buy/sell_signal` factor 3.7 อาจ over-penalize ใน calm market — keep ค่าเดิมก่อน
+- OB EXTREME tolerance 5 % ของ window range อาจ over-classify ใน strong trend — keep ค่าเดิมก่อน
+
+**Migration sequence (สำหรับ user):**
+
+```bash
+# 1. Backup (auto-done in v6.11.1 commit)
+cp data/signal_pool_3000.pkl              data/signal_pool_3000.pkl.bak_pre_v6.11
+cp data/signal_quality_model.pkl          data/signal_quality_model.pkl.bak_pre_v6.11
+cp models/ppo_signal_filter.zip           models/ppo_signal_filter.zip.bak_pre_v6.11
+cp models/vec_normalize_sf.pkl            models/vec_normalize_sf.pkl.bak_pre_v6.11
+
+# 2. Rebuild pool + GBM (v6.11 gates)
+.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 3000 --workers 8
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
+
+# 3. Re-eval (RL model เดิม + pool/GBM ใหม่)
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --eval_only \
+    --pool_size 3000 --ml_threshold 0.36 --risk_per_trade 0.007
+
+# 4. ตัดสินใจ:
+#    Pass Rate ≥ 7 % → keep RL model เดิม, deploy live
+#    Pass Rate < 7 % → retrain RL --fresh
+```
+
+**Expected pool size impact**: ~158k signals → ~80-95k signals (ลด ~40-50 % เพราะ Sweep + Fresh BOS + Counter-D1 + ADX H4 + Quiet-vol gates)
 
 ### 2026-04-29 — v6.11 SMC Precision Overhaul (post live demo audit)
 

@@ -186,12 +186,16 @@ class StrategyBacktester:
         from strategy.order_blocks import OrderBlockDetector
         from strategy.fair_value_gaps import FVGDetector
         from strategy.liquidity_sweeps import LiquiditySweepDetector
+        from strategy.inducement import InducementDetector  # v6.11.1
 
         self._strategy._structure_mtf = MarketStructure()
         self._strategy._structure_ltf = MarketStructure()
         self._strategy._ob_detector = OrderBlockDetector()
         self._strategy._fvg_detector = FVGDetector()
         self._strategy._sweep_detector = LiquiditySweepDetector()
+        # v6.11.1: backtester ต้องมี _idm_detector ให้ตรงกับ SMCStrategy.__init__
+        # — กัน AttributeError ตอน analyze_with_data → _evaluate_buy/sell_signal เรียก IDM
+        self._strategy._idm_detector = InducementDetector(lookback=8)
 
         self._strategy._htf_data = None
         self._strategy._mtf_data = None

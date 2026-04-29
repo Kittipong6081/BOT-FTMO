@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-29 | Scope: every module + key class / method / variable
+> Last Updated: 2026-04-29 | Scope: every module + key class / method / variable (v6.11.1 — backtester `_idm_detector` init parity)
 
 ## TL;DR (30-second scan)
 
@@ -75,6 +75,17 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 - **`TradeManager._partial_close`** lot_min branch — mirror `trade.partial_closed_flag = True` (สอดคล้องกับ `partial_close_skipped`).
 - **`FTMOTradingBot._build_live_context`** — อ่าน `htf_score/mtf_score/ob_pts/fvg_pts/sweep_pts/htf_bias/d1_bias/mtf_bias` จาก `signal` ตรงๆ (ไม่ใช่ hardcode 0).
 - **`FTMOTradingBot._log_signal_scan`** — `htf_bias` field ใช้ `sig.htf_bias` (string) แทน `_strategy._htf_bias` (int).
+
+### v6.11.1 Backtester parity fix (2026-04-29 evening)
+
+- **`StrategyBacktester._init_strategy`** — เพิ่ม `self._strategy._idm_detector = InducementDetector(lookback=8)` (ตรงกับ `SMCStrategy.__init__`). กัน `AttributeError` ตอน `analyze_with_data` → `_evaluate_buy/sell_signal` เรียก IDM ใน factor 3.7. **CRITICAL** — ถ้าไม่แก้ `build_signal_pool.py` รันไม่ได้.
+
+### v6.11.2 Partial rollback Tier 2.2 + 2.3 hard gates → soft bonuses (2026-04-29 evening)
+
+หลัง rebuild pool ด้วย v6.11 hard gates → Pass Rate 0.0 % (pool หาย 99 %). ลด strict gate กลับเป็น scoring:
+
+- **`SMCStrategy._evaluate_buy_signal/_evaluate_sell_signal`** — ลบ pre-filter G (Sweep within 8 bars) + pre-filter H (Fresh M15 BOS within 6 bars). Pre-filter chain เหลือ: A → B → C → D → E (ADX H1) → E2 (ADX H4) → F (Counter-D1) → F2 (Quiet-vol × off-overlap). Sweep ยังถูก score เป็น bonus ใน factor 3.6 (max +15)
+- **`SMCStrategy._evaluate_buy/sell_signal` factor 2.5 (NEW)** — ถ้า `_structure_ltf.get_latest_event()` เป็น bullish BOS/CHoCH ภายใน 6 bars (BUY) หรือ bearish (SELL) → +5 confluence bonus. Rolled into `mtf_pts` สำหรับ logging
 
 ### v6.3 SMC fixes (2026-04-24 audit)
 
