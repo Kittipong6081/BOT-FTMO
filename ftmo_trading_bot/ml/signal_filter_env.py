@@ -53,7 +53,9 @@ class FTMOSignalFilterEnv(gym.Env):
 
     INITIAL_BALANCE: float = 100_000.0
     CHALLENGE_DAYS: int = 45
-    RISK_PER_TRADE: float = 0.003
+    # v6.13: 0.003 → 0.007 — sync default กับ live `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT = 0.007`
+    # กัน silent regression ถ้าลืมใส่ `--risk_per_trade 0.007` ตอน train
+    RISK_PER_TRADE: float = 0.007
     DAILY_DD_LIMIT: float = 0.05
     TOTAL_DD_LIMIT: float = 0.10
     TARGET_PCT: float = 0.10
@@ -165,6 +167,8 @@ class FTMOSignalFilterEnv(gym.Env):
         self._milestone_60_given = False
         self._milestone_90_given = False
         # v6.3 B1v2: mid-episode undertrading checks — sticky (fire once)
+        # v6.13: เพิ่ม day 10 check (early signal) — push agent take ตั้งแต่ต้น episode
+        self._mid_check_day10_fired = False
         self._mid_check_day20_fired = False
         self._mid_check_day35_fired = False
 
@@ -497,13 +501,13 @@ class FTMOSignalFilterEnv(gym.Env):
 
             reward = float(np.clip(pnl_norm, -1.0, 3.0))
 
-            # ML quality bonus (Option D) — ใช้ ml_score แทน confluence
-            if pnl_norm > 0 and ml_score >= 0.40:
-                reward += 0.35           # High-ml + win → reinforce (เชื่อ ML)
-            elif pnl_norm > 0 and ml_score >= 0.36:
-                reward += 0.15           # Moderate-ml + win → mild reward
+            # ML quality bonus — v6.13: Equalize @ ml >= 0.36
+            # เดิม: +0.35 ถ้า ml >= 0.40, +0.15 ถ้า ml ∈ [0.36, 0.40) → bias หนักไป >0.40
+            # ใหม่: +0.30 uniform ทุก signal ที่ ml >= 0.36 → agent take ทุก signal ที่ผ่าน gate
+            if pnl_norm > 0 and ml_score >= 0.36:
+                reward += 0.30           # Win + ml >= threshold → uniform bonus
             elif pnl_norm < -0.3 and ml_score < 0.35:
-                reward -= 0.35           # Low-ml + loss → สอนไม่เอา marginal takes
+                reward -= 0.35           # Low-ml + loss → safety branch (rare ที่ gate 0.36)
 
             # Option B (P1 only): Quality-first responsibility shaping
             # ให้ P1 เรียน "เลือก winner" โดยไม่ต้องพึ่ง DD penalty ของ P2
@@ -530,22 +534,25 @@ class FTMOSignalFilterEnv(gym.Env):
             # Oracle: agent ไม่เห็น outcome ใน obs แต่ reward ใช้ future info ได้ตอน train
             # Option B: P1 ลด "missed opportunity penalty" เพื่อไม่ push TAKE มั่ว
             # P2 คงเดิม (เพราะ DD penalty เป็นตัว enforce quality แล้ว)
+            # v6.13: Push agent take more (especially in P2) — agent undertrade ที่ orders/ep 6.1
+            #        เพิ่ม penalty missed-winner + เพิ่ม reward smart-skip → bias ไป TAKE คุณภาพ
             is_p1 = not self.enable_risk_penalty
             if outcome >= 0.5:
-                # Would win big → missed opportunity
-                reward -= 0.30 if is_p1 else 0.70
+                # Would win big → missed opportunity (v6.13: P2 -0.70 → -0.90)
+                reward -= 0.30 if is_p1 else 0.90
                 if ml_score >= 0.40:
-                    reward -= 0.25 if is_p1 else 0.40
+                    reward -= 0.25 if is_p1 else 0.55     # v6.13: P2 -0.40 → -0.55
                 elif ml_score < 0.35:
                     reward += 0.15
             elif outcome >= 0.1:
                 reward -= 0.10 if is_p1 else 0.20
             elif outcome <= -0.5:
-                reward += 0.30 if is_p1 else 0.20  # P1 ให้รางวัล smart skip แรงขึ้น
+                # Smart skip — v6.13: P2 +0.20 → +0.35 (reward smart skip มากขึ้น)
+                reward += 0.30 if is_p1 else 0.35
                 if ml_score < 0.36:
                     reward += 0.15
             elif outcome <= -0.1:
-                reward += 0.10 if is_p1 else 0.06
+                reward += 0.10 if is_p1 else 0.10        # v6.13: P2 +0.06 → +0.10 (symmetry)
 
             # Passive SKIP cost — สะสมต่อ step
             # v6.3 B1: ลดจาก -0.015 → -0.010 ให้ room SKIP signals คุณภาพต่ำ
@@ -567,6 +574,15 @@ class FTMOSignalFilterEnv(gym.Env):
         # ยิง penalty "ระหว่าง episode" ไม่ใช่แค่ตอนจบ → credit assignment เร็วขึ้น
         # agent เรียนว่า "ถ้า day 20 ยังไม่ take พอ = ลงโทษ" → push TAKE ตั้งแต่ต้น
         if self.enable_risk_penalty:
+            # v6.13: เพิ่ม day 10 early check — กระตุ้น take ตั้งแต่ต้น episode
+            if (
+                not self._mid_check_day10_fired
+                and self._current_day >= 10
+                and self.target_progress_pct < 20.0
+                and self._total_takes < 3
+            ):
+                reward -= 0.2
+                self._mid_check_day10_fired = True
             if (
                 not self._mid_check_day20_fired
                 and self._current_day >= 20

@@ -315,10 +315,17 @@ class PositionSizer:
         Returns:
             Dict: {"sl": float, "tp": float, "sl_distance": float, "tp_distance": float, "rr_ratio": float}
         """
+        # v6.13: per-symbol override → fallback global
+        # XAUUSD ใช้ 1.8×/3.6× (wick noise สูง) — FX ใช้ 1.5×/3.0× (default)
+        sym_overrides = bot_config.symbols.symbol_overrides.get(symbol, {})
         if sl_multiplier is None:
-            sl_multiplier = bot_config.indicators.atr_sl_multiplier  # 1.5
+            sl_multiplier = sym_overrides.get(
+                "sl_atr_multiplier", bot_config.indicators.atr_sl_multiplier
+            )
         if tp_multiplier is None:
-            tp_multiplier = bot_config.indicators.atr_tp_multiplier  # 3.0
+            tp_multiplier = sym_overrides.get(
+                "tp_atr_multiplier", bot_config.indicators.atr_tp_multiplier
+            )
 
         # คำนวณระยะ SL/TP
         sl_distance = atr_value * sl_multiplier

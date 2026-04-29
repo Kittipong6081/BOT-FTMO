@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-04-29 (v6.12) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-04-29 (v6.13) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -25,6 +25,7 @@
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | Min confluence | 70 | `FTMOConfig.MIN_CONFLUENCE_SCORE` |
 | Cooldown after loss | 60 min | `FTMOConfig.COOLDOWN_AFTER_LOSS_MIN` |
+| Pause / Halt counts (v6.13) | 3 / 4 consec losses | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT/HALT_COUNT` |
 | Post-TP lock TTL | 60 min | `FTMOConfig.POST_TP_LOCK_TTL_MIN` |
 | Consistency threshold | 1.0 (off, 2-step Standard) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
 
@@ -152,8 +153,8 @@ In `RiskManager` + `TradeExecutor`:
 | Trigger | Behaviour | Symbol |
 |---------|-----------|--------|
 | Loss on symbol X | Block same-direction entries on X for 60 min | `FTMOConfig.COOLDOWN_AFTER_LOSS_MIN` |
-| 2 consecutive losses | Pause entire bot for 60 min | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT/MIN` |
-| 3 consecutive losses | Halt for the remainder of the day | `FTMOConfig.CONSECUTIVE_LOSS_HALT_COUNT` |
+| **3 consecutive losses (v6.13)** | Pause entire bot for 60 min (DD trigger ~2.1 % ห่าง FTMO 4 % limit) | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT=3 / MIN=60` |
+| **4 consecutive losses (v6.13)** | Halt for the remainder of the day | `FTMOConfig.CONSECUTIVE_LOSS_HALT_COUNT=4` |
 | Loss < 0.05 % daily | Not counted as consecutive loss | `FTMOConfig.MIN_LOSS_TO_COUNT_PCT` (tick noise filter) |
 
 **Post-TP Pullback Lock** (prevents chasing after TP hit):

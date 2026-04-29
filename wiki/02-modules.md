@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-29 (v6.12) | Scope: every module + key class / method / variable (v6.12 — live ML threshold gate fix; v6.11.3 baseline IDM 5→2, ADX H4 22→20)
+> Last Updated: 2026-04-29 (v6.13) | Scope: every module + key class / method / variable (v6.13 — combined patch: pause 2→3, env defaults safety, equalize TAKE @ ml ≥ 0.36, XAU SL 1.5×→1.8×; v6.12 ML threshold gate; v6.11.3 baseline)
 
 ## TL;DR (30-second scan)
 

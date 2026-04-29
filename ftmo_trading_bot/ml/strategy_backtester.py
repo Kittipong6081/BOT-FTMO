@@ -339,6 +339,16 @@ class StrategyBacktester:
         atr_sl_mult = params['atr_sl_multiplier']
         rr_ratio = params['preferred_risk_reward_ratio']
 
+        # v6.13: per-symbol SL/TP override (sync กับ PositionSizer.calculate_sl_tp_prices)
+        # XAUUSD ใช้ 1.8×ATR / RR 1:2 — pool training ต้องสะท้อน live SL distribution
+        from config.settings import bot_config as _bot_config
+        _sym_ovr = _bot_config.symbols.symbol_overrides.get(symbol, {})
+        if "sl_atr_multiplier" in _sym_ovr:
+            atr_sl_mult = float(_sym_ovr["sl_atr_multiplier"])
+        if "tp_atr_multiplier" in _sym_ovr and "sl_atr_multiplier" in _sym_ovr:
+            # คง RR ratio = tp_mult / sl_mult เพื่อให้ outcome distribution ตรง live
+            rr_ratio = float(_sym_ovr["tp_atr_multiplier"]) / float(_sym_ovr["sl_atr_multiplier"])
+
         self._strategy.MIN_CONFLUENCE_SCORE = min_confluence
 
         trades: List[float] = []

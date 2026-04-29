@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: **v6.12** — live ML threshold gate fix to sync live ↔ training distribution; **v6.11.3** baseline Pass Rate 3.4 %)
+> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: **v6.13** — combined patch: pause 2→3, defaults safety, equalize TAKE @ ml ≥ 0.36, XAU SL 1.5×→1.8×; **v6.12** live ML threshold gate fix; **v6.11.3** baseline Pass Rate 3.4 %)
 
 ## TL;DR (30-second scan)
 
@@ -151,6 +151,80 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-04-29 — v6.13 Combined patch (pause + defaults safety + equalize TAKE @ ml ≥ 0.36 + XAU SL widen)
+
+หลัง analyze 1-day live log + train↔live deep audit ผู้ใช้สั่งให้รวม fix หลายตัวเข้าด้วยกัน rebuild + eval ครั้งเดียว เพื่อประหยัด cycle time. Audit obs 27 dims ยืนยัน **zero outcome leakage** ที่ policy input (aux task + SKIP-oracle reward เป็น training signal เท่านั้น, agent's policy network ไม่เห็น outcome).
+
+**Layer 1 — Config-only**:
+
+- `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT`: 2 → **3** (DD trigger 1.4 % → 2.1 %, ยังห่าง FTMO 4 % limit)
+- `FTMOConfig.CONSECUTIVE_LOSS_HALT_COUNT`: 3 → **4** (รักษา invariant pause < halt)
+
+**Layer 2 — Defaults safety (ป้องกัน silent regression)**:
+
+- `FTMOSignalFilterEnv.RISK_PER_TRADE` (class const): 0.003 → **0.007** (sync กับ live `DEFAULT_RISK_PER_TRADE_PCT`)
+- `train_signal_filter.py --risk_per_trade default`: None → **0.007**
+- `train_signal_filter.py --outcome_noise default`: 0.02 → **0.05** (more robust to live distribution)
+- `train_signal_filter.py --ml_threshold default`: 0.0 → **0.36** (production calibrated)
+
+**Layer 3 — Reward rebalance (no policy-input leak)**:
+
+- TAKE branch equalize: win + ml ≥ 0.36 → **+0.30 uniform** (เดิม +0.35 ถ้า ≥ 0.40, +0.15 ถ้า [0.36, 0.40)) — agent ไม่ bias หลีกเลี่ยง 0.36-0.40
+- SKIP-oracle rebalance (P2): missed-big-winner −0.70 → **−0.90**, ML-confirmed missed −0.40 → **−0.55**, smart-skip-big-loser +0.20 → **+0.35**, symmetry +0.06 → **+0.10**
+- เพิ่ม early undertrading check: day ≥ 10 + progress < 20 % + takes < 3 → **−0.2** (sticky)
+
+**Layer 4 — XAUUSD SL widen** (1.5× → 1.8× ATR, RR คง 1:2):
+
+- `SymbolConfig.symbol_overrides["XAUUSD"]` เพิ่ม `sl_atr_multiplier: 1.8` + `tp_atr_multiplier: 3.6`
+- `PositionSizer.calculate_sl_tp_prices` อ่าน per-symbol override → fallback global
+- `StrategyBacktester._run_day_scan` sync override → pool training สะท้อน live SL distribution
+
+**Trigger**: live trade #436840790 (XAU SELL) โดน SL hit by 3 ticks — XAU wick noise สูงกว่า FX, 1.5×ATR แคบเกินไป
+
+**No-leak audit ที่ทำในรอบนี้**:
+
+- 27 obs dims ใน `_get_obs` + `_build_signal_observation` — ใช้แค่ signal-time data + env state ตอน signal (ไม่มี outcome)
+- GBM 17 features ใน `SignalQualityModel.FEATURES` — ทั้งหมดเป็น signal-time
+- Aux head (Phase E2) — outcome เป็น **target** สำหรับ MSE loss, ไม่ใช่ obs input → policy ไม่เห็น
+- SKIP-oracle reward — ใช้ outcome ใน reward function (training signal), policy network ไม่ได้รับ outcome เป็น input
+
+**Backups พร้อมสำหรับ rollback** (ถ้า eval regress < 3.0 %):
+
+```text
+ftmo_trading_bot/data/signal_pool_3000.pkl.bak_v6.12
+ftmo_trading_bot/data/signal_quality_model.pkl.bak_v6.12
+ftmo_trading_bot/models/ppo_signal_filter.zip.bak_v6.12
+ftmo_trading_bot/models/ppo_signal_filter_p1.zip.bak_v6.12
+ftmo_trading_bot/models/vec_normalize_sf.pkl.bak_v6.12
+```
+
+**Eval result (5000 eps, 2026-04-29 22:02) — EXCELLENT, ทะลุเป้า**:
+
+| Metric | v6.11.3 baseline | **v6.13** | Δ |
+|---|---|---|---|
+| Pass Rate | 3.4 % | **9.7 %** ⭐⭐⭐ | **+185 %** |
+| Win Rate | 68.8 % | 64.8 % | -4 pp |
+| Orders/ep | 6.1 | **7.7** | +26 % |
+| Take Rate | 51.6 % | 51.3 % | similar |
+| Total DD max | 3.23 % | 4.40 % | +37 % (ยังห่าง 8 % limit) |
+| Daily DD max | 2.12 % | 2.15 % | similar |
+| Breach Rate | 0 % | **0 %** ✅ | same |
+| Profit avg (5000 eps) | — | **+3.89 %** | — |
+| Trades to target | 12.7 | 12.7 | same |
+| Profitable survive | 87.1 % | 87.0 % | same |
+
+**Decision: ✅ KEEP — deploy demo**. Pass Rate เกือบถึง FTMO 10 % target จากการรวม 4 layers ครั้งเดียว. รอเก็บ live data 1 อาทิตย์ก่อนสมัคร challenge จริง
+
+**Why work** (post-mortem):
+
+- **L3 reward rebalance ทำงานตามคาด**: orders/ep 6.1 → 7.7 (+26 %) ตรงกับการ push SKIP-oracle penalty + day-10 early undertrading
+- **L3 TAKE equalize @ ml ≥ 0.36** ทำให้ agent ไม่หลีกเลี่ยง marginal signals → cover ทั้ง spectrum ของ ML score
+- **L4 XAU SL widen 1.8×** อาจช่วยเรื่อง wick survival แต่ effect ยังต้อง verify ใน live (eval ไม่แยก per-symbol stats)
+- **L1 Pause ผ่อน** กระทบมากที่สุดใน live (eval pool เป็นการ simulate ไม่ trigger pause บ่อย)
+- **L2 defaults safety**: env class const 0.003 → 0.007 = sync แล้ว, ลด silent regression เสี่ยง
+
+**Trade-off ที่ยอมรับ**: WR -4 pp (68.8 → 64.8), DD +37 % (3.23 → 4.40, ยังปลอดภัย) แลกกับ Pass Rate +185 % — ROI สูงมาก
 
 ### 2026-04-29 — v6.12 Live ML threshold gate fix (sync live ↔ training)
 

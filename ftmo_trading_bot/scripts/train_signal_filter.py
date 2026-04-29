@@ -431,12 +431,12 @@ def main():
                         help="Signal pool size (0 = disable pool, use slow on-the-fly)")
     parser.add_argument("--pool_workers", type=int, default=8,
                         help="Workers ตอน build signal pool (ครั้งแรกเท่านั้น)")
-    parser.add_argument("--outcome_noise", type=float, default=0.02,
-                        help="Gaussian noise std on outcome (0=off, 0.02=2pct noise, 0.05=5pct)")
-    parser.add_argument("--ml_threshold", type=float, default=0.0,
-                        help="ML pre-filter threshold (0=off; 0.33-0.36 recommended Hybrid)")
-    parser.add_argument("--risk_per_trade", type=float, default=None,
-                        help="Risk per trade as fraction (default 0.003=0.3pct; 0.005=0.5pct balanced)")
+    parser.add_argument("--outcome_noise", type=float, default=0.05,
+                        help="Gaussian noise std on outcome (0=off, 0.02=2pct, 0.05=5pct default v6.13)")
+    parser.add_argument("--ml_threshold", type=float, default=0.36,
+                        help="ML pre-filter threshold (0.36 = production calibrated default v6.13)")
+    parser.add_argument("--risk_per_trade", type=float, default=0.007,
+                        help="Risk per trade fraction (default 0.007=0.7pct sync กับ live v6.13)")
     args = parser.parse_args()
 
     if args.data_dir is None:

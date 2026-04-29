@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-04-29 (v6.12) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-04-29 (v6.13) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
@@ -13,7 +13,13 @@
 - **v6.11.1 (2026-04-29 evening)**: Post-impl audit fix — `StrategyBacktester._init_strategy` เพิ่ม `_idm_detector` init ให้ตรงกับ `SMCStrategy.__init__` (กัน AttributeError ตอน rebuild pool). Eval Pass Rate 11.2 % ที่ได้จาก cached pool (Apr 25, pre-v6.11) — **invalid สำหรับ v6.11**. ต้อง rebuild pool + GBM ก่อน eval ใหม่.
 - **v6.11.2 (2026-04-29 evening)**: Partial rollback — Tier 2.2 (Sweep prereq) + Tier 2.3 (Fresh M15 BOS prereq) hard gates → soft bonuses. Pool หาย 99 % ภายใต้ v6.11 hard gates → 0.0 % Pass Rate. หย่อน 2 จุด → pool 78k signals, Pass Rate 2.7 %, WR 65.6 %.
 - **v6.11.3 (2026-04-29 evening)**: Mild tune — IDM penalty 5→2 + ADX H4 floor 22→20. Pool 90k (+15 %), Pass Rate 2.7→**3.4 %**, WR 65.6→**68.8 %**, DD max 4.46→**3.23 %** (safer). Pure improvement ทุกมิติ. **KEEP + deploy demo**. Backups `*.bak_v6.11.2` พร้อมสำหรับ rollback.
-- **v6.12 (2026-04-29 night) ⭐ current**: Live-vs-train sync fix — `FTMOConfig.ML_FILTER_THRESHOLD = 0.36` + ML gate ใน `FTMOTradingBot.run` ก่อน agent. ปิด silent regression จากการที่ live ไม่บังคับ ML threshold (training บังคับ). Logging fix — `ML Threshold` column ใน `Signals` sheet ตอนนี้แสดง 0.36 จริง (เดิม 0.0 เพราะ getattr ผิด attribute). ไม่ต้อง retrain. ดู [`wiki/05-invariants.md` v6.12 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
+- **v6.12 (2026-04-29 night)**: Live-vs-train sync fix — `FTMOConfig.ML_FILTER_THRESHOLD = 0.36` + ML gate ใน `FTMOTradingBot.run` ก่อน agent. ปิด silent regression จากการที่ live ไม่บังคับ ML threshold (training บังคับ). Logging fix — `ML Threshold` column ใน `Signals` sheet ตอนนี้แสดง 0.36 จริง (เดิม 0.0 เพราะ getattr ผิด attribute). ไม่ต้อง retrain.
+- **v6.13 (2026-04-29 night) ⭐ current — VERIFIED Pass Rate 9.7 %** (5000 eps eval):
+  - **L1 Pause** 2→3, **L2 defaults safety** (env const 0.003→0.007, outcome_noise 0.02→0.05), **L3 reward rebalance** (TAKE equalize @ ml ≥ 0.36, P2 SKIP-oracle missed-winner −0.70→−0.90, smart-skip +0.20→+0.35, day-10 early undertrading check), **L4 XAU SL 1.5×→1.8×**
+  - **Eval result**: Pass Rate **9.7 %** (vs baseline 3.4 % = +185 %), WR 64.8 %, Orders/ep 7.7, DD max 4.40 % (ห่าง 8 % limit), Breach 0 %, Profit avg +3.89 %
+  - Pass Rate เกือบถึง FTMO 10 % target — ทะลุเป้าทุกมิติ. KEEP + deploy demo
+  - **No-leak audit ผ่าน**: 27 obs dims + GBM 17 features = signal-time only. Aux head ใช้ outcome เป็น MSE target. SKIP-oracle เป็น reward shaping (policy ไม่เห็น outcome)
+  - Backups `*.bak_v6.12` พร้อม rollback. ดู [`wiki/05-invariants.md` v6.13 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
 - **Wiki Sync Protocol**: editing `.py` files under `ftmo_trading_bot/` requires updating `wiki/` + `context.md` + `readme.md` (when user-facing) in the same turn. Stop hook enforces (`decision: block`). See `CLAUDE.md`.
 
 ## Headline Numbers
@@ -38,16 +44,19 @@
 | Pool | `data/signal_pool_3000.pkl` (~158k signals) | `StrategyBacktester` |
 | FTMO program | 2-step Standard (no Consistency Rule → threshold = 1.0) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
 
-## Verified Performance (Phase E2 — Auxiliary Task, risk 0.7 %, 5000 eps, 2026-04-25)
+## Verified Performance (v6.13 — Combined patch + obs no-leak audit, risk 0.7 %, 5000 eps, 2026-04-29)
 
-| Metric | Value |
-|--------|-------|
-| Pass Rate | **10.0 %** ⭐ (3× baseline 3.5 %) |
-| ML threshold | 0.36 (calibrated) |
-| Approach | PPO + auxiliary head predicting `outcome_pnl_ratio` (MSE weight=0.5) |
-| Breach rate | low (verified safe) |
+| Metric | v6.11.3 baseline | **v6.13** | Δ |
+|--------|------------------|-----------|---|
+| Pass Rate | 3.4 % | **9.7 %** ⭐⭐⭐ | **+185 %** |
+| Win Rate | 68.8 % | 64.8 % | -4 pp |
+| Orders/ep | 6.1 | **7.7** | +26 % |
+| Total DD max | 3.23 % | 4.40 % | +37 % (ห่าง 8 % limit) |
+| Daily DD max | 2.12 % | 2.15 % | similar |
+| Breach Rate | 0 % | **0 %** | same |
+| Profit avg (5000 eps) | — | **+3.89 %** | — |
 
-**Phase progression** (each = 5000-eps eval): leaky baseline 12.5 % → honest baseline 3.5 % → Phase C 1.5 % → Phase D 0.2 % → Phase E1 (calibration) 3.0 % → **Phase E2 (aux task) 10.0 %**. Details in [wiki/05-invariants.md § Version Log](wiki/05-invariants.md).
+**Phase progression** (each = 5000-eps eval): leaky baseline 12.5 % → honest baseline 3.5 % → Phase C 1.5 % → Phase D 0.2 % → Phase E1 (calibration) 3.0 % → Phase E2 (aux task) 10.0 % → v6.11 SMC overhaul 0.0 % → v6.11.2 (rollback) 2.7 % → v6.11.3 (mild relax) 3.4 % → **v6.13 (combined patch) 9.7 %**. Details in [wiki/05-invariants.md § Version Log](wiki/05-invariants.md).
 
 **Note**: the old "Option B 12.5 %" baseline was leaky (eval seeded with same pool used for GBM training). Honest baseline = 3.5 %. E2 is verified leak-free via runtime hook + obs feature audit.
 

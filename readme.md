@@ -2,7 +2,7 @@
 
 > ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **3 สมอง** ทำงานร่วมกัน: SMC Strategy + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
 >
-> **Last Updated:** 2026-04-25 | **Stable verified:** Pass Rate 10.0% (5000 eps eval)
+> **Last Updated:** 2026-04-29 (v6.13) | **Verified:** Pass Rate **9.7%** (5000 eps eval, +185% จาก v6.11.3 baseline 3.4%)
 
 ---
 
@@ -496,11 +496,16 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
 | Field | Value | คำอธิบาย |
 |-------|-------|---------|
 | `DEFAULT_RISK_PER_TRADE_PCT` | 0.007 | 0.7% (verified optimal) |
+| `ML_FILTER_THRESHOLD` (v6.12) | 0.36 | live ↔ training sync — signals ที่ ML score < 0.36 ถูก reject ก่อน agent |
 | `MAX_DRAWDOWN_HARD_STOP_PCT` | 0.08 | 8% (buffer 2% จาก FTMO 10%) |
 | `DAILY_LOSS_HARD_STOP_PCT` | 0.04 | 4% (buffer 1% จาก FTMO 5%) |
 | `PROFIT_TARGET_PCT` | 0.10 | 10% target |
 | `CONSISTENCY_RULE_THRESHOLD` | 1.0 | 2-step Standard ไม่มีกฎนี้ |
 | `MAX_OPEN_POSITIONS` | 3 | สูงสุด 3 positions พร้อมกัน |
+| `CONSECUTIVE_LOSS_PAUSE_COUNT` (v6.13) | 3 | แพ้ติด 3 ครั้ง → pause 60 นาที (เดิม 2 — DD trigger เร็วเกินจริง) |
+| `CONSECUTIVE_LOSS_HALT_COUNT` (v6.13) | 4 | แพ้ติด 4 ครั้ง → halt ทั้งวัน (เดิม 3 — sync กับ pause count) |
+| `XAUUSD.sl_atr_multiplier` (v6.13) | 1.8 | XAU SL = 1.8×ATR (เดิม 1.5× global; XAU wick noise สูง) |
+| `XAUUSD.tp_atr_multiplier` (v6.13) | 3.6 | XAU TP = 3.6×ATR (รักษา RR 1:2) |
 
 ### Step 3 — รัน bot
 

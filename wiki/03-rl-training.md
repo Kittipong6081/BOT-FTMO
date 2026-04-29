@@ -1,5 +1,5 @@
 # 03 — RL Training (Obs 27 dims, Reward, PPO + Auxiliary Task)
-> Last Updated: 2026-04-28 | Scope: RL env, obs space v6, reward shaping, PPO hyperparams, curriculum, aux task (E2)
+> Last Updated: 2026-04-29 (v6.13) | Scope: RL env, obs space v6, reward shaping, PPO hyperparams, curriculum, aux task (E2). v6.13: TAKE equalize @ ml ≥ 0.36 + SKIP-oracle rebalance + day-10 early undertrading + defaults safety
 
 ## TL;DR (30-second scan)
 
@@ -98,16 +98,19 @@ Located in `FTMOSignalFilterEnv.step`. See the block comments labelled `Phase 1`
 ### Phase 1 (Alpha) — learn chart reading + profit taking
 
 ```
-TAKE:
-    clip(pnl_norm, -1.5, 3.0)
-    + chart_reading_bonus (confluence × outcome alignment)
-    + 0.02 action nudge
+TAKE (v6.13 — equalize @ ml ≥ 0.36):
+    clip(pnl_norm, -1.0, 3.0) - spread_cost*0.5
+    + 0.30 if win AND ml_score >= 0.36   ⭐ uniform (เดิม 0.35 vs 0.15 split)
+    - 0.35 if big-loss AND ml_score < 0.35   (rare — gate ที่ 0.36)
+    + 0.02 action nudge (P1 only) / 0.04 + dd_penalty (P2)
 
-SKIP (Oracle feedback — agent sees outcome in training):
-    outcome >=  0.5 : -0.50  (missed big win; -0.80 if conf >= 75)
-    outcome >=  0.1 : -0.16
-    outcome <= -0.5 : +0.30  (smart skip of big loss)
-    outcome <= -0.1 : +0.10
+SKIP (Oracle reward — POLICY ไม่เห็น outcome ใน obs, reward ใช้ตอน train เท่านั้น):
+    outcome >=  0.5 : -0.30 (P1) / **-0.90** (P2, v6.13: -0.70 → -0.90)
+        AND ml >= 0.40: extra -0.25 (P1) / **-0.55** (P2, v6.13: -0.40 → -0.55)
+    outcome >=  0.1 : -0.10 (P1) / -0.20 (P2)
+    outcome <= -0.5 : +0.30 (P1) / **+0.35** (P2, v6.13: +0.20 → +0.35)
+    outcome <= -0.1 : +0.10 (P1) / **+0.10** (P2, v6.13: +0.06 → +0.10)
+    + passive cost -0.010/step
 ```
 
 ### Phase 2 (Risk) — add DD management
@@ -124,9 +127,10 @@ Activity floor (Phase 2 only, v6.3 B1v2):
     progress < 30%                              : -0.3
     days >= 40 & takes < 15 & not passed        : -1.0   ← undertrading (terminal)
 
-Mid-episode undertrading checks (Phase 2, v6.3 B1v2, sticky one-shot):
-    day >= 20 & progress < 40% & takes < 6      : -0.3
-    day >= 35 & progress < 60% & takes < 12     : -0.7
+Mid-episode undertrading checks (Phase 2, sticky one-shot):
+    day >= 10 & progress < 20% & takes < 3      : -0.2   ⭐ v6.13 NEW (early signal)
+    day >= 20 & progress < 40% & takes < 6      : -0.3   (v6.3 B1v2)
+    day >= 35 & progress < 60% & takes < 12     : -0.7   (v6.3 B1v2)
 ```
 
 **Progress shaping (v6.3 B1v2 — multiplier 2.5× stronger than pre-B1v2):**
@@ -150,8 +154,8 @@ Sum if pass  : +7.0 max
 
 ### Outcome Perturbation
 
-- `outcome_noise_std=0.02` — 2 % Gaussian noise on pool outcomes during env step.
-- Purpose: regularization (prevent overfit to fixed pool outcomes; simulate live slippage).
+- `outcome_noise_std=0.05` (v6.13 default — เพิ่มจาก 0.02) — 5 % Gaussian noise on pool outcomes during env step.
+- Purpose: regularization (prevent overfit to fixed pool outcomes; simulate live slippage + spread variability).
 
 ---
 

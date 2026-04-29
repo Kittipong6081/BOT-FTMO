@@ -115,10 +115,13 @@ class FTMOConfig:
     # Per-symbol override — ถ้าต้องการให้บางคู่ cooldown นานกว่า 60 นาที
     COOLDOWN_OVERRIDE_MIN: Dict[str, int] = field(default_factory=lambda: {})
     # ถ้าแพ้ติดกันกี่ครั้งให้ pause ทั้งระบบ
-    CONSECUTIVE_LOSS_PAUSE_COUNT: int = 2
+    # v6.13 (2026-04-29): 2 → 3 — risk 0.7 % × 2 = 1.4 % DD trigger ถี่เกิน vs FTMO 4 % limit
+    #                     ผ่อนเป็น 3 = 2.1 % DD trigger ยังห่าง 4 % แต่ลด over-pause ที่กิน signals
+    CONSECUTIVE_LOSS_PAUSE_COUNT: int = 3
     CONSECUTIVE_LOSS_PAUSE_MIN: int = 60
     # ถ้าแพ้ติดกันกี่ครั้งให้ halt ทั้งวัน
-    CONSECUTIVE_LOSS_HALT_COUNT: int = 3
+    # v6.13: 3 → 4 — รักษา invariant (PAUSE_COUNT < HALT_COUNT) หลังเพิ่ม pause เป็น 3
+    CONSECUTIVE_LOSS_HALT_COUNT: int = 4
     # Loss ขนาดเล็ก (< X% ของ daily start equity) ไม่นับเป็น consecutive loss
     # เหตุผล: tick/spread noise ไม่ใช่ decision error → ไม่ควร trigger anti-revenge
     # ค่า 0.0005 = 0.05% = $5 บน $10K
@@ -217,6 +220,11 @@ class SymbolConfig:
             "min_sl_pips": 300,              # 300 ticks = $3 SL min (spread 35 = 12%)
             "spread_atr_ratio_max": 0.7,
             "flip_lock_retrace_mult": 0.6,
+            # v6.13: per-symbol SL/TP multipliers — XAU wick noise สูงกว่า FX
+            # 1.5×ATR (global default) แคบเกิน → เคยโดน SL hit by 3 ticks (ticket 436840790)
+            # 1.8×ATR + RR คงที่ 1:2 → SL ห่าง wick พอ, lot ↓ แต่ expectancy คล้ายเดิม
+            "sl_atr_multiplier": 1.8,
+            "tp_atr_multiplier": 3.6,
         },
     })
 
