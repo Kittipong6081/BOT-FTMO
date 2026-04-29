@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-29 | Scope: every module + key class / method / variable (v6.11.1 — backtester `_idm_detector` init parity)
+> Last Updated: 2026-04-29 | Scope: every module + key class / method / variable (v6.11.3 — IDM penalty 5→2, ADX H4 22→20)
 
 ## TL;DR (30-second scan)
 
@@ -86,6 +86,15 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 
 - **`SMCStrategy._evaluate_buy_signal/_evaluate_sell_signal`** — ลบ pre-filter G (Sweep within 8 bars) + pre-filter H (Fresh M15 BOS within 6 bars). Pre-filter chain เหลือ: A → B → C → D → E (ADX H1) → E2 (ADX H4) → F (Counter-D1) → F2 (Quiet-vol × off-overlap). Sweep ยังถูก score เป็น bonus ใน factor 3.6 (max +15)
 - **`SMCStrategy._evaluate_buy/sell_signal` factor 2.5 (NEW)** — ถ้า `_structure_ltf.get_latest_event()` เป็น bullish BOS/CHoCH ภายใน 6 bars (BUY) หรือ bearish (SELL) → +5 confluence bonus. Rolled into `mtf_pts` สำหรับ logging
+
+### v6.11.3 Mild relaxation tune (2026-04-29 evening)
+
+หลัง v6.11.2 Pass Rate 2.7 % (math: 6.7 trades × 0.68 % = 4.6 % expected, ห่างเป้า 10 %). Tune 2 จุดเพื่อเพิ่ม signals + retrain:
+
+- **`SMCStrategy._evaluate_buy/sell_signal` factor 3.7 IDM penalty** — `score -= 5` → `score -= 2` ถ้าไม่เจอ IDM rejection. Mild penalty ลด over-penalize ใน calm market
+- **`SMCStrategy._evaluate_buy/sell_signal` pre-filter E2 ADX H4 floor** — `< 22.0` → `< 20.0` ให้สอดคล้องกับ ADX H1 floor
+
+ผลหลัง rebuild pool (78k→90k signals) + retrain GBM (AUC 0.5915) + retrain RL (10M+5M, 23.6 min): Pass Rate 2.7 → **3.4 %** (+26 %), WR 65.6 → **68.8 %** (+3.2 pp), DD max 4.46 → **3.23 %** (-28 %, safer). Pure improvement ทุกมิติ.
 
 ### v6.3 SMC fixes (2026-04-24 audit)
 
