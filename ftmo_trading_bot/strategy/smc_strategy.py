@@ -43,6 +43,7 @@ from strategy.market_structure import MarketStructure, StructureType
 from strategy.order_blocks import OrderBlockDetector, OBType
 from strategy.fair_value_gaps import FVGDetector
 from strategy.liquidity_sweeps import LiquiditySweepDetector
+from strategy.inducement import InducementDetector
 
 
 class SignalType(Enum):
@@ -92,6 +93,17 @@ class TradeSignal:
     bb_pctb: float = 0.5
     atr_change_ratio: float = 0.0
     price_roc: float = 0.0
+
+    # v6.11 (Tier 2.4) Per-component confluence breakdown (สำหรับ Trades sheet logging)
+    # ค่าเหล่านี้คือ contribution ของแต่ละหมวด (หลัง session multiplier ยังไม่ apply)
+    htf_score: int = 0          # HTF (H4) trend pts
+    mtf_score: int = 0          # MTF (H1) bias pts
+    ob_pts: int = 0             # Order Block pts
+    fvg_pts: int = 0            # Fair Value Gap pts
+    sweep_pts: int = 0          # Liquidity Sweep pts
+    sweep_age_bars: int = -1    # อายุของ sweep ที่ใช้ (-1 = ไม่มี)
+    htf_bias: str = ""          # "BULLISH" / "BEARISH" / "RANGING" — string สำหรับ Excel
+    d1_bias: int = 0            # Daily bias snapshot (-1/0/+1)
     
     @property
     def is_valid(self) -> bool:
@@ -152,6 +164,7 @@ class SMCStrategy:
         self._ob_detector = OrderBlockDetector()    # Order Blocks M15
         self._fvg_detector = FVGDetector()          # Fair Value Gaps M15
         self._sweep_detector = LiquiditySweepDetector()  # Liquidity Sweeps M15
+        self._idm_detector = InducementDetector(lookback=8)  # v6.11 Tier 3.1 — IDM rejection candles M15
 
         # Cache ข้อมูลที่วิเคราะห์แล้ว
         self._htf_data: Optional[pd.DataFrame] = None   # H4 data
@@ -543,73 +556,135 @@ class SMCStrategy:
                 no_signal.reasons = [f"❌ [REJECT] ADX(H1) {adx_h1:.1f} < 20 — ranging market"]
                 return no_signal
 
-        # F. D1 bias overlay — counter-D1 → require confluence สูงขึ้น (soft veto)
+        # E2. v6.11 (Tier 2.1) ADX(H4) ≥ 22 — H4 trend confirmation hard gate
+        # เหตุผล: live demo 2026-04-28 เจอ trade quiet-H4 ทำตัวเป็น mean-revert
+        # H4 ranging → SMC continuation pattern ไม่น่าเชื่อถือ
+        if self._htf_data is not None and "adx" in self._htf_data.columns:
+            adx_h4 = float(self._htf_data["adx"].iloc[-1])
+            if pd.notna(adx_h4) and adx_h4 < 22.0:
+                no_signal.confluence_score = 0
+                no_signal.reasons = [f"❌ [REJECT] ADX(H4) {adx_h4:.1f} < 22 — H4 ranging"]
+                return no_signal
+
+        # F. v6.11 (Tier 1.3) D1 bias hard veto — BUY ห้าม counter-D1
+        # เก่า: soft +15 confluence bonus → overcome ได้ตอน confluence 95-100
+        # ใหม่: D1 == -1 → reject ทันที. Neutral (D1 == 0) ผ่านได้ปกติ
         d1_bias = self._get_d1_bias(symbol)
-        counter_d1_conf_bonus = 0  # used later to raise threshold
         if d1_bias == -1:
-            counter_d1_conf_bonus = 15  # BUY counter D1 bearish → ต้องเก่งกว่า 15 คะแนน
-            reasons.append(f"⚠️ counter-D1 (D1 bearish) → ต้อง confluence สูงกว่าปกติ +15")
+            no_signal.confluence_score = 0
+            no_signal.reasons = ["❌ [REJECT] BUY counter-D1 (D1 bearish) — hard veto"]
+            return no_signal
+
+        # F2. v6.11 (Tier 1.4) Quiet-vol × off-overlap session blocker
+        # เหตุผล: live demo 2026-04-28 — trades quiet vol นอก London-NY overlap = SMC unreliable
+        # quiet = atr_pips < 1.2 × atr_floor; off-overlap = session multiplier < 1.0
+        if atr_pips < min_atr_pips * 1.2 and self._get_session_multiplier() < 1.0:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [
+                f"❌ [REJECT] Quiet vol ({atr_pips:.1f} pips < {min_atr_pips * 1.2:.1f}) × off-overlap session"
+            ]
+            return no_signal
+
+        # G. v6.11 (Tier 2.2) Recent Bullish Sweep prerequisite (within 8 bars)
+        # เหตุผล: SMC professional → ต้องมี smart-money sweep ก่อน OB tap, ไม่งั้น bot กลายเป็น liquidity
+        # bot has zero IDM detection (ดู Tier 3.1) → sweep prereq ลด stop-hunt rate
+        bullish_sweep_recent = self._sweep_detector.get_recent_bullish_sweep(max_bars_ago=8)
+        if bullish_sweep_recent is None:
+            no_signal.confluence_score = 0
+            no_signal.reasons = ["❌ [REJECT] ไม่มี Bullish Sweep ภายใน 8 bars — entry ไม่มี smart-money confirmation"]
+            return no_signal
+
+        # H. v6.11 (Tier 2.3) Fresh M15 BOS/CHoCH structural shift (within 6 bars)
+        # เหตุผล: SMC ต้องการ structural shift ยืนยันทิศทางก่อน entry, ไม่ใช่แค่ pullback to OB
+        # เปลี่ยน +5 bonus เดิม (ที่ใช้ MTF/H1 BOS) → hard gate บน LTF/M15
+        ltf_event = self._structure_ltf.get_latest_event()
+        ltf_len = len(ltf_df)
+        if ltf_event is None or not ltf_event.is_bullish or ltf_event.index < ltf_len - 6:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [
+                "❌ [REJECT] ไม่มี Fresh M15 BOS/CHoCH Bullish ภายใน 6 bars — ไม่มี structural shift"
+            ]
+            return no_signal
 
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == 1:
-            score += 25
+            htf_pts = 25
             reasons.append("✅ HTF (H4) ขาขึ้น")
         elif self._htf_bias == 0:
-            score += 10  # Neutral ได้บางส่วน
+            htf_pts = 10  # Neutral ได้บางส่วน
             reasons.append("⚠️ HTF (H4) Neutral")
         else:
-            score -= 15
+            htf_pts = -15
             reasons.append("❌ HTF (H4) ขาลง — ขัดกับ BUY (-15)")
+        score += htf_pts
 
         # === ปัจจัยที่ 2: MTF Market Bias (20 คะแนน) ===
+        mtf_pts = 0
         if mtf_bias == 1:
-            score += 20
+            mtf_pts = 20
             reasons.append("✅ MTF (H1) Bullish Bias")
 
             # เช็คว่ามี BOS ล่าสุดหรือไม่
             latest_event = self._structure_mtf.get_latest_event()
             if latest_event and latest_event.event_type == StructureType.BOS_BULLISH:
-                score += 5  # Bonus สำหรับ Fresh BOS
+                mtf_pts += 5  # Bonus สำหรับ Fresh BOS
                 reasons.append("✅ Fresh BOS Bullish")
         elif mtf_bias == 0:
-            score += 5
+            mtf_pts = 5
             reasons.append("⚠️ MTF (H1) Neutral")
+        score += mtf_pts
 
         # === ปัจจัยที่ 3: Order Block (25 คะแนน) ===
-        
+        ob_pts_local = 0
         bullish_ob = self._ob_detector.is_price_at_bullish_ob(
             current_price, tolerance_pips=5, pip_size=pip_size
         )
-        
+
         if bullish_ob:
             cluster_score = self._ob_detector.get_bullish_cluster_score(
                 current_price, tolerance_pips=15, pip_size=pip_size
             )
             if cluster_score:
-                ob_contribution = min(25, cluster_score * 0.25)
+                ob_pts_local = min(25, cluster_score * 0.25)
                 reasons.append(f"✅ Bullish OB Cluster (score={cluster_score:.0f})")
             else:
-                ob_contribution = min(25, bullish_ob.strength_score * 0.25)
+                ob_pts_local = min(25, bullish_ob.strength_score * 0.25)
                 reasons.append(f"✅ ราคาอยู่ที่ Bullish OB (score={bullish_ob.strength_score:.0f})")
-            score += ob_contribution
+            score += ob_pts_local
         else:
             reasons.append("⚠️ ไม่มี Bullish OB ใกล้ราคา")
 
         # === ปัจจัยที่ 3.5: Fair Value Gap (10 คะแนน) ===
+        fvg_pts_local = 0
         bullish_fvg = self._fvg_detector.is_price_at_bullish_fvg(
             current_price, tolerance_pips=5, pip_size=pip_size
         )
         if bullish_fvg:
-            fvg_contribution = min(10, bullish_fvg.strength_score * 0.1)
-            score += fvg_contribution
+            fvg_pts_local = min(10, bullish_fvg.strength_score * 0.1)
+            score += fvg_pts_local
             reasons.append(f"✅ Bullish FVG (score={bullish_fvg.strength_score:.0f})")
 
         # === ปัจจัยที่ 3.6: Liquidity Sweep (15 คะแนน) ===
-        bullish_sweep = self._sweep_detector.get_recent_bullish_sweep(max_bars_ago=5)
+        # v6.11 (Tier 2.2): บังคับ sweep within 8 bars แล้วใน pre-filter G — ที่นี่ scoring เพิ่ม
+        sweep_pts_local = 0
+        sweep_age = -1
+        bullish_sweep = self._sweep_detector.get_recent_bullish_sweep(max_bars_ago=8)
         if bullish_sweep:
-            sweep_contribution = min(15, bullish_sweep.strength_score * 0.15)
-            score += sweep_contribution
-            reasons.append(f"✅ Bullish Liquidity Sweep (score={bullish_sweep.strength_score:.0f})")
+            sweep_pts_local = min(15, bullish_sweep.strength_score * 0.15)
+            sweep_age = bullish_sweep.bars_ago
+            score += sweep_pts_local
+            reasons.append(f"✅ Bullish Liquidity Sweep (score={bullish_sweep.strength_score:.0f}, {sweep_age} bars ago)")
+
+        # === ปัจจัยที่ 3.7: Inducement (IDM) — v6.11 Tier 3.1 ===
+        # หา bullish rejection candle (wick down failed) ภายใน 8 bars
+        # IDM = +10 (smart-money trap confirmed), ไม่มี IDM = -5 (อาจเป็น obvious swing)
+        idm_event = self._idm_detector.detect_idm(ltf_df, direction=1)
+        if idm_event is not None:
+            score += 10
+            reasons.append(f"✅ IDM Bullish (wick/body={idm_event.wick_to_body_ratio:.2f}, {idm_event.bars_ago} bars ago)")
+        else:
+            score -= 5
+            reasons.append("⚠️ ไม่มี IDM rejection ใน 8 bars — entry อาจเป็น obvious swing (-5)")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
         # Data-driven (2026-04-18): RSI < 30 WR=37.7%, 30-50 WR=28.3%, 50-60 WR=23%
@@ -666,13 +741,11 @@ class SMCStrategy:
         # === Cap score ที่ 100 ===
         score = min(score, 100.0)
 
-        # === ตรวจสอบว่าผ่านเกณฑ์หรือไม่ (counter-D1 → threshold สูงขึ้น) ===
-        required_score = self.MIN_CONFLUENCE_SCORE + counter_d1_conf_bonus
-        if score < required_score:
+        # === ตรวจสอบว่าผ่านเกณฑ์หรือไม่ ===
+        # v6.11: Counter-D1 ย้ายเป็น hard veto ที่ pre-filter F → ไม่ใช้ soft threshold bump แล้ว
+        if score < self.MIN_CONFLUENCE_SCORE:
             no_signal.confluence_score = score
-            no_signal.reasons = reasons + [
-                f"❌ Score {score:.0f} < required {required_score:.0f} (counter-D1 bonus={counter_d1_conf_bonus})"
-            ] if counter_d1_conf_bonus > 0 else reasons
+            no_signal.reasons = reasons
             return no_signal
 
         # === คำนวณ Entry, SL, TP ===
@@ -718,6 +791,7 @@ class SMCStrategy:
         sl_price = round(sl_price, digits)
         tp_price = round(tp_price, digits)
 
+        htf_label = {1: "BULLISH", -1: "BEARISH", 0: "RANGING"}.get(self._htf_bias, "RANGING")
         signal = TradeSignal(
             signal_type=SignalType.BUY,
             symbol=symbol,
@@ -744,6 +818,15 @@ class SMCStrategy:
             bb_pctb=float(ltf_df['bb_pctb'].iloc[-1]) if 'bb_pctb' in ltf_df.columns else 0.5,
             atr_change_ratio=float(ltf_df['atr_change_ratio'].iloc[-1]) if 'atr_change_ratio' in ltf_df.columns else 0.0,
             price_roc=float(ltf_df['price_roc'].iloc[-1]) if 'price_roc' in ltf_df.columns else 0.0,
+            # v6.11 (Tier 2.4) per-component breakdown สำหรับ Trades sheet
+            htf_score=int(htf_pts),
+            mtf_score=int(mtf_pts),
+            ob_pts=int(ob_pts_local),
+            fvg_pts=int(fvg_pts_local),
+            sweep_pts=int(sweep_pts_local),
+            sweep_age_bars=sweep_age,
+            htf_bias=htf_label,
+            d1_bias=d1_bias,
         )
 
         if bot_config.debug_mode:
@@ -842,72 +925,123 @@ class SMCStrategy:
                 no_signal.reasons = [f"❌ [REJECT] ADX(H1) {adx_h1:.1f} < 20 — ranging market"]
                 return no_signal
 
-        # F. D1 bias overlay — counter-D1 (D1 bullish) → require confluence สูงขึ้น
+        # E2. v6.11 (Tier 2.1) ADX(H4) ≥ 22 — H4 trend confirmation hard gate
+        if self._htf_data is not None and "adx" in self._htf_data.columns:
+            adx_h4 = float(self._htf_data["adx"].iloc[-1])
+            if pd.notna(adx_h4) and adx_h4 < 22.0:
+                no_signal.confluence_score = 0
+                no_signal.reasons = [f"❌ [REJECT] ADX(H4) {adx_h4:.1f} < 22 — H4 ranging"]
+                return no_signal
+
+        # F. v6.11 (Tier 1.3) D1 bias hard veto — SELL ห้าม counter-D1
+        # เก่า: soft +15 confluence bonus → overcome ได้ตอน confluence 95-100
+        # ใหม่: D1 == +1 → reject ทันที. Neutral (D1 == 0) ผ่านได้ปกติ
         d1_bias = self._get_d1_bias(symbol)
-        counter_d1_conf_bonus = 0
         if d1_bias == 1:
-            counter_d1_conf_bonus = 15
-            reasons.append(f"⚠️ counter-D1 (D1 bullish) → ต้อง confluence สูงกว่าปกติ +15")
+            no_signal.confluence_score = 0
+            no_signal.reasons = ["❌ [REJECT] SELL counter-D1 (D1 bullish) — hard veto"]
+            return no_signal
+
+        # F2. v6.11 (Tier 1.4) Quiet-vol × off-overlap session blocker (mirror ของ BUY)
+        if atr_pips < min_atr_pips * 1.2 and self._get_session_multiplier() < 1.0:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [
+                f"❌ [REJECT] Quiet vol ({atr_pips:.1f} pips < {min_atr_pips * 1.2:.1f}) × off-overlap session"
+            ]
+            return no_signal
+
+        # G. v6.11 (Tier 2.2) Recent Bearish Sweep prerequisite (within 8 bars) — mirror ของ BUY
+        bearish_sweep_recent = self._sweep_detector.get_recent_bearish_sweep(max_bars_ago=8)
+        if bearish_sweep_recent is None:
+            no_signal.confluence_score = 0
+            no_signal.reasons = ["❌ [REJECT] ไม่มี Bearish Sweep ภายใน 8 bars — entry ไม่มี smart-money confirmation"]
+            return no_signal
+
+        # H. v6.11 (Tier 2.3) Fresh M15 BOS/CHoCH bearish structural shift (within 6 bars) — mirror ของ BUY
+        ltf_event = self._structure_ltf.get_latest_event()
+        ltf_len = len(ltf_df)
+        if ltf_event is None or ltf_event.is_bullish or ltf_event.index < ltf_len - 6:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [
+                "❌ [REJECT] ไม่มี Fresh M15 BOS/CHoCH Bearish ภายใน 6 bars — ไม่มี structural shift"
+            ]
+            return no_signal
 
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
         if self._htf_bias == -1:
-            score += 25
+            htf_pts = 25
             reasons.append("✅ HTF (H4) ขาลง")
         elif self._htf_bias == 0:
-            score += 10
+            htf_pts = 10
             reasons.append("⚠️ HTF (H4) Neutral")
         else:
-            score -= 15
+            htf_pts = -15
             reasons.append("❌ HTF (H4) ขาขึ้น — ขัดกับ SELL (-15)")
+        score += htf_pts
 
         # === ปัจจัยที่ 2: MTF Market Bias (20 คะแนน) ===
+        mtf_pts = 0
         if mtf_bias == -1:
-            score += 20
+            mtf_pts = 20
             reasons.append("✅ MTF (H1) Bearish Bias")
 
             latest_event = self._structure_mtf.get_latest_event()
             if latest_event and latest_event.event_type == StructureType.BOS_BEARISH:
-                score += 5
+                mtf_pts += 5
                 reasons.append("✅ Fresh BOS Bearish")
         elif mtf_bias == 0:
-            score += 5
+            mtf_pts = 5
             reasons.append("⚠️ MTF (H1) Neutral")
+        score += mtf_pts
 
         # === ปัจจัยที่ 3: Order Block (25 คะแนน) ===
-        
+        ob_pts_local = 0
         bearish_ob = self._ob_detector.is_price_at_bearish_ob(
             current_price, tolerance_pips=5, pip_size=pip_size
         )
-        
+
         if bearish_ob:
             cluster_score = self._ob_detector.get_bearish_cluster_score(
                 current_price, tolerance_pips=15, pip_size=pip_size
             )
             if cluster_score:
-                ob_contribution = min(25, cluster_score * 0.25)
+                ob_pts_local = min(25, cluster_score * 0.25)
                 reasons.append(f"✅ Bearish OB Cluster (score={cluster_score:.0f})")
             else:
-                ob_contribution = min(25, bearish_ob.strength_score * 0.25)
+                ob_pts_local = min(25, bearish_ob.strength_score * 0.25)
                 reasons.append(f"✅ ราคาอยู่ที่ Bearish OB (score={bearish_ob.strength_score:.0f})")
-            score += ob_contribution
+            score += ob_pts_local
         else:
             reasons.append("⚠️ ไม่มี Bearish OB ใกล้ราคา")
 
         # === ปัจจัยที่ 3.5: Fair Value Gap (10 คะแนน) ===
+        fvg_pts_local = 0
         bearish_fvg = self._fvg_detector.is_price_at_bearish_fvg(
             current_price, tolerance_pips=5, pip_size=pip_size
         )
         if bearish_fvg:
-            fvg_contribution = min(10, bearish_fvg.strength_score * 0.1)
-            score += fvg_contribution
+            fvg_pts_local = min(10, bearish_fvg.strength_score * 0.1)
+            score += fvg_pts_local
             reasons.append(f"✅ Bearish FVG (score={bearish_fvg.strength_score:.0f})")
 
         # === ปัจจัยที่ 3.6: Liquidity Sweep (15 คะแนน) ===
-        bearish_sweep = self._sweep_detector.get_recent_bearish_sweep(max_bars_ago=5)
+        sweep_pts_local = 0
+        sweep_age = -1
+        bearish_sweep = self._sweep_detector.get_recent_bearish_sweep(max_bars_ago=8)
         if bearish_sweep:
-            sweep_contribution = min(15, bearish_sweep.strength_score * 0.15)
-            score += sweep_contribution
-            reasons.append(f"✅ Bearish Liquidity Sweep (score={bearish_sweep.strength_score:.0f})")
+            sweep_pts_local = min(15, bearish_sweep.strength_score * 0.15)
+            sweep_age = bearish_sweep.bars_ago
+            score += sweep_pts_local
+            reasons.append(f"✅ Bearish Liquidity Sweep (score={bearish_sweep.strength_score:.0f}, {sweep_age} bars ago)")
+
+        # === ปัจจัยที่ 3.7: Inducement (IDM) — v6.11 Tier 3.1 (mirror ของ BUY) ===
+        idm_event = self._idm_detector.detect_idm(ltf_df, direction=-1)
+        if idm_event is not None:
+            score += 10
+            reasons.append(f"✅ IDM Bearish (wick/body={idm_event.wick_to_body_ratio:.2f}, {idm_event.bars_ago} bars ago)")
+        else:
+            score -= 5
+            reasons.append("⚠️ ไม่มี IDM rejection ใน 8 bars — entry อาจเป็น obvious swing (-5)")
 
         # === ปัจจัยที่ 4: RSI (10 คะแนน) ===
         # Data-driven (2026-04-18): SELL RSI 50-70 WR=37.3%, 30-50 WR=32.7%, >70 WR=25%
@@ -963,13 +1097,11 @@ class SMCStrategy:
         # === Cap score ที่ 100 ===
         score = min(score, 100.0)
 
-        # === ตรวจสอบเกณฑ์ (counter-D1 → threshold สูงขึ้น) ===
-        required_score = self.MIN_CONFLUENCE_SCORE + counter_d1_conf_bonus
-        if score < required_score:
+        # === ตรวจสอบเกณฑ์ ===
+        # v6.11: Counter-D1 ย้ายเป็น hard veto ที่ pre-filter F → ไม่ใช้ soft threshold bump แล้ว
+        if score < self.MIN_CONFLUENCE_SCORE:
             no_signal.confluence_score = score
-            no_signal.reasons = reasons + [
-                f"❌ Score {score:.0f} < required {required_score:.0f} (counter-D1 bonus={counter_d1_conf_bonus})"
-            ] if counter_d1_conf_bonus > 0 else reasons
+            no_signal.reasons = reasons
             return no_signal
 
         # === คำนวณ Entry, SL, TP ===
@@ -1009,6 +1141,7 @@ class SMCStrategy:
         sl_price = round(sl_price, digits)
         tp_price = round(tp_price, digits)
 
+        htf_label = {1: "BULLISH", -1: "BEARISH", 0: "RANGING"}.get(self._htf_bias, "RANGING")
         signal = TradeSignal(
             signal_type=SignalType.SELL,
             symbol=symbol,
@@ -1035,6 +1168,15 @@ class SMCStrategy:
             bb_pctb=float(ltf_df['bb_pctb'].iloc[-1]) if 'bb_pctb' in ltf_df.columns else 0.5,
             atr_change_ratio=float(ltf_df['atr_change_ratio'].iloc[-1]) if 'atr_change_ratio' in ltf_df.columns else 0.0,
             price_roc=float(ltf_df['price_roc'].iloc[-1]) if 'price_roc' in ltf_df.columns else 0.0,
+            # v6.11 (Tier 2.4) per-component breakdown สำหรับ Trades sheet
+            htf_score=int(htf_pts),
+            mtf_score=int(mtf_pts),
+            ob_pts=int(ob_pts_local),
+            fvg_pts=int(fvg_pts_local),
+            sweep_pts=int(sweep_pts_local),
+            sweep_age_bars=sweep_age,
+            htf_bias=htf_label,
+            d1_bias=d1_bias,
         )
 
         if bot_config.debug_mode:

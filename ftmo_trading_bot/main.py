@@ -600,24 +600,27 @@ class FTMOTradingBot:
           - bid/ask snapshot
           - account balance
         """
+        # v6.11 (Tier 2.4) อ่าน per-component pts + htf_bias จาก signal โดยตรง
+        # — เก่า: hardcode 0 ทุกตัว → Trades sheet HTF/MTF/OB/FVG/Sweep pts ว่างเปล่าหมด
         ctx = {
             "ml_score": 0.5,
             "ml_score_raw": 0.5,
             "agent_action_value": 0.0,
             "agent_decision": "",
             "ml_threshold_used": 0.0,
-            "htf_score": 0,
-            "mtf_score": 0,
-            "ob_pts": 0,
-            "fvg_pts": 0,
-            "sweep_pts": 0,
+            "htf_score": int(getattr(sig, "htf_score", 0)),
+            "mtf_score": int(getattr(sig, "mtf_score", 0)),
+            "ob_pts": int(getattr(sig, "ob_pts", 0)),
+            "fvg_pts": int(getattr(sig, "fvg_pts", 0)),
+            "sweep_pts": int(getattr(sig, "sweep_pts", 0)),
+            "htf_bias": getattr(sig, "htf_bias", "") or "",
             "bid_at_entry": 0.0,
             "ask_at_entry": 0.0,
             "spread_pips_actual": 0.0,
             "adx_h1": 0.0,
             "adx_h4": 0.0,
-            "mtf_bias": 0,
-            "d1_bias": 0,
+            "mtf_bias": int(getattr(sig, "market_bias", 0)),
+            "d1_bias": int(getattr(sig, "d1_bias", 0)),
             "balance_at_entry": 0.0,
         }
 
@@ -771,7 +774,9 @@ class FTMOTradingBot:
                 "agent_decision": live_context.get("agent_decision", ""),
                 "ml_threshold": live_context.get("ml_threshold_used", 0),
                 "adx_h1": live_context.get("adx_h1", 0),
-                "htf_bias": getattr(self._strategy, "_htf_bias", 0),
+                # v6.11 (Tier 2.4) ใช้ signal.htf_bias (string "BULLISH/BEARISH/RANGING") ตรงๆ
+                # — เก่า: int จาก _strategy._htf_bias → Excel แสดงเลข 1/-1/0 ไม่ informative
+                "htf_bias": getattr(sig, "htf_bias", "") or live_context.get("htf_bias", ""),
                 "mtf_bias": live_context.get("mtf_bias", 0),
                 "d1_bias": live_context.get("d1_bias", 0),
                 "session": "",  # filled by TimeManager if needed

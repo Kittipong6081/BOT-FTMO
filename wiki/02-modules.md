@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-28 | Scope: every module + key class / method / variable
+> Last Updated: 2026-04-29 | Scope: every module + key class / method / variable
 
 ## TL;DR (30-second scan)
 
@@ -18,8 +18,9 @@
 | `indicators.py` | `TechnicalIndicators.atr`, `.ema`, `.rsi`, `.macd`, `.adx`, `.stoch`, `.bb` | Indicator calculation on numpy arrays |
 | `order_blocks.py` | `OrderBlockDetector.find_order_blocks`, `OrderBlockDetector.score_ob` | Fractal-based OB detection + impulse scoring [0–100] |
 | `fair_value_gaps.py` | `FairValueGap.analyze`, `FVG` (dataclass) | 3-candle imbalance + fill tracking |
-| `liquidity_sweeps.py` | `LiquiditySweepDetector.find_sweeps` | Swing high / low sweep detection |
+| `liquidity_sweeps.py` | `LiquiditySweepDetector.find_sweeps`, `.get_recent_bullish_sweep(max_bars_ago)`, `.get_recent_bearish_sweep(max_bars_ago)` | Swing high / low sweep detection |
 | `market_structure.py` | `MarketStructure.detect_bos_choch`, `MarketStructure.htf_bias` | BOS / CHoCH (body-based, 5-bar lookback); HTF bias 5-bar window ≥3 bars |
+| `inducement.py` (v6.11) | `InducementDetector.detect_idm(df, direction)`, `InducementEvent` | Rejection candle (wick failed) detection within 8 bars — wick ≥ 1.5 × body. Used as +10/-5 confluence in `_evaluate_buy/sell_signal`. |
 
 **Confluence**: inside `SMCStrategy.scan_signal`, scores combine OB + FVG + Sweep + Structure + Indicators, capped at 100 (session multiplier × raw).
 
@@ -62,6 +63,18 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 - **IDM sweep gate** (removed) — sweep + OB bonus / old OB penalty.
 - **FVG + BOS conjunction** (removed).
 - **ADX floor** reverted 25 → 20.
+
+### v6.11 SMC Precision Overhaul (2026-04-29) — see `wiki/05-invariants.md` Version Log
+
+- **`SMCStrategy._evaluate_buy_signal/_evaluate_sell_signal`** — pre-filter chain ตอนนี้: A (ATR floor) → B (RSI zone) → C (HTF+MTF align) → D (EMA200 H1) → E (ADX H1 ≥ 20) → **E2 (ADX H4 ≥ 22)** → **F (Counter-D1 hard veto)** → **F2 (Quiet-vol × off-overlap)** → **G (Recent sweep within 8 bars)** → **H (Fresh M15 BOS/CHoCH within 6 bars)**.
+- **`TradeSignal`** dataclass — เพิ่ม fields: `htf_score, mtf_score, ob_pts, fvg_pts, sweep_pts, sweep_age_bars, htf_bias` (string label "BULLISH/BEARISH/RANGING"), `d1_bias`. Populate ใน BUY/SELL eval โดย track per-component contribution แยกจาก main `score` accumulator.
+- **`SMCStrategy._idm_detector`** — instance ของ `InducementDetector(lookback=8)`. ใช้ใน confluence section (factor 3.7): IDM = +10, ไม่มี IDM = -5.
+- **`OrderBlock.ob_grade: str`** — `"EXTREME"` / `"DECISIONAL"` / `"INTERNAL"`. classified ใน `OrderBlockDetector._classify_ob_grade(ob, df, avg_impulse)`.
+- **`OrderBlockDetector._score_order_blocks`** — apply grade weight: EXTREME ×1.20, DECISIONAL ×1.00, INTERNAL ×0.60 (หลังคะแนน 4 ปัจจัยเดิม).
+- **`TradeManager._manage_single_position`** — track `state.best_price` ทุก tick, BE/Partial trigger ใช้ `best_rr` (rolling MFE-based) แทน `current_rr`. Trailing ยังใช้ `current_rr` (เพราะต้อง confirm trend ต่อ).
+- **`TradeManager._partial_close`** lot_min branch — mirror `trade.partial_closed_flag = True` (สอดคล้องกับ `partial_close_skipped`).
+- **`FTMOTradingBot._build_live_context`** — อ่าน `htf_score/mtf_score/ob_pts/fvg_pts/sweep_pts/htf_bias/d1_bias/mtf_bias` จาก `signal` ตรงๆ (ไม่ใช่ hardcode 0).
+- **`FTMOTradingBot._log_signal_scan`** — `htf_bias` field ใช้ `sig.htf_bias` (string) แทน `_strategy._htf_bias` (int).
 
 ### v6.3 SMC fixes (2026-04-24 audit)
 

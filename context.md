@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-04-28 | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-04-29 | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
@@ -9,6 +9,7 @@
 - **Obs = 27 dims** (v6, 2026-04-22). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
 - **Runs on**: macOS/Linux (train + backtest), Windows + MT5 (live).
 - **Live logging**: `TradeLogger` (re-enabled v6.9, schema bumped v6.10) writes Excel — Trades 64 cols (incl. `Obs27 JSON` for retrain), Signals 21 cols (per-scan log), Daily, Stats.
+- **v6.11 SMC overhaul (2026-04-29)**: Counter-D1 hard veto + Sweep within 8 bars + Fresh M15 BOS within 6 bars + ADX H4 ≥ 22 + Quiet-vol × off-overlap blocker + IDM detector + OB grading (Extreme/Decisional/Internal). BE trigger ใช้ `best_price` (rolling MFE). Per-component pts populate ใน TradeSignal → Trades sheet เห็น HTF/MTF/OB/FVG/Sweep pts จริง. ดู [`wiki/05-invariants.md` v6.11 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
 - **Wiki Sync Protocol**: editing `.py` files under `ftmo_trading_bot/` requires updating `wiki/` + `context.md` + `readme.md` (when user-facing) in the same turn. Stop hook enforces (`decision: block`). See `CLAUDE.md`.
 
 ## Headline Numbers

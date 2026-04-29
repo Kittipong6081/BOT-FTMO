@@ -179,19 +179,32 @@ class TradeManager:
         else:
             profit_distance = trade.entry_price - current_price
 
-        # คำนวณ RR ปัจจุบัน
+        # คำนวณ RR ปัจจุบัน (ใช้ราคาปัจจุบัน — สำหรับ trailing)
         sl_distance = abs(trade.entry_price - state.initial_sl)
         current_rr = profit_distance / sl_distance if sl_distance > 0 else 0
 
-        # === ขั้นตอนที่ 1: Break-Even Move ===
-        if not state.breakeven_moved and current_rr >= self.BE_TRIGGER_RR:
+        # v6.11 (Tier 1.1) — Track rolling best_price ทุก tick (ไม่รอ trailing activate)
+        # เหตุผล: trade ที่ MFE สูงระหว่าง 5s tick แล้ว revert จะพลาด BE/Partial trigger
+        # ถ้า trigger ดู current_price อย่างเดียว
+        if trade.trade_type == "BUY":
+            if current_price > state.best_price:
+                state.best_price = current_price
+            best_profit = state.best_price - trade.entry_price
+        else:
+            if current_price < state.best_price:
+                state.best_price = current_price
+            best_profit = trade.entry_price - state.best_price
+        best_rr = best_profit / sl_distance if sl_distance > 0 else 0
+
+        # === ขั้นตอนที่ 1: Break-Even Move (ใช้ best_rr — กัน spike-then-revert) ===
+        if not state.breakeven_moved and best_rr >= self.BE_TRIGGER_RR:
             self._move_to_breakeven(trade, state, price_info)
 
-        # === ขั้นตอนที่ 2: Partial Close ===
-        if not state.partial_closed and current_rr >= self.PARTIAL_TRIGGER_RR:
+        # === ขั้นตอนที่ 2: Partial Close (ใช้ best_rr) ===
+        if not state.partial_closed and best_rr >= self.PARTIAL_TRIGGER_RR:
             self._partial_close(trade, state)
 
-        # === ขั้นตอนที่ 3: Trailing Stop ===
+        # === ขั้นตอนที่ 3: Trailing Stop (ยังใช้ current_rr — ต้อง confirm trend ต่อ) ===
         if current_rr >= self.TRAIL_ACTIVATION_RR:
             state.trailing_active = True
             # v6.9: mirror to ExecutedTrade for logging
@@ -280,6 +293,9 @@ class TradeManager:
             state.partial_closed = True  # ถือว่าผ่านไปแล้ว
             # v6.10: distinguish skip vs fire in logging
             trade.partial_close_skipped = True
+            # v6.11 (Tier 1.2): mirror partial_closed_flag เพื่อให้ log ตรงกับ state จริง
+            # — partial logic fired แล้ว เพียงแต่ veto เพราะ lot น้อย, ไม่ใช่ "BE-only ไม่ทำเลย"
+            trade.partial_closed_flag = True
             print(f"⚠️ [Trade Manager] Partial close ข้าม Ticket {trade.ticket}: "
                   f"close_volume={close_volume:.3f} หรือ remaining={remaining:.3f} < lot_min={lot_min}")
             return

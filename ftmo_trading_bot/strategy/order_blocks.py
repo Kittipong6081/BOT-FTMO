@@ -53,6 +53,8 @@ class OrderBlock:
     mitigated_index: int = -1   # ตำแหน่งที่ถูก Mitigate
     strength_score: float = 0.0 # คะแนนความแข็งแกร่ง (0-100)
     confirmed_index: int = -1   # ตำแหน่งแท่ง impulse ที่ยืนยัน OB (> index — anti-repaint)
+    # v6.11 (Tier 3.2) OB type grading
+    ob_grade: str = "INTERNAL"  # "EXTREME" / "DECISIONAL" / "INTERNAL"
     
     @property
     def zone_mid(self) -> float:
@@ -268,51 +270,94 @@ class OrderBlockDetector:
     # ⭐ Order Block Scoring (ให้คะแนนความแข็งแกร่ง)
     # =========================================================================
 
+    def _classify_ob_grade(self, ob: OrderBlock, df: pd.DataFrame, avg_impulse: float) -> str:
+        """
+        v6.11 (Tier 3.2) — จัดประเภท OB เป็น EXTREME / DECISIONAL / INTERNAL
+
+        SMC professional categorization:
+        - EXTREME: OB ที่ swing extreme ของ window 50 bars
+          (Bullish OB ที่ low อยู่ใกล้ lowest low, Bearish OB ที่ high ใกล้ highest high)
+          ติดกับ liquidity pool → smart money เลือกใช้บ่อยที่สุด
+        - DECISIONAL: OB ที่สร้าง impulse แรงกว่าค่าเฉลี่ย ≥ 1.8 × → structural significance
+        - INTERNAL: ในช่วง range, ไม่มี structural significance — มัก fail
+        """
+        # Window 50 bars ก่อน OB (ระวัง index out of range)
+        start = max(0, ob.index - 50)
+        end = ob.index + 1
+        if end <= start:
+            return "INTERNAL"
+        window_high = float(df['high'].iloc[start:end].max())
+        window_low = float(df['low'].iloc[start:end].min())
+        # tolerance 5% ของ window range สำหรับ "ใกล้ extreme"
+        rng = max(window_high - window_low, 1e-9)
+        tol = rng * 0.05
+
+        if ob.ob_type == OBType.BULLISH:
+            if abs(ob.low - window_low) <= tol:
+                return "EXTREME"
+        else:  # BEARISH
+            if abs(ob.high - window_high) <= tol:
+                return "EXTREME"
+
+        # DECISIONAL: impulse ใหญ่กว่าเฉลี่ย ≥ 1.8 ×
+        if avg_impulse > 0 and ob.impulse_size >= avg_impulse * 1.8:
+            return "DECISIONAL"
+
+        return "INTERNAL"
+
     def _score_order_blocks(self, df: pd.DataFrame):
         """
         คำนวณคะแนนความแข็งแกร่งของแต่ละ Order Block (0-100)
-        
+
         ปัจจัยที่ใช้ให้คะแนน:
         1. ขนาด Impulsive Move (ยิ่งแรง = ยิ่งดี) — 35 คะแนน
         2. Body Ratio ของ OB (ยิ่ง Body ใหญ่ = ยิ่ง strong) — 20 คะแนน
         3. ยังไม่ถูก Mitigate (Fresh OB) — 25 คะแนน
         4. ความใกล้กับราคาปัจจุบัน — 20 คะแนน
+        5. v6.11 (Tier 3.2) OB grade weight — Extreme ×1.20, Decisional ×1.00, Internal ×0.60
         """
         if len(df) == 0:
             return
-            
+
         current_price = df['close'].iloc[-1]
-        
+
         all_obs = self._bullish_obs + self._bearish_obs
         if not all_obs:
             return
-        
+
         # หาค่าสูงสุดของ Impulse Size สำหรับ Normalize
         max_impulse = max(ob.impulse_size for ob in all_obs) if all_obs else 1
         max_impulse = max(max_impulse, 0.00001)  # ป้องกันหาร 0
-        
+        avg_impulse = sum(ob.impulse_size for ob in all_obs) / len(all_obs)
+
+        grade_weight = {"EXTREME": 1.20, "DECISIONAL": 1.00, "INTERNAL": 0.60}
+
         for ob in all_obs:
             score = 0.0
-            
+
             # ปัจจัยที่ 1: Impulse Size (35 คะแนน)
             impulse_score = (ob.impulse_size / max_impulse) * 35
             score += impulse_score
-            
+
             # ปัจจัยที่ 2: Body Ratio (20 คะแนน)
             ob_range = ob.high - ob.low
             ob_body_ratio = ob.body_size / ob_range if ob_range > 0 else 0
             score += ob_body_ratio * 20
-            
+
             # ปัจจัยที่ 3: Fresh (ยังไม่ Mitigate) — 25 คะแนน
             if ob.is_active:
                 score += 25
-            
+
             # ปัจจัยที่ 4: ความใกล้กับราคาปัจจุบัน (20 คะแนน)
             distance = abs(current_price - ob.zone_mid)
             relative_distance = distance / current_price if current_price > 0 else 1
             proximity_score = max(0, 20 * (1 - relative_distance * 10))  # ยิ่งใกล้ = ยิ่งดี
             score += proximity_score
-            
+
+            # ปัจจัยที่ 5: v6.11 (Tier 3.2) Grade weight
+            ob.ob_grade = self._classify_ob_grade(ob, df, avg_impulse)
+            score *= grade_weight.get(ob.ob_grade, 1.0)
+
             ob.strength_score = min(score, 100)  # จำกัดที่ 100
 
     # =========================================================================

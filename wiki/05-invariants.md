@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-28 | Scope: red flags, version log, migration notes (latest: v6.10d _log_signal_scan propagation fix)
+> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: v6.11 SMC precision overhaul — Counter-D1 hard veto, Sweep+IDM+M15 BOS hard gates, BE best_price trigger, OB grading)
 
 ## TL;DR (30-second scan)
 
@@ -142,6 +142,55 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-04-29 — v6.11 SMC Precision Overhaul (post live demo audit)
+
+Live demo Day-3 (2026-04-28) เจอ EV ติดลบ (PF 0.96, Net −$19.66, WR 46.2 %) แม้ไม่ผิด FTMO. Audit หาเจอว่า SMC entry gate **หลวมเกินไป** — Sweep, IDM, Fresh BOS, Counter-D1 ทั้งหมดเป็น *bonus* ไม่ใช่ *prerequisite*. รวมถึง TradeManager BE trigger พลาด trade ที่ MFE สูงแล้วย้อน, และ TradeLogger logging gap หลายฟิลด์.
+
+**Tier 1 — Quick Wins (ไม่ต้อง retrain):**
+
+- **`TradeManager._manage_single_position`** — BE/Partial trigger เปลี่ยนจาก `current_rr` เป็น `best_rr` (rolling MFE-based). track `state.best_price` ทุก tick (ไม่รอ trailing activate). Trade ที่ MFE สูงระหว่าง 5 s tick แล้ว revert จะ lock BE+Partial ทันที.
+- **`TradeManager._partial_close`** lot_min branch — mirror `trade.partial_closed_flag = True` (เพิ่มจากเดิมที่ตั้งแค่ `partial_close_skipped=True`). log แสดงตรงกับ state จริง.
+- **`SMCStrategy._evaluate_buy_signal/_evaluate_sell_signal`** — Counter-D1 เปลี่ยนจาก soft +15 confluence threshold bump → **hard reject**. BUY: `d1_bias == -1` → reject; SELL: `d1_bias == +1` → reject. Neutral (0) ผ่านได้ปกติ.
+- **`SMCStrategy._evaluate_buy/sell_signal`** pre-filter F2 — เพิ่ม **Quiet-vol × off-overlap blocker**. ถ้า `atr_pips < 1.2 × atr_floor_pips` AND `_get_session_multiplier() < 1.0` → reject. ลด trade quiet vol นอก London-NY overlap ที่ pattern reliability ต่ำ.
+
+**Tier 2 — Medium (ไม่ต้อง retrain):**
+
+- **`SMCStrategy._evaluate_buy/sell_signal`** pre-filter E2 — **ADX(H4) ≥ 22 hard gate**. ดึงจาก `_htf_data["adx"]`. ลด whipsaw ใน H4 ranging.
+- **`SMCStrategy._evaluate_buy/sell_signal`** pre-filter G — **Recent Sweep prerequisite within 8 bars**. ใช้ `LiquiditySweepDetector.get_recent_bullish/bearish_sweep(max_bars_ago=8)` เป็น hard gate (ก่อนหน้านี้แค่ confluence bonus). ทุก entry บังคับมี smart-money confirmation.
+- **`SMCStrategy._evaluate_buy/sell_signal`** pre-filter H — **Fresh M15 BOS/CHoCH structural shift within 6 bars**. ใช้ `_structure_ltf.get_latest_event()` + ตรวจ `event.index >= len(ltf_df) - 6`. ตัด pullback-to-OB-without-break trades.
+- **`TradeSignal` dataclass** — เพิ่ม fields: `htf_score, mtf_score, ob_pts, fvg_pts, sweep_pts, sweep_age_bars, htf_bias` (string label), `d1_bias`. populate ใน BUY/SELL eval.
+- **`FTMOTradingBot._build_live_context`** — อ่าน per-component pts + `htf_bias` จาก `signal` ตรงๆ (ก่อนหน้านี้ hardcode 0). แก้ Trades sheet HTF/MTF/OB/FVG/Sweep pts ที่ว่างเปล่า.
+- **`FTMOTradingBot._log_signal_scan`** — `htf_bias` field ใช้ `sig.htf_bias` (string "BULLISH/BEARISH/RANGING") แทน `_strategy._htf_bias` (int).
+
+**Tier 3 — Strategic:**
+
+- **NEW `strategy/inducement.py` — `InducementDetector` class.** ตรวจจับ rejection candle (wick failed) ภายใน 8 bars. API: `detect_idm(df, direction) -> Optional[InducementEvent]`. wired เข้า `SMCStrategy._evaluate_buy/sell_signal` หลัง Sweep block: IDM = +10 confluence; ไม่มี IDM = -5 (อาจเป็น obvious swing).
+- **`OrderBlock`** dataclass — เพิ่ม field `ob_grade: str = "INTERNAL"`.
+- **NEW `OrderBlockDetector._classify_ob_grade(ob, df, avg_impulse)`** — จัดประเภทเป็น `EXTREME` (ใกล้ swing extreme ของ window 50 bars), `DECISIONAL` (impulse ≥ 1.8 × avg), หรือ `INTERNAL`.
+- **`OrderBlockDetector._score_order_blocks`** — apply grade weight: EXTREME ×1.20, DECISIONAL ×1.00, INTERNAL ×0.60. ลด false-positive จาก Internal OBs.
+
+**Mandatory verification before next live deploy:**
+
+1. **Schema migration** — ถ้า user เคย deploy ก่อน v6.11: lint error อาจไม่กระทบ แต่ field `obs_27_json` + per-component pts ต่าง → rename `logs/ftmo_trades.xlsx` ถ้าเปิดรอบใหม่.
+2. **Smoke test**: รัน `python main.py` ใน demo MT5 ≥ 4 ชม. ใน London-NY overlap window
+3. **ตรวจ Trades sheet**: `HTF Bias` (string), `MTF Bias` (int), `ADX H4` (float), `HTF pts/MTF pts/OB pts/FVG pts/Sweep pts` (int) — ทั้งหมดต้องมีค่าจริง ไม่ใช่ 0/null
+4. **ตรวจ Signals sheet col 20** (Executor Reject) — TAKE_FAIL rows ต้องมี reason (verify v6.10d ทำงาน)
+5. **ตรวจ BE Moved + Partial Closed**: ถ้า MFE > 1 R ต้อง True ทั้งคู่ หรือ `Partial Skipped=True` (lot น้อย)
+6. **ตรวจไม่มี trade ที่ Counter-D1**: BUY ไม่ควรเข้าตอน D1 = -1; SELL ไม่ควรเข้าตอน D1 = +1
+
+**Expected outcome (post Tier 1):**
+
+- WR: 46 % → 60-65 %, PF: 0.96 → 1.3+, Expectancy: −$1.51 → +$3 to +$5
+- Trades/day: 13 → 7-9 (volume ลด ~40 % แต่ quality ขึ้น)
+- Counter-D1 trade %: 23 % → 0 %
+- MFE-then-SL anomaly: 46 % → < 5 %
+
+**ที่ไม่ทำ (out of scope):**
+
+- ❌ Retrain RL/GBM — entry gate เปลี่ยนแล้ว → re-eval 5000 eps ก่อนตัดสิน. Pool distribution อาจต่าง แต่ fields obs_27 ไม่เปลี่ยน → existing model ยังใช้ได้
+- ❌ Tighten `MIN_CONFLUENCE_SCORE` 70 → 75 — Tier 1.3 + 1.4 ตัด ~30-40 % volume แล้ว, ตึงเพิ่มเสี่ยง undertrade
+- ❌ Reduce risk per trade — risk 0.7 % verified Pass Rate 10 % แล้ว, ปัญหาคือ entry quality ไม่ใช่ sizing
 
 ### 2026-04-25 — v6.4 SMC Phase C (4 professional principles)
 
