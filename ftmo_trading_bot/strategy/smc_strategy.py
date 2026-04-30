@@ -745,13 +745,18 @@ class SMCStrategy:
         # === คำนวณ Entry, SL, TP ===
         entry_price = price_info["ask"]  # BUY ที่ราคา Ask
 
-        # SL: ใช้ ATR × Multiplier หรือ ใต้ Order Block
-        sl_distance = atr_value * bot_config.indicators.atr_sl_multiplier
+        # v6.14: SL ใช้ per-symbol multiplier (XAUUSD = 1.8×, FX default = 1.5×)
+        sl_atr_mult = get_symbol_config(
+            symbol, "sl_atr_multiplier", bot_config.indicators.atr_sl_multiplier
+        )
+        sl_distance = atr_value * sl_atr_mult
 
-        # ถ้ามี OB → วาง SL ใต้ OB (ถ้าระยะไม่ไกลเกินไป)
+        # ถ้ามี OB → วาง SL ใต้ OB (ถ้าระยะอยู่ในช่วงสมเหตุสมผล)
+        # v6.14: เพิ่ม ATR-relative floor (0.5×ATR) ป้องกัน OB clamp ลด SL ใกล้เกินไป
         if bullish_ob:
             ob_sl_distance = entry_price - bullish_ob.low + (2 * pip_size)  # ใต้ OB + 2 pips
-            if 0 < ob_sl_distance < sl_distance * 1.5:  # ไม่ไกลเกิน 1.5 เท่าของ ATR SL
+            ob_sl_floor = atr_value * 0.5
+            if ob_sl_floor < ob_sl_distance < sl_distance * 1.5:
                 sl_distance = ob_sl_distance
 
         # v6.2: MIN_SL guard — ป้องกัน SL แคบเกินไป (เช่น EURUSD SL 5 pips ที่เจอ 23 Apr)
@@ -1095,11 +1100,17 @@ class SMCStrategy:
         # === คำนวณ Entry, SL, TP ===
         entry_price = price_info["bid"]  # SELL ที่ราคา Bid
 
-        sl_distance = atr_value * bot_config.indicators.atr_sl_multiplier
+        # v6.14: SL ใช้ per-symbol multiplier (XAUUSD = 1.8×, FX default = 1.5×)
+        sl_atr_mult = get_symbol_config(
+            symbol, "sl_atr_multiplier", bot_config.indicators.atr_sl_multiplier
+        )
+        sl_distance = atr_value * sl_atr_mult
 
+        # v6.14: เพิ่ม ATR-relative floor (0.5×ATR) ป้องกัน OB clamp ลด SL ใกล้เกินไป
         if bearish_ob:
             ob_sl_distance = bearish_ob.high - entry_price + (2 * pip_size)
-            if 0 < ob_sl_distance < sl_distance * 1.5:
+            ob_sl_floor = atr_value * 0.5
+            if ob_sl_floor < ob_sl_distance < sl_distance * 1.5:
                 sl_distance = ob_sl_distance
 
         # v6.2: MIN_SL guard — ป้องกัน SL แคบเกินไป (mirror ของ BUY)

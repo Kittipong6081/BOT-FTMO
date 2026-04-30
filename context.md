@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-04-29 (v6.13) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-04-30 (v6.14) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
@@ -14,7 +14,15 @@
 - **v6.11.2 (2026-04-29 evening)**: Partial rollback — Tier 2.2 (Sweep prereq) + Tier 2.3 (Fresh M15 BOS prereq) hard gates → soft bonuses. Pool หาย 99 % ภายใต้ v6.11 hard gates → 0.0 % Pass Rate. หย่อน 2 จุด → pool 78k signals, Pass Rate 2.7 %, WR 65.6 %.
 - **v6.11.3 (2026-04-29 evening)**: Mild tune — IDM penalty 5→2 + ADX H4 floor 22→20. Pool 90k (+15 %), Pass Rate 2.7→**3.4 %**, WR 65.6→**68.8 %**, DD max 4.46→**3.23 %** (safer). Pure improvement ทุกมิติ. **KEEP + deploy demo**. Backups `*.bak_v6.11.2` พร้อมสำหรับ rollback.
 - **v6.12 (2026-04-29 night)**: Live-vs-train sync fix — `FTMOConfig.ML_FILTER_THRESHOLD = 0.36` + ML gate ใน `FTMOTradingBot.run` ก่อน agent. ปิด silent regression จากการที่ live ไม่บังคับ ML threshold (training บังคับ). Logging fix — `ML Threshold` column ใน `Signals` sheet ตอนนี้แสดง 0.36 จริง (เดิม 0.0 เพราะ getattr ผิด attribute). ไม่ต้อง retrain.
-- **v6.13 (2026-04-29 night) ⭐ current — VERIFIED Pass Rate 9.7 %** (5000 eps eval):
+- **v6.14 (2026-04-30) ⭐ current — Live demo log audit, 4 bug fixes** (silent regression vs v6.13 spec):
+  - **Fix 1 — SL flow alignment (XAU)**: `SMCStrategy.scan_signal` BUY+SELL ใช้ per-symbol `sl_atr_multiplier` (XAU=1.8×, FX=1.5×) แทน global hardcoded 1.5× + เพิ่ม OB SL `ob_sl_floor = atr × 0.5` ป้องกัน clamp ลด SL ใกล้เกินไป
+  - **Fix 1C — XAUUSD `min_sl_pips`**: 300 → **1000 ticks** ($3 → $10) — guard ชั้นสุดท้าย ไม่ให้ Gold SL ต่ำกว่า ~1.0×ATR
+  - **Fix 2 — TradeLogger off-by-one**: close-row update path เขียน column 28-31 ทับ `DD@Entry % / MAE / MFE / Time-in-Trade` → แก้เป็น 29-32 ตรงกับ `TRADE_HEADERS`
+  - **Fix 3 — PerformanceAnalyzer replay**: re-enable `load_from_excel(logs/ftmo_trades.xlsx)` ใน `FTMOTradingBot.initialize` ขั้นตอน 3.6 (เดิม `[DISABLED]` block) → Stats / Max DD / Sharpe ต่อเนื่องข้าม restart
+  - **Symptom จาก live demo (04-29→04-30, 9 trades)**: XAU trade #0 [437211678] SL = 0.28×ATR → SL hit ใน 12s (-$103); MFE column ใน Excel เก็บค่า duration; Stats sheet "Total Trades 3" แทน 9
+  - **ไม่ต้อง retrain**: train env (`StrategyBacktester`) ใช้ 1.8× อยู่แล้ว — Fix 1 ดึง live ให้ตามให้ทัน. หลัง deploy ต้องตรวจ live SL/ATR ratio ของ XAU trade ใหม่ ≈ 1.8 (ไม่ใช่ 0.28 หรือ 1.5)
+  - Backups `*.bak_v6.13` พร้อม rollback. ดู [`wiki/05-invariants.md` v6.14 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v6.13 (2026-04-29 night) — VERIFIED Pass Rate 9.7 %** (5000 eps eval):
   - **L1 Pause** 2→3, **L2 defaults safety** (env const 0.003→0.007, outcome_noise 0.02→0.05), **L3 reward rebalance** (TAKE equalize @ ml ≥ 0.36, P2 SKIP-oracle missed-winner −0.70→−0.90, smart-skip +0.20→+0.35, day-10 early undertrading check), **L4 XAU SL 1.5×→1.8×**
   - **Eval result**: Pass Rate **9.7 %** (vs baseline 3.4 % = +185 %), WR 64.8 %, Orders/ep 7.7, DD max 4.40 % (ห่าง 8 % limit), Breach 0 %, Profit avg +3.89 %
   - Pass Rate เกือบถึง FTMO 10 % target — ทะลุเป้าทุกมิติ. KEEP + deploy demo
@@ -36,8 +44,9 @@
 | Min confluence | 70 | `FTMOConfig.MIN_CONFLUENCE_SCORE` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | ATR floor (signal gate, per-symbol) | 3-8 pips FX, 500 ticks XAUUSD | `SymbolConfig.symbol_overrides[X].atr_floor_pips` |
-| MIN_SL guard (per-symbol, v6.2) | 10-20 pips FX, 300 ticks XAUUSD | `SymbolConfig.symbol_overrides[X].min_sl_pips` |
-| SL base multiplier (global) | 1.5 × ATR | `bot_config.indicators.atr_sl_multiplier` |
+| MIN_SL guard (per-symbol, v6.2 / v6.14 XAU raise) | 10-20 pips FX, **1000 ticks XAUUSD** ($10) | `SymbolConfig.symbol_overrides[X].min_sl_pips` |
+| SL base multiplier (per-symbol, v6.14 wired) | FX 1.5×, **XAUUSD 1.8×** | `SymbolConfig.symbol_overrides[X].sl_atr_multiplier` (fallback `bot_config.indicators.atr_sl_multiplier`) |
+| OB SL clamp lower bound (v6.14) | 0.5 × ATR | hard-coded in `SMCStrategy.scan_signal` |
 | Obs dims | **27** | `SelfLearningAgent.OBS_DIM` |
 | RL model | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` | `SelfLearningAgent` |
 | ML model | `data/signal_quality_model.pkl` | `SignalQualityModel` |

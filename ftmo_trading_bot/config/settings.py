@@ -217,7 +217,9 @@ class SymbolConfig:
         # === Metals (pip = 0.01, ticks) ===
         "XAUUSD": {
             "atr_floor_pips": 500,           # recent median 892 ticks → filter ช่วง Gold เงียบ
-            "min_sl_pips": 300,              # 300 ticks = $3 SL min (spread 35 = 12%)
+            # v6.14: 300→1000 ticks ($3→$10) — กัน OB clamp + SL floor ลด SL ต่ำเกินไป
+            # (live trade #0 [437211678] โดน SL hit ใน 12s เพราะ guard เก่า $3 ต่ำเกินสำหรับ Gold ATR 8-15 USD)
+            "min_sl_pips": 1000,             # 1000 ticks = $10 SL min ≈ 1.0×ATR ปกติ
             "spread_atr_ratio_max": 0.7,
             "flip_lock_retrace_mult": 0.6,
             # v6.13: per-symbol SL/TP multipliers — XAU wick noise สูงกว่า FX

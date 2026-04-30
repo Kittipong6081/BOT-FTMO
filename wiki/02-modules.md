@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-29 (v6.13) | Scope: every module + key class / method / variable (v6.13 — combined patch: pause 2→3, env defaults safety, equalize TAKE @ ml ≥ 0.36, XAU SL 1.5×→1.8×; v6.12 ML threshold gate; v6.11.3 baseline)
+> Last Updated: 2026-04-30 (v6.14) | Scope: every module + key class / method / variable (v6.14 — SL flow per-symbol multiplier wired + OB SL ATR-floor + XAU min_sl_pips raise + TradeLogger off-by-one fix + Analyzer Excel replay; v6.13 combined patch; v6.12 ML threshold gate)
 
 ## TL;DR (30-second scan)
 
@@ -24,23 +24,34 @@
 
 **Confluence**: inside `SMCStrategy.scan_signal`, scores combine OB + FVG + Sweep + Structure + Indicators, capped at 100 (session multiplier × raw).
 
-### SL Formula & ATR Floor (3 separate knobs — do not confuse)
+### SL Formula & ATR Floor (4 separate knobs — do not confuse, v6.14)
 
-SL is built inside `SMCStrategy.scan_signal` (BUY branch + SELL mirror) in three stacked steps:
+SL is built inside `SMCStrategy.scan_signal` (BUY branch + SELL mirror) in four stacked steps:
 
-1. **Base** — `sl_distance = atr_value × bot_config.indicators.atr_sl_multiplier` (default `1.5`).
-2. **OB override** — if a recent Order Block is close and `ob_sl_distance < sl_distance × 1.5`, swap in `ob_sl_distance` (tighter SL when OB structure is near).
-3. **MIN_SL guard (v6.2)** — if `sl_distance < min_sl_pips × pip_size`, bump up to the floor. Prevents spread from eating > ~15 % of SL.
+1. **Base (v6.14 per-symbol)** — `sl_atr_mult = get_symbol_config(symbol, "sl_atr_multiplier", bot_config.indicators.atr_sl_multiplier)` then `sl_distance = atr_value × sl_atr_mult`. XAUUSD = 1.8×, FX default = 1.5×.
+2. **OB override (v6.14 floored)** — if a recent Order Block is close and `ob_sl_floor < ob_sl_distance < sl_distance × 1.5`, swap in `ob_sl_distance`. `ob_sl_floor = atr_value × 0.5` prevents OB clamp from collapsing SL below 0.5×ATR.
+3. **MIN_SL guard (v6.2 / raised v6.14 for XAU)** — if `sl_distance < min_sl_pips × pip_size`, bump up to the floor. Prevents spread from eating > ~15 % of SL.
 
-Three knobs with distinct roles — **never conflate them**:
+Four knobs with distinct roles — **never conflate them**:
 
 | Knob | Where | Role |
 |------|-------|------|
 | `SymbolConfig.symbol_overrides[X].atr_floor_pips` | gate at top of `SMCStrategy.scan_signal` | **Signal gate** — if `atr_pips < floor`, the signal is discarded (dead-market filter). Does **not** affect SL width of accepted trades. |
-| `bot_config.indicators.atr_sl_multiplier` | base SL formula | ATR-to-SL ratio (1.5 × ATR). Global — touches every symbol. |
-| `SymbolConfig.symbol_overrides[X].min_sl_pips` | clamp after OB override | **SL floor** — per-symbol minimum to keep spread-to-SL ratio sane (EURUSD 10, GBPJPY 20, XAUUSD 300 ticks). |
+| `bot_config.indicators.atr_sl_multiplier` | base SL formula (fallback) | Global ATR-to-SL ratio (1.5 × ATR). Used only when symbol has no `sl_atr_multiplier` override. |
+| `SymbolConfig.symbol_overrides[X].sl_atr_multiplier` (v6.13/v6.14-wired) | base SL formula (per-symbol) | Per-symbol override — XAUUSD 1.8×. Wired into SMCStrategy in v6.14 (was config-only before). |
+| `SymbolConfig.symbol_overrides[X].min_sl_pips` | clamp after OB override | **SL floor** — per-symbol minimum to keep spread-to-SL ratio sane (EURUSD 10, GBPJPY 20, XAUUSD **1000 ticks** raised from 300 in v6.14). |
 
-**Want SL narrower?** Lower `atr_sl_multiplier` or `min_sl_pips` — lowering `atr_floor_pips` only widens the accepted-signal population (indirect, clamped by `min_sl_pips`).
+**Want SL narrower?** Lower `sl_atr_multiplier` (per-symbol) or `min_sl_pips` — lowering `atr_floor_pips` only widens the accepted-signal population (indirect, clamped by `min_sl_pips`).
+
+### Live Demo Bug (v6.14 fix) — XAU SL collapsed to 0.28×ATR
+
+Before v6.14, three layers compounded to let live XAUUSD SL drop to $3.11 (= 0.28×ATR) on ticket `437211678` (SL hit in 12 s):
+
+- Layer A — `SMCStrategy` ignored per-symbol `sl_atr_multiplier` (used global 1.5× even for XAU).
+- Layer B — OB clamp had no lower bound, so an OB very close to entry replaced base SL.
+- Layer C — `min_sl_pips: 300` for XAUUSD = $3 floor — too low for Gold (ATR M15 8-15 USD).
+
+v6.14 fixes all three layers; cross-link → [`wiki/05-invariants.md` v6.14 Version Log](05-invariants.md#-version-log-reverse-chronological).
 
 ### v6.7 Rollback Phase D (2026-04-25)
 
@@ -269,6 +280,7 @@ Key dataclasses:
 | `PerformanceAnalyzer.calculate_advanced` | Sharpe (annualized 252), Sortino |
 | `PerformanceAnalyzer.calculate_risk_metrics` | Max DD, Calmar |
 | `PerformanceAnalyzer._trades` | List of `TradeResult` (used for `recent_wr_norm` in `_build_signal_observation`) |
+| `PerformanceAnalyzer.load_from_excel(path)` (v6.14 wired) | Replays closed trades from `Trades` sheet → restores equity curve + Max DD + Sharpe across restarts. Called once at `FTMOTradingBot.initialize` step 3.6 after `set_initial_balance`. To reset history → delete `logs/ftmo_trades.xlsx` before run. |
 
 ### `trade_logger.py`
 
@@ -278,7 +290,7 @@ Key dataclasses:
 |--------|------|
 | `TradeLogger.__init__(log_dir)` | Auto-creates `logs/` folder; writes to single consolidated `ftmo_trades.xlsx` (no monthly split). |
 | `TradeLogger.log_trade_opened(trade_data)` | Appends row to `Trades` sheet (64 cols). Color-codes BUY=green/SELL=red. |
-| `TradeLogger.log_trade_closed(trade_data)` | Updates close columns (price, time, P/L, MAE/MFE, exit path) on existing row. |
+| `TradeLogger.log_trade_closed(trade_data)` | Updates close columns (price, time, P/L, MAE/MFE, exit path) on existing row. **v6.14 fix**: column index off-by-one — เดิมเขียน 28-31 ทับ `DD@Entry % / MAE / MFE / Time-in-Trade`; แก้เป็น 29-32 ตรงกับ `TRADE_HEADERS` (`MAE=29, MFE=30, Time-in-Trade=31, Exit Path=32`). |
 | `TradeLogger.log_signal_scan(scan_data)` | Per-scan event log → `Signals` sheet (21 cols, includes `AGENT_SKIP`/`AGENT_TAKE`/`REJECTED`/`NO_SIGNAL` results, color-coded). |
 | `TradeLogger.log_daily_summary(balance, daily_dd, max_dd)` | Daily roll-up → `Daily` sheet (Date/Trades/Wins/WR%/PL/DD/Balance). Wins counter uses `profit > 0` on cumulative (not last deal). **v6.10 trigger:** `FTMOTradingBot.run` ตรวจ `broker_today != _last_logged_day` ตอนต้น loop → flush ของวันก่อนก่อน `check_risk()` reset state. + เรียกตอน `shutdown()` |
 | `TradeLogger.update_stats_sheet(stats)` | Refreshes `Stats` sheet from `PerformanceAnalyzer` output. **v6.10 trigger:** ทุก 720 loops (~1 ชม. @ 5s interval) ใน main loop + ตอน day rollover + `shutdown()` |

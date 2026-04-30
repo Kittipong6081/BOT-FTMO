@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-29 | Scope: red flags, version log, migration notes (latest: **v6.13** — combined patch: pause 2→3, defaults safety, equalize TAKE @ ml ≥ 0.36, XAU SL 1.5×→1.8×; **v6.12** live ML threshold gate fix; **v6.11.3** baseline Pass Rate 3.4 %)
+> Last Updated: 2026-04-30 | Scope: red flags, version log, migration notes (latest: **v6.14** — bug fixes from live demo audit: SMC SL per-symbol multiplier wired, OB SL ATR-floor, XAU min_sl_pips raised, TradeLogger off-by-one fixed, Analyzer replays Excel; **v6.13** combined patch; **v6.12** live ML threshold gate fix)
 
 ## TL;DR (30-second scan)
 
@@ -151,6 +151,52 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-04-30 — v6.14 Live demo log audit — 4 bug fixes (silent regression vs v6.13 spec)
+
+หลัง 2 วันแรกของ live demo (04-29 → 04-30, 9 trades) วิเคราะห์ `logs/ftmo_trades.xlsx` พบ silent regression + logger bugs ที่บัง verified Pass Rate 9.7 % ของ v6.13.
+
+**Symptom**: XAUUSD trade #0 (ticket 437211678) SL = 0.28×ATR (ปกติ 1.5–1.8×) → SL hit ใน 12 วินาที, -$103. trade #2/#4/#7 ของ XAU ใน batch เดียวกัน SL ≈ 1.5×ATR (ไม่ใช่ 1.8× ตาม v6.13 spec). MFE column ใน Excel เก็บค่า duration_seconds, Time-in-Trade column เก็บ exit_path string. Stats sheet "Total Trades 3" แทน 9.
+
+**Root cause (3 layers ซ้อนใน SL flow)**:
+
+- **Layer A — `SMCStrategy.scan_signal` (BUY+SELL) hardcode global multiplier**: ใช้ `bot_config.indicators.atr_sl_multiplier = 1.5` ตรงๆ ไม่ดึง `SymbolConfig.symbol_overrides[X].sl_atr_multiplier` (XAU = 1.8 ที่ตั้งไว้ตอน v6.13 ไม่เคยมีผล)
+- **Layer B — OB SL clamp ไม่มี lower bound**: ถ้า `bearish_ob.high - entry_price < sl_distance × 1.5` → swap → ลด SL ลงได้ไม่จำกัด
+- **Layer C — XAU `min_sl_pips: 300` (= $3) ต่ำเกินไป**: หลัง OB clamp ลด SL ลง guard ดึงขึ้นแค่ $3 ≈ 0.3×ATR — ไม่สามารถบังคับให้ SL กลับไปที่ 1.8×ATR ได้
+
+**Fix 1 — SL flow alignment** (`strategy/smc_strategy.py` BUY @ ~line 745, SELL @ ~line 1095):
+
+- ใช้ `get_symbol_config(symbol, "sl_atr_multiplier", bot_config.indicators.atr_sl_multiplier)` แทน global → XAU ได้ 1.8× จริง, FX อื่นยังคง 1.5×
+- เพิ่ม `ob_sl_floor = atr_value * 0.5` เป็น lower bound ของ OB clamp → SL clamp ลงได้ถึง 0.5×ATR ขั้นต่ำ
+- กระทบทั้ง BUY + SELL branches แบบ mirror
+
+**Fix 1C — XAUUSD `min_sl_pips: 300 → 1000`** (`config/settings.py:220`): 1000 ticks = $10 ≈ 1.0×ATR ปกติของ Gold (ATR M15 8-15 USD). Floor นี้ทำงานก็ต่อเมื่อ Layer A+B ไม่ผลิต SL ที่กว้างพอ — เป็น guard ชั้นสุดท้าย
+
+**Fix 2 — TradeLogger off-by-one** (`analytics/trade_logger.py` close-row update path, ~line 296-301):
+
+- เดิม `column=28..31` ทับ `DD@Entry % / MAE / MFE / Time-in-Trade (s)` ตามลำดับ
+- คอลัมน์จริงตาม `TRADE_HEADERS`: 28 = DD@Entry %, **29 = MAE, 30 = MFE, 31 = Time-in-Trade (s), 32 = Exit Path**
+- แก้ index `28..31 → 29..32` → MFE field กลับมาเป็น MFE จริง, Time-in-Trade เป็นวินาที, Exit Path เป็น string. กระทบ retrain pipeline (Trades 64 cols ที่มี `Obs27 JSON` for retrain)
+- หมายเหตุ: บั๊กเกิดเฉพาะ "update existing row" path (close trade ที่มี ticket ใน sheet อยู่แล้ว). "new-row append" path (line 320+) เขียนแค่ 19 core cols ไม่กระทบ
+
+**Fix 3 — PerformanceAnalyzer replay จาก Excel** (`main.py` step 3.6, หลัง `set_initial_balance`):
+
+- เดิมมี `[DISABLED]` block — เลือกให้ analyzer fresh ทุก session → Stats sheet นับเฉพาะ trade ที่ปิดในรอบ session ปัจจุบัน
+- v6.14 re-enable: เรียก `self._analyzer.load_from_excel(logs/ftmo_trades.xlsx)` → equity curve / Max DD / Sharpe ต่อเนื่องข้าม restart
+- ถ้าต้องการ reset → ลบ `logs/ftmo_trades.xlsx` ก่อน run
+
+**Backups**: `*.bak_v6.13` ของ 4 ไฟล์ (`smc_strategy.py`, `settings.py`, `trade_logger.py`, `main.py`) พร้อมสำหรับ rollback ทีละ fix
+
+**ผลที่คาดหวัง**:
+
+- Live SL ของ XAU จะ ≈ 1.8×ATR (16-27 USD) แทนที่จะเป็น $3-$10 → ห่าง wick noise พอ, ลดโอกาส SL hit ใน 12s
+- Live performance กลับมาตรงกับ verified train Pass Rate 9.7 % (Fix 1 ปิด silent regression)
+- Retrain pipeline ใช้ MAE/MFE column ได้จริง (Fix 2)
+- Stats sheet สะท้อนสถานะ challenge ทั้งหมด (Fix 3)
+
+**ไม่ต้อง retrain GBM/RL** — train env (`StrategyBacktester`) ใช้ 1.8× อยู่แล้วตั้งแต่ v6.13, fix นี้ดึง live ให้ตามให้ทัน
+
+**Risk**: Fix 1C (raise min_sl_pips) อาจกรอง XAU signals ในตลาดเงียบ (ATR < 5) มากขึ้น → ดูผ่าน `Signals` sheet `AGENT_TAKE_FAIL` rate หลัง deploy 1-2 sessions. ถ้าหลุดมาก revert min_sl_pips กลับ 300 ได้ (Fix 1A+1B ยังคงทำงาน)
 
 ### 2026-04-29 — v6.13 Combined patch (pause + defaults safety + equalize TAKE @ ml ≥ 0.36 + XAU SL widen)
 

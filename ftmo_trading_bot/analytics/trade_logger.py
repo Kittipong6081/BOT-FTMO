@@ -294,11 +294,12 @@ class TradeLogger:
                 ws.cell(row=target_row, column=16).fill = pnl_fill
 
                 # --- ML features v2: MAE, MFE, time_in_trade, exit_path ---
-                # คอลัมน์ 28=MAE, 29=MFE, 30=Time-in-Trade, 31=Exit Path
-                ws.cell(row=target_row, column=28, value=trade_data.get("mae", 0))
-                ws.cell(row=target_row, column=29, value=trade_data.get("mfe", 0))
-                ws.cell(row=target_row, column=30, value=trade_data.get("time_in_trade", 0))
-                ws.cell(row=target_row, column=31, value=trade_data.get("exit_path", trade_data.get("close_reason", "")))
+                # v6.14: fix off-by-one (เดิม 28-31 ทับ DD@Entry % / MAE / MFE / Time-in-Trade)
+                # คอลัมน์จริงตาม TRADE_HEADERS: 29=MAE, 30=MFE, 31=Time-in-Trade, 32=Exit Path
+                ws.cell(row=target_row, column=29, value=trade_data.get("mae", 0))
+                ws.cell(row=target_row, column=30, value=trade_data.get("mfe", 0))
+                ws.cell(row=target_row, column=31, value=trade_data.get("time_in_trade", 0))
+                ws.cell(row=target_row, column=32, value=trade_data.get("exit_path", trade_data.get("close_reason", "")))
 
                 # --- v6.9 enhanced fields (close-time updates) ---
                 # cols 42=BE_Moved, 43=Partial, 44=Trailing, 45=Final SL,

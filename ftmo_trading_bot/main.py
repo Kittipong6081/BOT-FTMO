@@ -232,9 +232,18 @@ class FTMOTradingBot:
         except Exception as e:
             print(f"⚠️ [Bot] seed analyzer balance ล้มเหลว: {e}")
 
-        # ขั้นตอนที่ 3.6: [DISABLED] ไม่ใช้ ftmo_trades.xlsx แล้ว
-        #  → Analyzer เริ่มต้น fresh ทุก session (stats เฉพาะ run ปัจจุบัน)
-        #  → ถ้าต้องการประวัติเทรด → ดูผ่าน MT5 terminal หรือ dashboard (dell MT5 API)
+        # ขั้นตอนที่ 3.6: v6.14 — re-enable ftmo_trades.xlsx replay เข้า Analyzer
+        #  → Stats sheet จะสะท้อนสถานะ challenge ทั้งหมด ไม่ใช่เฉพาะ session ปัจจุบัน
+        #  → equity curve / Max DD / Sharpe ต่อเนื่องข้าม restart
+        #  → ถ้าต้องการ reset ให้ลบ logs/ftmo_trades.xlsx ก่อน run
+        try:
+            excel_path = os.path.join(self._logger._log_dir, "ftmo_trades.xlsx") \
+                if self._logger is not None else None
+            if excel_path and os.path.exists(excel_path):
+                loaded = self._analyzer.load_from_excel(excel_path)
+                print(f"📊 [Bot] Analyzer replay: {loaded} closed trades from {excel_path}")
+        except Exception as e:
+            print(f"⚠️ [Bot] Analyzer load_from_excel ล้มเหลว: {e}")
 
         # ขั้นตอนที่ 4: เตรียมกลยุทธ์ SMC
         print("\n" + "━" * 40)
