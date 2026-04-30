@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-04-29 (v6.13) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-04-30 (v6.13) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -47,7 +47,7 @@
 | 7 | RL decision | `SelfLearningAgent.should_take_signal` | SKIP → drop signal (logged to `Signals` sheet as AGENT_SKIP) |
 | 8 | Build live context | `FTMOTradingBot._build_live_context(sig)` | computes ml_score, ADX, biases, balance, overtrading metrics, **`obs_27_json`** |
 | 9 | Execute | `TradeExecutor.execute_signal(sig, live_context)` | final risk / correlation / cooldown check; logs to Trades sheet |
-| 10 | Manage open | `TradeManager.update_positions` | trailing / BE / partial / session close |
+| 10 | Manage open | `TradeManager.update_positions` | trailing / BE / partial / Friday Force Close (EET) / Daily Overnight Close (EET) / Friday warning (UTC) |
 
 ---
 
@@ -171,6 +171,18 @@ In `RiskManager` + `TradeExecutor`:
 - Session config in `settings.py` is in **UTC** — convert before comparing to broker time (EET).
 - **Friday 20:45 EET hard-close** — `TimeManager.is_friday_close_time` causes `TradeManager` to close every open position.
 - London + NY overlap is the prime window (default).
+
+### `TradeManager.check_session_close` — 3 trigger ตามลำดับ (2026-04-30 update)
+
+| # | Trigger | Source | เวลา EET (server) | เวลา UTC | ปิดอะไร | กฎอ้างอิง |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Friday Force Close | `is_friday_close_time` | ศุกร์ 20:45 EET | — | ทุก position | กฎ FTMO weekend rule |
+| 2 | Daily Overnight Close | `is_daily_close_time` | Mon-Thu 23:30 EET | — | ทุก position | **user policy** (กัน swap + gap) — ไม่ใช่กฎ FTMO 2-step Standard |
+| 3 | Friday Warning | `friday_cutoff − 15 min` | — | ศุกร์ 14:45 UTC | ทุก position | guard เสริม (UTC-based) |
+
+⚠️ **Removed (2026-04-30)**: NY Session End (winners-only profit lock) ที่เคย trigger ตอน `newyork_end − 15 min` (= 16:45 UTC = 23:45 ICT) — block นี้ไม่มี upper bound → ปิด winners ตลอด ~7 ชั่วโมงต่อวัน ทับ logic BE/Partial/Trailing ใน `TradeManager`. ถอดออกทั้งหมด — TradeManager ดูแล position ผ่าน trailing/BE/partial ตามปกติจน hit SL/TP/timeout หรือเข้า trigger #1-3 ข้างบน
+
+**FTMO 2-step Standard ไม่มีกฎห้ามถือ overnight Mon-Thu** — Daily Overnight Close (#2) เป็นการตัดสินใจของ project เพื่อกัน swap + gap ปิด/เปิดผ่าน `bot_config.sessions.enforce_daily_close` (default = True)
 
 ⚠️ **MT5 FTMO tick.time quirk**: do not use `mt5.symbol_info_tick().time` directly → FTMO-Demo returns broker-local epoch (EEST) → `fromtimestamp(tz=Bucharest)` double-adds the offset (+3 h) → use `datetime.now(Europe/Bucharest)` inside `TimeManager.get_server_time` → VPS must be NTP-synced.
 

@@ -53,7 +53,7 @@ class TradeManager:
     2. ตรวจสอบ Break-Even Move (กำไร >= 1:1 → SL → Entry)
     3. ตรวจสอบ Partial Close (กำไร >= 1:1 → ปิด 50%)
     4. ตรวจสอบ Trailing Stop (ราคาใหม่ดีกว่าเดิม → เลื่อน SL)
-    5. ตรวจสอบ Session End (ใกล้หมด Session → ปิดทุก Position)
+    5. ตรวจสอบ Force Close (Friday 20:45 EET / Daily Overnight 23:30 EET / Friday Warning UTC)
     """
 
     # === ค่าคงที่สำหรับการจัดการ ===
@@ -527,12 +527,11 @@ class TradeManager:
 
     def check_session_close(self) -> int:
         """
-        ตรวจสอบว่าใกล้หมด Trading Session หรือไม่
-        ถ้าใกล้หมด → ปิดทุก Position ที่กำไรเพื่อล็อคกำไร
+        ตรวจสอบ trigger ปิด position แบบบังคับ (3 ระดับ ตามลำดับความสำคัญ):
 
-        กฎ:
-        - ก่อนหมด Session 15 นาที → ปิดเทรดที่กำไร
-        - ก่อนวันศุกร์หมด → ปิดทุกเทรด (ไม่ถือข้ามสุดสัปดาห์)
+        1. Friday Force Close (20:45 EET) — กฎ FTMO: ห้ามถือข้ามสุดสัปดาห์
+        2. Daily Overnight Close (23:30 EET, Mon-Thu) — user policy: หนี swap + gap
+        3. Friday Warning (friday_cutoff − 15 min UTC) — ปิดทุก position ก่อน Friday cutoff
 
         Returns:
             int: จำนวนเทรดที่ปิด
@@ -558,8 +557,8 @@ class TradeManager:
             return closed_count
 
         # === Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิดทุก Position ก่อนข้ามวัน ===
-        # เหตุผล: หลีกเลี่ยง swap fee + gap risk + align กับ FTMO compliance
-        # Priority หลัง Friday (20:45) แต่ก่อน NY winners-only close (ด้านล่าง)
+        # เหตุผล: หลีกเลี่ยง swap fee + gap risk (user policy ไม่ใช่กฎ FTMO 2-step Standard)
+        # Priority หลัง Friday Force Close แต่ก่อน Friday warning (UTC)
         if TimeManager.is_daily_close_time(server_time_now):
             active_ct = len(self._executor.active_trades)
             if active_ct > 0:
@@ -585,26 +584,6 @@ class TradeManager:
                     if self._executor.close_trade(ticket, reason="Friday Session Close"):
                         closed_count += 1
             return closed_count
-
-        # === ตรวจ NY Session End (UTC-based) — ปิดเทรดที่กำไร ===
-        ny_warning_utc = dt_time(
-            sessions.newyork_end.hour,
-            max(0, sessions.newyork_end.minute - 15)
-        )
-
-        if current_time_utc >= ny_warning_utc:
-            for ticket, trade in list(self._executor.active_trades.items()):
-                price_info = self._connector.get_current_price(trade.symbol)
-                if price_info:
-                    if trade.trade_type == "BUY":
-                        pnl = price_info["bid"] - trade.entry_price
-                    else:
-                        pnl = trade.entry_price - price_info["ask"]
-
-                    if pnl > 0:
-                        print(f"⏰ [Trade Manager] Session End — ปิดเทรดกำไร Ticket {ticket}")
-                        if self._executor.close_trade(ticket, reason="Session End (Profit Lock)"):
-                            closed_count += 1
 
         return closed_count
 
