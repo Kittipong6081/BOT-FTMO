@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-02 (v7.0.3) | Scope: every module + key class / method / variable (v7.0.3 — correlation simulator HOLD=0 over-block fix; v7.0.2 Chronos formula refactor + correlation simulator added; v7.0 Chronos 2 zero-shot forecaster added: obs 27 → 29)
+> Last Updated: 2026-05-02 (v7.0.7) | Scope: every module + key class / method / variable (v7.0.7 — Chronos accuracy benchmark tool added (`test_chronos_accuracy.py`); v7.0.5 Phase 2 LR proper fix; v7.0.3 correlation simulator HOLD=0; v7.0.2 Chronos formula refactor; v7.0 Chronos 2 zero-shot forecaster added: obs 27 → 29)
 
 ## TL;DR (30-second scan)
 
@@ -314,6 +314,8 @@ Key dataclasses:
 | `train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` 2-phase curriculum (P1 Alpha **10M steps** → P2 Risk **5M steps**, aux loss weight=0.5, LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20) → `models/ppo_signal_filter.zip` |
 | `fetch_mt5_data.py` | (Windows only) fetches OHLCV from MT5 → CSV under `data/ohlcv/` |
 | `import_forexfactory_csv.py` | Manual CSV → `news_calendar.json` import (alternative to `NewsCalendarScheduler`) |
+| `test_chronos_accuracy.py` (v7.0.7) | **Benchmark tool** — rolling-window backtest ของ `ChronosForecaster` บน historical CSV. คำนวณ 3 metrics: Direction Accuracy, Quantile Coverage, MAPE. Standalone (ไม่กระทบ live/train). v7.0.7 result: TOTAL Dir Acc 50.5%, Coverage 79.8% (calibrated), MAPE 0.12%. Run: `.venv/bin/python ftmo_trading_bot/scripts/test_chronos_accuracy.py` |
+| `test_chronos_mtf.py` (v7.0.7) | **Multi-TF benchmark** — Chronos forecast บน H4 + H1 + M15 พร้อมกัน → consensus direction. Verdict: **ไม่ช่วย overall** (ALL_AGREE acc 45.3% < baseline M15 48.2%). บาง symbol ดีขึ้น (USDCHF +11pp, NZDUSD +4.4pp) แต่บาง symbol แย่ลงหนัก (USDCAD -19pp, GBPUSD -18pp). Conclusion: ไม่ integrate เข้า v7.0.7 (3× inference cost + ไม่ improve). |
 
 ---
 

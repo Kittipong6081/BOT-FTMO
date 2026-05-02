@@ -1,5 +1,5 @@
 # 03 — RL Training (Obs 29 dims, Reward, PPO + Auxiliary Task)
-> Last Updated: 2026-05-01 (v7.0) | Scope: RL env, obs space v7 (+ Chronos forecast), reward shaping, PPO hyperparams, curriculum, aux task (E2). v7.0: Amazon Chronos 2 zero-shot forecast features added (obs 27 → 29).
+> Last Updated: 2026-05-02 (v7.0.7) | Scope: RL env, obs space v7 (+ Chronos forecast), reward shaping, PPO hyperparams, curriculum, aux task (E2). v7.0.7: Pass Rate 11.1% (+1.4 pp vs v6.13 baseline), Chronos accuracy benchmark added (Dir 50.5%, Coverage 79.8%, MAPE 0.12%).
 
 ## TL;DR (30-second scan)
 
@@ -115,6 +115,28 @@
 **Pool path** — `StrategyBacktester.generate_episode_signals` calls `ChronosForecaster.forecast_features(symbol, ltf_slice, direction, atr_val)` using closed-bar slice only (anti-lookahead). Result stored in signal dict as `chronos_alignment` + `chronos_uncertainty_norm` for `FTMOSignalFilterEnv._get_obs` to read.
 
 **Live path** — `FTMOTradingBot._build_signal_observation` reads `self._strategy._ltf_data` (M15 cache, refreshed each scan ~60 s) and calls the same `forecast_features` to compute obs[27,28]. `_build_live_context` mirrors the same values into Excel `Signals`/`Trades` sheets.
+
+**Accuracy benchmark (v7.0.7)** — see [`scripts/test_chronos_accuracy.py`](../ftmo_trading_bot/scripts/test_chronos_accuracy.py). Rolling-window backtest บน 10 symbols × 100 forecasts:
+
+| Metric | Result | Interpretation |
+|---|---|---|
+| Direction Accuracy | **50.5%** | ~random (M15 noise สูง) |
+| Quantile Coverage | **79.8%** | calibrated เป๊ะ (target 80%) |
+| MAPE | **0.12%** | ทำนาย "level" แม่นมาก |
+
+→ Chronos contribute **มาก** ผ่าน `chronos_uncertainty_norm` (calibrated regime detector) และ **น้อย** ผ่าน `chronos_alignment` (direction marginal). Sub-population ที่มี edge: AUDUSD (56.4%), EURJPY (53.5%).
+
+**Multi-TF consensus benchmark** — see [`scripts/test_chronos_mtf.py`](../ftmo_trading_bot/scripts/test_chronos_mtf.py). Forecast บน H4+H1+M15 พร้อมกัน → consensus direction:
+
+| Consensus | N | Accuracy | Verdict |
+|---|---|---|---|
+| ALL UP (3/3 ขึ้น) | 148 | 48.0% | similar baseline |
+| ALL DOWN (3/3 ลง) | 42 | 35.7% | **anti-signal** ❌ |
+| Majority 2/3 | 316 | 46.8% | similar |
+| ALL_AGREE 3/3 (รวม) | 190 | **45.3%** | **แย่กว่า baseline** |
+| Baseline M15 alone | 506 | 48.2% | reference |
+
+→ **Multi-TF ไม่ improve overall** (45.3% < baseline 48.2%). Sub-population ที่ดีขึ้น: USDCHF (+11 pp), NZDUSD (+4.4 pp), EURUSD (+3.5 pp). แต่ symbol อื่นแย่ลงหนัก (USDCAD -18.9, GBPUSD -18.2). **Conclusion**: ไม่ integrate เข้า v7.0.7 — inference cost 3× ไม่คุ้มกับ uncertain gain.
 
 ---
 
