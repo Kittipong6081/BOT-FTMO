@@ -8,7 +8,7 @@ Gymnasium Environment สำหรับ RL Agent ที่ตัดสินใ
 1 step  = 1 signal decision (take or skip)
 1 episode = 1 FTMO Challenge (45 วัน, pre-generated signals)
 
-Observation (27 dims, v6 2026-04-22) — ต้องตรงกับ SelfLearningAgent.OBS_DIM และ main._build_signal_observation:
+Observation (29 dims, v7 2026-05-01) — ต้องตรงกับ SelfLearningAgent.OBS_DIM และ main._build_signal_observation:
   Signal core       [0-11]:  confluence, rr, direction, atr, ob_score, bias_align,
                              sl_atr, rsi, macd, trend_strength, ob_size_atr, adx
   Market regime     [12-15]: stoch_k, bb_pctb, atr_change_ratio, price_roc
@@ -16,6 +16,8 @@ Observation (27 dims, v6 2026-04-22) — ต้องตรงกับ SelfLear
   Portfolio state   [17-23]: total_dd, daily_dd, progress, day_progress,
                              trades_today, recent_wr, consecutive_losses
   Cost/Flip/HTF     [24-26]: spread_pct_of_atr, has_opposite_recently_closed, htf_trend_alignment
+  Chronos forecast  [27-28]: chronos_alignment, chronos_uncertainty_norm
+                             v7: Amazon Chronos 2 zero-shot M15 forecast (8 bars ahead)
 
 Action (1 dim, continuous [-1, 1]):
   > 0 → TAKE signal
@@ -128,11 +130,11 @@ class FTMOSignalFilterEnv(gym.Env):
         if not self._seq_symbols:
             raise RuntimeError("No symbols with enough data for sequential episode")
 
-        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf = 27
+        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf + 2 chronos = 29
         # v6 (2026-04-22): เพิ่ม spread_pct_of_atr, has_opposite_recently_closed, htf_trend_alignment
-        # เพื่อให้ agent เห็นต้นทุน spread + flip-lock context + HTF trend sync กับ P1 filter
+        # v7 (2026-05-01): เพิ่ม chronos_alignment, chronos_uncertainty_norm จาก Amazon Chronos 2
         self.observation_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(27,), dtype=np.float32
+            low=-5.0, high=5.0, shape=(29,), dtype=np.float32
         )
 
         # Action: 1 dim continuous — >0 = TAKE, ≤0 = SKIP
@@ -146,6 +148,78 @@ class FTMOSignalFilterEnv(gym.Env):
         if self.verbose:
             return contextlib.nullcontext()
         return contextlib.redirect_stdout(io.StringIO())
+
+    # ─── v7.0.2: Correlation simulator (mirror TradeExecutor) ────────────
+    # ทำให้ training distribution ตรงกับ live (live block 96.3% ของ TAKE
+    # จาก correlation rules แต่ training เดิมไม่ check → silent regression).
+    # ค่าทั้งหมด mirror TradeExecutor.CORRELATION_GROUPS / _GROUP_POSITIVE_DIR /
+    # MAX_CORRELATED_POSITIONS — ห้ามแก้ฝั่งใดฝั่งนึงโดยไม่อัพเดทอีกฝั่ง.
+    CORRELATION_GROUPS = {
+        "USD_WEAK":   {"EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"},
+        "USD_STRONG": {"USDJPY", "USDCAD", "USDCHF"},
+        "JPY_CROSS":  {"USDJPY", "EURJPY", "GBPJPY"},
+        "EUR_PAIRS":  {"EURUSD", "EURJPY"},
+        "GBP_PAIRS":  {"GBPUSD", "GBPJPY"},
+        "SAFE_HAVEN": {"XAUUSD"},
+    }
+    # symbol → direction ที่ให้ "group-positive exposure" (BUY มาตรฐาน)
+    _GROUP_POSITIVE_DIR = {
+        "USD_WEAK":   {"EURUSD": "BUY", "GBPUSD": "BUY", "AUDUSD": "BUY", "NZDUSD": "BUY"},
+        "USD_STRONG": {"USDJPY": "BUY", "USDCAD": "BUY", "USDCHF": "BUY"},
+        "JPY_CROSS":  {"USDJPY": "BUY", "EURJPY": "BUY", "GBPJPY": "BUY"},
+        "EUR_PAIRS":  {"EURUSD": "BUY", "EURJPY": "BUY"},
+        "GBP_PAIRS":  {"GBPUSD": "BUY", "GBPJPY": "BUY"},
+        "SAFE_HAVEN": {"XAUUSD": "BUY"},
+    }
+    MAX_CORRELATED_POSITIONS = 1   # mirror config (FTMOConfig.MAX_CORRELATED_POSITIONS)
+    # v7.0.3 (2026-05-02): Approximate hold time ใน pool. ก่อนหน้านี้ใช้ 1 → block 6h ใน live time
+    # (1 pool slot = 6 ชม. live, แต่ live avg hold = 75 นาที = 1.25 ชม.) → over-block 4-5 เท่า
+    # ผล eval v7.0.2: Pass Rate ตก 9.7% → 0.6%. ปรับ 0 = block correlation แค่ step ของ TAKE
+    # แล้ว clear ทันที next step → effective ใกล้ live (live position ปิดเร็วกว่า next pool scan)
+    # หมายเหตุ: ค่า 0 ทำให้ correlation simulator effectively off แต่ infrastructure คงไว้
+    # เผื่อปรับเป็น 1 หากต้องการ block strict กลับ
+    HOLD_SIGNALS_APPROX = 0
+
+    def _is_correlation_blocked(self, sig: Dict) -> bool:
+        """Mirror TradeExecutor._check_correlation_risk — ตรวจว่า signal นี้
+        จะถูก correlation filter block ใน live หรือไม่.
+
+        Returns True = block (forced SKIP), False = allow.
+        """
+        new_sym = (sig.get('symbol') or '').upper()
+        if not new_sym:
+            return False  # ไม่มี symbol = ไม่ block (defensive)
+        new_dir_int = 1 if sig.get('direction', 0) > 0 else -1
+        new_dir_str = "BUY" if new_dir_int > 0 else "SELL"
+
+        # 1. Duplicate symbol
+        for op in self._open_positions:
+            if op['symbol'].upper() == new_sym:
+                return True
+
+        # 2. Group exposure — same effective direction within same correlation group
+        for group_name, group_syms in self.CORRELATION_GROUPS.items():
+            if new_sym not in group_syms:
+                continue
+            pos_dir_map = self._GROUP_POSITIVE_DIR.get(group_name, {})
+            new_pos_dir = pos_dir_map.get(new_sym, "BUY")
+            new_effective = 1 if new_dir_str == new_pos_dir else -1
+
+            same_dir_count = 0
+            for op in self._open_positions:
+                existing_sym = op['symbol'].upper()
+                if existing_sym not in group_syms:
+                    continue
+                existing_pos_dir = pos_dir_map.get(existing_sym, "BUY")
+                existing_dir_str = "BUY" if op['direction'] > 0 else "SELL"
+                existing_effective = 1 if existing_dir_str == existing_pos_dir else -1
+                if existing_effective == new_effective:
+                    same_dir_count += 1
+
+            if same_dir_count >= self.MAX_CORRELATED_POSITIONS:
+                return True
+
+        return False
 
     def _reset_state(self):
         self.balance = self.INITIAL_BALANCE
@@ -183,6 +257,11 @@ class FTMOSignalFilterEnv(gym.Env):
         # v6: track last closed trade direction for flip-lock feature
         self._last_closed_direction: float = 0.0  # +1 BUY / -1 SELL / 0 none
         self._last_closed_signal_step: int = -999
+        # v7.0.2: open positions for correlation simulator (mirror live TradeExecutor)
+        # list of {'symbol': str, 'direction': int (+1/-1), 'opened_at_idx': int}
+        self._open_positions: List[Dict] = []
+        # counter สำหรับ telemetry: trades ที่ถูก correlation block (forced SKIP)
+        self._correlation_forced_skips: int = 0
 
     def _pick_episode(self, rng: np.random.Generator):
         symbol = self._seq_symbols[int(rng.integers(0, len(self._seq_symbols)))]
@@ -197,7 +276,7 @@ class FTMOSignalFilterEnv(gym.Env):
 
     def _get_obs(self) -> np.ndarray:
         if self._signal_idx >= len(self._signals):
-            return np.zeros(27, dtype=np.float32)
+            return np.zeros(29, dtype=np.float32)
 
         sig = self._signals[self._signal_idx]
 
@@ -265,6 +344,14 @@ class FTMOSignalFilterEnv(gym.Env):
         # sig['htf_trend_alignment'] ถ้ามีใน pool (backtester v2) ไม่งั้น fallback = bias_align * sign(adx_norm-0.2)
         htf_align = sig.get('htf_trend_alignment', bias_align)
 
+        # ─── v7: Chronos forecast (2) — Amazon Chronos 2 zero-shot ──────
+        # [27] chronos_alignment — direction × sign(median_h+8 − close), ±1
+        # [28] chronos_uncertainty_norm — (q90 − q10) / atr_value, [0, 3]
+        # Pool builder ต้องใส่ 2 fields นี้ใน signal dict (StrategyBacktester._inject_chronos_features)
+        # Default 0.0 = neutral (Chronos disabled / fail) → degrades gracefully to v6.14 behavior
+        chronos_align = float(sig.get('chronos_alignment', 0.0))
+        chronos_unc = float(sig.get('chronos_uncertainty_norm', 0.0))
+
         obs = np.array([
             # Signal core [0-11]
             float(np.clip(confluence_norm, -1.0, 1.0)),
@@ -298,6 +385,9 @@ class FTMOSignalFilterEnv(gym.Env):
             float(np.clip(spread_pct_of_atr, 0.0, 3.0)),
             float(recent_opposite),
             float(np.clip(htf_align, -1.0, 1.0)),
+            # v7 Chronos forecast [27-28]
+            float(np.clip(chronos_align, -1.0, 1.0)),
+            float(np.clip(chronos_unc, 0.0, 3.0)),
         ], dtype=np.float32)
         return obs
 
@@ -431,6 +521,21 @@ class FTMOSignalFilterEnv(gym.Env):
             self._current_day = sig['day']
             self._start_new_day()
 
+        # v7.0.2: drop stale open positions (~hold ~1 signal slot ≈ live trade duration)
+        if self._open_positions:
+            cutoff = self._signal_idx - self.HOLD_SIGNALS_APPROX
+            self._open_positions = [
+                op for op in self._open_positions if op['opened_at_idx'] >= cutoff
+            ]
+
+        # v7.0.2: correlation block — forced SKIP ถ้า live executor จะ reject
+        # นี่ทำให้ training distribution ตรงกับ live (live block 96.3% ของ TAKE จาก correlation)
+        correlation_forced_skip = False
+        if take and self._is_correlation_blocked(sig):
+            take = False
+            correlation_forced_skip = True
+            self._correlation_forced_skips += 1
+
         outcome = float(sig.get('outcome_pnl_ratio', 0.0))
         # ML quality score (จาก GBM) — ตัวทำนาย win ที่แม่นกว่า confluence
         # ใช้เป็น primary signal สำหรับ reward shaping (แทน confluence ที่ uninformative)
@@ -464,6 +569,15 @@ class FTMOSignalFilterEnv(gym.Env):
             # v6: track last closed direction + step for flip-lock observation
             self._last_closed_direction = float(sig.get('direction', 0.0))
             self._last_closed_signal_step = int(self._signal_idx)
+
+            # v7.0.2: register open position สำหรับ correlation simulator
+            # ใช้ตอน step ถัดไปเป็น "exposure" ที่ block correlated entries
+            # (live: position ค้างอยู่จน hit SL/TP/timeout. ตรงนี้ approximate hold ≈ HOLD_SIGNALS_APPROX)
+            self._open_positions.append({
+                'symbol': sig.get('symbol', ''),
+                'direction': 1 if sig.get('direction', 0) > 0 else -1,
+                'opened_at_idx': self._signal_idx,
+            })
 
             if pnl > 0:
                 self._consecutive_losses = 0
@@ -703,8 +817,12 @@ class FTMOSignalFilterEnv(gym.Env):
                 'min_profit': self.min_balance - self.INITIAL_BALANCE,
                 'max_profit': self.peak_balance - self.INITIAL_BALANCE,
                 'max_daily_dd_pct': self.max_daily_dd_pct,
+                # v7.0.2: correlation simulator telemetry
+                'correlation_forced_skips': self._correlation_forced_skips,
             }
 
+        # v7.0.2: per-step flag สำหรับ debug logger ภายนอก
+        info['correlation_forced_skip'] = correlation_forced_skip
         return self._get_obs(), float(reward), terminated, truncated, info
 
     def _get_rng(self):

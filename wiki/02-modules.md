@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-04-30 (v6.14) | Scope: every module + key class / method / variable (v6.14 — SL flow per-symbol multiplier wired + OB SL ATR-floor + XAU min_sl_pips raise + TradeLogger off-by-one fix + Analyzer Excel replay; v6.13 combined patch; v6.12 ML threshold gate)
+> Last Updated: 2026-05-02 (v7.0.3) | Scope: every module + key class / method / variable (v7.0.3 — correlation simulator HOLD=0 over-block fix; v7.0.2 Chronos formula refactor + correlation simulator added; v7.0 Chronos 2 zero-shot forecaster added: obs 27 → 29)
 
 ## TL;DR (30-second scan)
 
@@ -123,12 +123,13 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 | File | Key symbols | Role |
 |------|-------------|------|
 | `signal_quality.py` | `SignalQualityModel.score`, `SignalQualityModel.train_from_pool`, `SignalQualityModel._calibrate` | sklearn `GradientBoostingClassifier` + optional `IsotonicRegression` calibrator (loaded from payload). `score()` returns calibrated probability. |
-| `strategy_backtester.py` | `StrategyBacktester.generate_episode_signals`, `StrategyBacktester._resolve_trade`, `StrategyBacktester._quality_model` | Pool generation + outcome resolution. v6.7 rolled back to SL/TP/timeout/gap only (no BE/partial/trail in training — live still does them). |
-| `signal_filter_env.py` | `FTMOSignalFilterEnv` (gym.Env), `._get_obs`, `.step`, `.reset` | Gymnasium env. `step()` writes `info['aux_target'] = float(sig['outcome_pnl_ratio'])` for the auxiliary head to learn. |
+| `strategy_backtester.py` | `StrategyBacktester.generate_episode_signals`, `StrategyBacktester._resolve_trade`, `StrategyBacktester._quality_model`, `StrategyBacktester._chronos` (v7) | Pool generation + outcome resolution. v6.7 rolled back to SL/TP/timeout/gap only (no BE/partial/trail in training — live still does them). v7: Chronos forecast features injected per signal via `_chronos.forecast_features(symbol, ltf_slice, direction, atr_val)` — closed-bar only (anti-lookahead). |
+| `signal_filter_env.py` | `FTMOSignalFilterEnv` (gym.Env, **shape=(29,)** v7), `._get_obs`, `.step`, `.reset`, `._is_correlation_blocked` (v7.0.2), `.CORRELATION_GROUPS` (v7.0.2), `.HOLD_SIGNALS_APPROX` (v7.0.3 = 0) | Gymnasium env. `step()` writes `info['aux_target'] = float(sig['outcome_pnl_ratio'])` for the auxiliary head to learn. v7 `_get_obs` reads `sig.get('chronos_alignment', 0.0)` + `sig.get('chronos_uncertainty_norm', 0.0)` for obs[27,28]. **v7.0.2**: correlation simulator ใน `step()` — drop stale open positions, forced SKIP ถ้า `_is_correlation_blocked(sig)` (mirror `TradeExecutor._check_correlation_risk`), append `_open_positions` ถ้า TAKE สำเร็จ. **v7.0.3 (2026-05-02)**: ปรับ `HOLD_SIGNALS_APPROX` 1 → 0 หลัง v7.0.2 eval Pass Rate ตก 0.6%. Time scale mismatch: 1 pool slot ≈ 6h live time แต่ live position avg hold 75 นาที → over-block 4-5×. HOLD=0 → drop-stale ทันที ทุก step → effective correlation simulator off (infrastructure คงไว้). |
 | `aux_aware_policy.py` | `AuxAwareACPolicy(ActorCriticPolicy)`, `aux_head: nn.Linear(latent_dim_pi, 1)`, `predict_aux(obs)` | PPO policy extended with auxiliary regression head off the actor trunk. Predicts `outcome_pnl_ratio`. |
 | `aux_aware_ppo.py` | `AuxAwarePPO(PPO)`, `aux_loss_weight=0.5` | PPO subclass. `collect_rollouts` extracts `info['aux_target']` into `AuxRolloutBuffer.aux_targets`; `train()` adds `MSE(aux_pred, aux_target) * 0.5` to the policy loss. |
 | `aux_rollout_buffer.py` | `AuxRolloutBuffer(RolloutBuffer)`, `.aux_targets: np.ndarray` | RolloutBuffer extended with per-step `aux_targets` (parallels `rewards`/`values`). |
-| `rl_agent.py` | `SelfLearningAgent.OBS_DIM` (= 27), `.should_take_signal`, `.get_action_confidence`, `.initialize_model`, `._normalize_obs` | PPO inference wrapper for live — loads `vec_normalize_sf.pkl` so obs normalization matches training. Uses `AuxAwareACPolicy` weights at inference (aux head ignored at predict). |
+| `rl_agent.py` | `SelfLearningAgent.OBS_DIM` (= **29** v7), `.should_take_signal`, `.get_action_confidence`, `.initialize_model`, `._normalize_obs` | PPO inference wrapper for live — loads `vec_normalize_sf.pkl` so obs normalization matches training. Uses `AuxAwareACPolicy` weights at inference (aux head ignored at predict). |
+| `chronos_forecaster.py` (v7) | `ChronosForecaster.__init__`, `.forecast(symbol, df_m15)`, `.compute_features(forecast, direction, atr)`, `.forecast_features` (convenience), `.is_available` | Amazon Chronos 2 zero-shot wrapper (`amazon/chronos-bolt-small`). M15 × 8 ahead median + q10 + q90 → 2 obs features (`chronos_alignment`, `chronos_uncertainty_norm`). Cache key `(symbol, last_bar_ts)`, LRU evict @ 64 entries. Determinism via `torch.manual_seed(0)`. Disable: env `BOT_DISABLE_CHRONOS=1` or `bot_config.ml.CHRONOS_ENABLED = False`. **v7.0.2 formula refactor**: `compute_features` flip alignment sign (`direction × sign(close − median)`) + Brownian-scale uncertainty (`/ atr × √8`). Reason: pool diagnostic v7.0 corr(align, outcome) = −0.018 (anti-signal — SMC ค้าขาย swing/reversal สวนเทรนด์), unc saturated 96.2% ที่ 3.0 (variance ของ forecast 8-bar ขยายตาม √horizon). |
 
 **Quality model loading**: `StrategyBacktester.__init__` auto-loads `data/signal_quality_model.pkl` if present, so pool signals always include `ml_score` (defaults to 0.5 = neutral when unavailable). Payload format: `{"model": GBM, "calibrator": IsotonicRegression, "feature_names": [...], ...}`.
 
@@ -249,7 +250,8 @@ Key dataclasses:
 | `MT5Config` | `terminal_path`, `login`, `password`, `server`, `timeout` (loaded from `.env`) |
 | `FTMOConfig` | `DAILY_LOSS_HARD_STOP_PCT=0.04`, `MAX_DRAWDOWN_HARD_STOP_PCT=0.08`, `PROFIT_TARGET_PCT=0.10`, `MIN_RISK_PER_TRADE_PCT=0.005`, `MAX_RISK_PER_TRADE_PCT=0.008`, `DEFAULT_RISK_PER_TRADE_PCT=0.007` ⭐, `MIN_CONFLUENCE_SCORE=70.0`, `CONSISTENCY_RULE_THRESHOLD=1.0` (2-step Standard → check off), `COOLDOWN_AFTER_LOSS_MIN=60`, `POST_TP_LOCK_TTL_MIN=60` |
 | `SymbolConfig.symbols` | 10 symbols: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, **XAUUSD** |
-| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules |
+| `MLConfig` (v7) | `CHRONOS_MODEL_NAME="amazon/chronos-bolt-small"`, `CHRONOS_DEVICE="cpu"`, `CHRONOS_PREDICTION_LENGTH=8`, `CHRONOS_CONTEXT_LENGTH=512`, `CHRONOS_ENABLED=True`. Single source of truth สำหรับ pool builder + live. |
+| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules. v7: + `bot_config.ml` |
 
 ### `news_events.py` — Hardcoded fallback news
 
@@ -309,7 +311,7 @@ Key dataclasses:
 |--------|------|
 | `build_signal_pool.py` | Multiprocessing 8 workers — calls `StrategyBacktester.generate_episode_signals` × N → `data/signal_pool_3000.pkl` |
 | `train_signal_quality.py` | GBM + `GroupKFold cross_val_predict` (group=episode_id, OOF) → fits `IsotonicRegression` calibrator on OOF probs → saves `{model, calibrator, ...}` payload + re-scores pool with calibrated probs in place |
-| `train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` 2-phase curriculum (P1 Alpha 300K steps → P2 Risk 200K steps, aux loss weight=0.5, LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20) → `models/ppo_signal_filter.zip` |
+| `train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` 2-phase curriculum (P1 Alpha **10M steps** → P2 Risk **5M steps**, aux loss weight=0.5, LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20) → `models/ppo_signal_filter.zip` |
 | `fetch_mt5_data.py` | (Windows only) fetches OHLCV from MT5 → CSV under `data/ohlcv/` |
 | `import_forexfactory_csv.py` | Manual CSV → `news_calendar.json` import (alternative to `NewsCalendarScheduler`) |
 
@@ -322,7 +324,8 @@ Key dataclasses:
 | `FTMOTradingBot.__init__` | Builds every subsystem (connector, risk, sizer, strategy, executor, manager, RL agent, ML model, news scheduler, notifier, **TradeLogger**). Initializes 5 announce-once flags: `_daily_halt_announced`, `_friday_announced`, `_weekend_announced`, `_daily_close_announced`, `_rollover_announced`. Initializes `_trade_open_history: list` (cap 200, for overtrading metrics). **v6.10:** เพิ่ม `_last_logged_day` (None) สำหรับ trigger Daily summary flush ตอนข้ามวัน. |
 | `FTMOTradingBot.connect` | MT5 login + load state |
 | `FTMOTradingBot.run` | Main loop (runs every `main_loop_interval` seconds, default 5 s). Idle-state guards use announce-once pattern (print on entry only, auto-reset in `else` branch). |
-| `FTMOTradingBot._build_signal_observation` | Builds the 27-dim obs from a `TradeSignal` + portfolio state — must match `FTMOSignalFilterEnv._get_obs`. Same path used to populate `live_context["obs_27_json"]` for retrain logging. |
+| `FTMOTradingBot._build_signal_observation` | Builds the **29-dim** obs (v7) from a `TradeSignal` + portfolio state — must match `FTMOSignalFilterEnv._get_obs`. Same path used to populate `live_context["obs_27_json"]` for retrain logging (key kept for backward compat, contains 29 dims since v7). v7: เรียก `self._chronos.forecast_features(sig.symbol, self._strategy._ltf_data, direction, atr_val)` สำหรับ obs[27,28]. |
+| `FTMOTradingBot._chronos` (v7) | `ChronosForecaster` instance. Init จาก `bot_config.ml.CHRONOS_*`. ถ้า disable / load fail → obs[27,28] = 0.0 (graceful degrade). |
 | `FTMOTradingBot._build_live_context(sig)` | Gathers `ml_score` (cal/raw), bid/ask snapshot, ADX H1/H4, MTF/D1 bias, balance, overtrading metrics (`trades_today`, `secs_since_last_*`), and JSON-encoded obs vector → passed to `TradeExecutor.execute_signal` and `TradeLogger.log_signal_scan`. **v6.12:** `ctx["ml_threshold_used"]` ดึงจาก `bot_config.ftmo.ML_FILTER_THRESHOLD` (single source of truth) — ไม่ใช่ `getattr(rl_agent, "ml_filter_threshold")` ที่ตกค่า 0.0 เพราะ attribute อยู่บน `FTMOSignalFilterEnv` ไม่ใช่ agent. |
 | `FTMOTradingBot.run` (ML gate v6.12) | ใน loop ก่อนเรียก `_rl_agent.should_take_signal`: ถ้า `ml_score < bot_config.ftmo.ML_FILTER_THRESHOLD` → log `Result = "ML_FILTERED"` แล้ว `continue`. ทำให้ live distribution = training distribution (env กรองเดียวกันตอน train). |
 | `FTMOTradingBot._log_signal_scan(sig, ctx, result)` | Wrapper: builds `scan_data` from signal + context + result label (`AGENT_TAKE`/`AGENT_SKIP`/`AGENT_TAKE_FAIL`/`REJECTED`/`NO_SIGNAL`/`ML_FILTERED` v6.12), calls `TradeLogger.log_signal_scan`. **v6.10d:** scan_data includes `executor_reject_reason` (col 20) + `obs_27_json` (col 21) จาก live_context — กัน Signals sheet col 20/21 ว่างเปล่า. |

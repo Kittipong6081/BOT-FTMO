@@ -75,10 +75,11 @@
 - `aux_aware_policy.py` — PPO policy พร้อม `aux_head: nn.Linear(latent_dim_pi, 1)` ทำนาย `outcome_pnl_ratio`
 - `aux_aware_ppo.py` — PPO subclass เพิ่ม MSE aux_loss (weight=0.5)
 - `aux_rollout_buffer.py` — RolloutBuffer พร้อม `aux_targets`
-- `signal_filter_env.py` — Gymnasium env (state = 27-dim obs, action = TAKE/SKIP)
+- `signal_filter_env.py` — Gymnasium env (state = **29-dim obs** v7, action = TAKE/SKIP)
 - `rl_agent.py` — wrapper สำหรับ inference (`should_take_signal`, `get_action_confidence`)
+- `chronos_forecaster.py` (v7) — Amazon Chronos 2 zero-shot forecaster ที่ป้อน obs[27,28]
 
-**Obs 27 dims** (ต้อง sync 3 จุด — ดู [`wiki/05-invariants.md`](wiki/05-invariants.md)):
+**Obs 29 dims** (v7, 2026-05-01 — ต้อง sync 3 จุด — ดู [`wiki/05-invariants.md`](wiki/05-invariants.md)):
 
 ```
 [0]  ml_score              [9]  bb_pctb           [18] consec_norm
@@ -90,6 +91,8 @@
 [6]  ob_size_atr           [15] day_progress      [24] rr_norm
 [7]  adx_norm              [16] trades_today_n    [25] confluence_norm
 [8]  stoch_norm            [17] recent_wr_norm    [26] (reserved)
+                                                  [27] chronos_alignment       ⭐ v7
+                                                  [28] chronos_uncertainty_norm ⭐ v7
 ```
 
 **Reward:** ratio (P/L ÷ risk) + DD penalty + activity floor + auxiliary signal (Phase E2)
@@ -128,10 +131,11 @@ BOT-FTMO/
     │   ├── liquidity_sweeps.py
     │   └── indicators.py
     │
-    ├── ml/                            # 🔬🎓 Brain 2 + 3: ML + RL
+    ├── ml/                            # 🔬🎓 Brain 2 + 3 + Forecaster (v7)
     │   ├── signal_quality.py          # GBM wrapper (with calibrator)
     │   ├── rl_agent.py                # PPO inference wrapper
-    │   ├── signal_filter_env.py       # Gymnasium env (27 dims)
+    │   ├── signal_filter_env.py       # Gymnasium env (29 dims, v7)
+    │   ├── chronos_forecaster.py      # Amazon Chronos 2 zero-shot forecaster (v7)
     │   ├── aux_aware_policy.py        # PPO + aux head
     │   ├── aux_aware_ppo.py           # PPO subclass + aux loss
     │   ├── aux_rollout_buffer.py      # RolloutBuffer + aux_targets
@@ -247,6 +251,15 @@ python -m venv .venv
 ```cmd
 .venv\Scripts\pip install MetaTrader5
 ```
+
+### Step 6 (v7): หมายเหตุเรื่อง Chronos 2
+
+ตั้งแต่ v7.0 (2026-05-01) บอทใช้ **Amazon Chronos 2** (zero-shot time-series foundation model) เพื่อทำนายราคา M15 ใน 8 แท่งข้างหน้า — เป็น obs feature ตัวที่ 27-28 ของ RL agent.
+
+- `chronos-forecasting==1.5.2` + `transformers==4.46.3` + `accelerate==1.2.1` ถูก pin ใน [`requirements.txt`](ftmo_trading_bot/requirements.txt) แล้ว — ติดตั้งอัตโนมัติใน Step 4
+- **ครั้งแรกที่รัน** บอทจะ download โมเดล `amazon/chronos-bolt-small` ขนาด ~200 MB จาก Hugging Face Hub มาเก็บที่ `~/.cache/huggingface/hub/` (ไม่ต้องตั้งค่า token)
+- **Disable Chronos** (ถ้าต้องการ fallback ไป v6.14 behavior): ตั้ง `BOT_DISABLE_CHRONOS=1` หรือแก้ `bot_config.ml.CHRONOS_ENABLED = False` ใน `config/settings.py` → obs[27,28] = 0.0 (neutral)
+- ⛔ ⚠️ การเปลี่ยน `CHRONOS_MODEL_NAME` / `CHRONOS_PREDICTION_LENGTH` / `CHRONOS_CONTEXT_LENGTH` หลัง train เสร็จ → obs distribution shift → **ต้อง retrain ใหม่ทั้ง pool + GBM + RL**
 
 ⚠️ MetaTrader5 library **ใช้ได้เฉพาะ Windows** — บน macOS/Linux จะเข้า Mock Mode อัตโนมัติ (ใช้สำหรับ training/dev เท่านั้น, ไม่สามารถเทรดจริง)
 
@@ -408,32 +421,36 @@ pip freeze > vps_versions.txt
 
 **macOS / Linux:**
 ```bash
-.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py \
+.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
     --pool_size 3000 \
     --ml_threshold 0.36 \
     --risk_per_trade 0.007 \
-    --timesteps_p1 300000 \
-    --timesteps_p2 200000
+    --n_envs 8 \
+    --outcome_noise 0.05 \
+    --timesteps_p1 10000000 \
+    --timesteps_p2 5000000
 ```
 
 **Windows:**
 ```cmd
-.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py ^
+.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py --fresh ^
     --pool_size 3000 ^
     --ml_threshold 0.36 ^
     --risk_per_trade 0.007 ^
-    --timesteps_p1 300000 ^
-    --timesteps_p2 200000
+    --n_envs 8 ^
+    --outcome_noise 0.05 ^
+    --timesteps_p1 10000000 ^
+    --timesteps_p2 5000000
 ```
 
 **Curriculum 2-phase:**
 
-- **P1 (300K steps):** Quality-first reward — เน้น win rate/profit, no DD penalty
-- **P2 (200K steps):** Risk-aware — เพิ่ม DD penalty + activity floor + early-stop on value loss
+- **P1 (10M steps):** Quality-first reward — เน้น win rate/profit, no DD penalty
+- **P2 (5M steps):** Risk-aware — เพิ่ม DD penalty + activity floor + early-stop on value loss
 
 **Auxiliary Task:** policy ทำนาย `outcome_pnl_ratio` (`aux_head`) เพิ่ม MSE loss weight=0.5 — บังคับให้ representation รู้จัก signal quality (จาก paper "Auxiliary task helps PPO converge")
 
-**เวลา:** ~2–3 ชม. บน CPU (CPU เพียงพอ — ไม่ต้องใช้ GPU)
+**เวลา:** ~30–40 ชม. บน CPU @ n_envs=8 (รัน background ได้, GPU เร็วขึ้น ~3–5×)
 
 **Output:**
 - `models/ppo_signal_filter.zip` — final agent

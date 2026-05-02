@@ -113,6 +113,24 @@ class StrategyBacktester:
             except Exception as e:
                 print(f"⚠️ [Backtester] ML quality model load failed: {e}")
 
+        # v7 (2026-05-01): Chronos zero-shot forecaster — feeds obs[27,28]
+        # Disabled via env var BOT_DISABLE_CHRONOS=1 (unit tests / smoke runs)
+        self._chronos = None
+        try:
+            from config.settings import bot_config as _bc
+            if getattr(_bc.ml, "CHRONOS_ENABLED", True):
+                from ml.chronos_forecaster import ChronosForecaster
+                self._chronos = ChronosForecaster(
+                    model_name=_bc.ml.CHRONOS_MODEL_NAME,
+                    device=_bc.ml.CHRONOS_DEVICE,
+                    prediction_length=_bc.ml.CHRONOS_PREDICTION_LENGTH,
+                    context_length=_bc.ml.CHRONOS_CONTEXT_LENGTH,
+                    verbose=1,
+                )
+        except Exception as e:
+            print(f"⚠️ [Backtester] Chronos forecaster init failed: {e} → obs[27,28] = 0")
+            self._chronos = None
+
         self._m15_cache: Dict[str, pd.DataFrame] = {}
         self._h1_cache: Dict[str, pd.DataFrame] = {}
         self._h4_cache: Dict[str, pd.DataFrame] = {}
@@ -760,6 +778,19 @@ class StrategyBacktester:
                 # Pool ใหม่จะเก็บชัดเจนเพื่อ agent เรียน sync กับ P1 filter
                 htf_trend_alignment = direction * signal.market_bias
 
+                # v7 (2026-05-01): Chronos forecast features สำหรับ obs [27-28]
+                # ใช้ ltf_slice (M15 closed bars ก่อน scan_idx) — anti-lookahead เหมือน BUY/SELL eval
+                # Cache ภายใน ChronosForecaster (key=(symbol, last_bar_ts)) → 4 scan points/day จะ hit cache
+                chronos_align = 0.0
+                chronos_unc = 0.0
+                if self._chronos is not None and self._chronos.is_available:
+                    try:
+                        chronos_align, chronos_unc = self._chronos.forecast_features(
+                            symbol, ltf_slice, float(direction), float(atr_val)
+                        )
+                    except Exception:
+                        chronos_align, chronos_unc = 0.0, 0.0
+
                 signals.append({
                     'day': day,
                     'symbol': symbol,
@@ -789,6 +820,9 @@ class StrategyBacktester:
                     # v6: cost/flip/htf features สำหรับ RL obs [24-26]
                     'spread_pips': float(typical_spread_pips),
                     'htf_trend_alignment': float(htf_trend_alignment),
+                    # v7: Chronos forecast features สำหรับ RL obs [27-28]
+                    'chronos_alignment': float(chronos_align),
+                    'chronos_uncertainty_norm': float(chronos_unc),
                 })
 
         self._strategy.MIN_CONFLUENCE_SCORE = saved_confluence

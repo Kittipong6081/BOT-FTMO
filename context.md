@@ -1,12 +1,12 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-04-30 (v6.14) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-02 (v7.0.7) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
 - **Goal**: pass the FTMO 2-step Standard Challenge (10 % profit, 4 % daily DD, 8 % total DD).
-- **3 brains**: `SMCStrategy` (rules) → `SignalQualityModel` (GBM + Isotonic calibrator) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
+- **3 brains + 1 forecaster**: `SMCStrategy` (rules) → `SignalQualityModel` (GBM + Isotonic calibrator) → **`ChronosForecaster`** (Amazon Chronos 2 zero-shot, v7) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
 - **Live entry**: `python main.py` → `FTMOTradingBot.run` loops every 5 s. Console runs in **quiet mode** (announce-once for idle states; per-signal SKIP/NO_AGENT logged to Excel `Signals` sheet, not console).
-- **Obs = 27 dims** (v6, 2026-04-22). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
+- **Obs = 29 dims** (v7, 2026-05-01 — adds `chronos_alignment` + `chronos_uncertainty_norm`). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
 - **Runs on**: macOS/Linux (train + backtest), Windows + MT5 (live).
 - **Live logging**: `TradeLogger` (re-enabled v6.9, schema bumped v6.10) writes Excel — Trades 64 cols (incl. `Obs27 JSON` for retrain), Signals 21 cols (per-scan log), Daily, Stats.
 - **v6.11 SMC overhaul (2026-04-29)**: Counter-D1 hard veto + Sweep within 8 bars + Fresh M15 BOS within 6 bars + ADX H4 ≥ 22 + Quiet-vol × off-overlap blocker + IDM detector + OB grading (Extreme/Decisional/Internal). BE trigger ใช้ `best_price` (rolling MFE). Per-component pts populate ใน TradeSignal → Trades sheet เห็น HTF/MTF/OB/FVG/Sweep pts จริง. ดู [`wiki/05-invariants.md` v6.11 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
@@ -14,7 +14,70 @@
 - **v6.11.2 (2026-04-29 evening)**: Partial rollback — Tier 2.2 (Sweep prereq) + Tier 2.3 (Fresh M15 BOS prereq) hard gates → soft bonuses. Pool หาย 99 % ภายใต้ v6.11 hard gates → 0.0 % Pass Rate. หย่อน 2 จุด → pool 78k signals, Pass Rate 2.7 %, WR 65.6 %.
 - **v6.11.3 (2026-04-29 evening)**: Mild tune — IDM penalty 5→2 + ADX H4 floor 22→20. Pool 90k (+15 %), Pass Rate 2.7→**3.4 %**, WR 65.6→**68.8 %**, DD max 4.46→**3.23 %** (safer). Pure improvement ทุกมิติ. **KEEP + deploy demo**. Backups `*.bak_v6.11.2` พร้อมสำหรับ rollback.
 - **v6.12 (2026-04-29 night)**: Live-vs-train sync fix — `FTMOConfig.ML_FILTER_THRESHOLD = 0.36` + ML gate ใน `FTMOTradingBot.run` ก่อน agent. ปิด silent regression จากการที่ live ไม่บังคับ ML threshold (training บังคับ). Logging fix — `ML Threshold` column ใน `Signals` sheet ตอนนี้แสดง 0.36 จริง (เดิม 0.0 เพราะ getattr ผิด attribute). ไม่ต้อง retrain.
-- **v6.14 (2026-04-30) ⭐ current — Live demo log audit, 4 bug fixes** (silent regression vs v6.13 spec):
+- **v7.0.7 (2026-05-02) ⭐ current — Revert threshold 30 → 20 (v7.0.5 retrain after backup loss)**:
+  - **Why** — v7.0.6 (threshold 30) eval Pass Rate **7.4%** (regression −3.3 pp จาก v7.0.5 = 10.7%). User skip backup step → v7.0.5 model หาย → ต้อง retrain ใหม่
+  - **Lesson learned** — Early stop ที่ value_loss=20.45 = **inflection point detector** (ไม่ใช่ false positive). Phase 2 หลังจุดนี้ทำให้ agent over-tune toward safety: WR ขึ้น (65→68%), Profitable ขึ้น (86→88%), แต่ **passes น้อยลง** (selective เกินไม่ aggressive พอจะถึง 10% ใน 45 วัน)
+  - **Fix** — single-line revert: `threshold=20.0` (กลับ v7.0.5 config) — engineered sweet spot @ Phase 2 ~70%
+  - **No rebuild** pool/GBM. Retrain RL อย่างเดียว ~30 ชม.
+  - **Risk**: stochastic — RNG อาจให้ Pass 9.5-11.5% (ไม่เป๊ะ 10.7%). v7.0.3 backup (10.0%) เป็น final safety net
+  - **Backup discipline** — เพิ่ม emphasis: ต้อง execute backup commands ก่อนทุก retrain ห้ามข้าม
+  - ดู [`wiki/05-invariants.md` v7.0.7 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v7.0.6 (2026-05-02) — Phase 2 EarlyStop threshold 20 → 30, Pass Rate 7.4% (regressed)**:
+  - **Why** — v7.0.5 trigger ที่ `value_loss = 20.45` (just 1.02× threshold) = borderline. หลัง LR fix (5e-5) value_loss variance ต่ำลง → threshold 20 อาจ aggressive เกิน. Phase 2 รัน 70% (3.5M / 5M) ก่อนหยุด — มี potential ที่ยังไม่ได้
+  - **Fix** — single-line: `EarlyStopOnValueLoss(threshold=30.0, ...)` (จาก 20.0). 30 = 1.5× = ตรงกับ "natural transient spike range" ของ v6.13/v7.0.3 historical (31)
+  - **No rebuild** pool/GBM. Retrain RL อย่างเดียว ~30 ชม.
+  - **Probability**: 40% Pass > 10.7%, 35% equivalent, 20% mild regress, 5% catastrophic. Backup `*.bak_v7.0.5` (10.7%) เป็น safety net
+  - **Watch** — ถ้า value_loss > 30 = true divergence (early stop trigger). ถ้า Pass Rate trajectory ลด 2 snapshots ติด = kill + restore v7.0.5
+  - **Gate** ≥ 11% = win, 10-11% = equivalent (keep), < 9% = restore v7.0.5
+  - ดู [`wiki/05-invariants.md` v7.0.6 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v7.0.5 (2026-05-02) — Phase 2 LR schedule proper fix (latent bug จาก v6.x), Pass Rate 10.7%**:
+  - **Why** — v7.0.4 retrain Phase 2 รันเต็ม 5M (warmup ปลด early-stop) → Pass Rate **2.8%** (regression −7.2 pp). Trajectory ลดลงตอนปลาย Phase 2 = over-training
+  - **Root cause Layer 1 (latent bug)** — SB3 PPO `_setup_model()` wrap `lr_schedule` ตอน init เท่านั้น. การ set `model.learning_rate = 5e-5` หลัง `AuxAwarePPO.load()` ไม่ rebuild schedule → optimizer ใช้ Phase 1 default 3e-4 (= **6× สูงกว่า intended** ตลอด v6.x → v7.0.4)
+  - **Root cause Layer 2** — High LR (3e-4) × Long Phase 2 (5M, ก่อนหน้านี้ early-stop @ ~32k) = over-train. v6.13/v7.0.3 "lucky" เพราะ early-stop ปกป้อง by accident
+  - **Fix** — rebuild lr_schedule + update optimizer 3 ชั้น:
+    ```python
+    from stable_baselines3.common.utils import FloatSchedule
+    model_p2.learning_rate = 5e-5
+    model_p2.lr_schedule = FloatSchedule(5e-5)
+    for _pg in model_p2.policy.optimizer.param_groups:
+        _pg['lr'] = 5e-5
+    ```
+  - **No rebuild** pool/GBM. Retrain RL อย่างเดียว ~30 ชม.
+  - **Watch** — Phase 2 step 0 TensorBoard `learning_rate = 0.00005` (ถ้าเป็น 0.0003 = fix fail)
+  - **Gate** ≥ 10% = keep, < 7% = restore `*.bak_v7.0.3`
+  - Backups `*.bak_v7.0.3` พร้อม rollback. ดู [`wiki/05-invariants.md` v7.0.5 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v7.0.4 (2026-05-02) — Phase 2 EarlyStopOnValueLoss warmup grace, Pass Rate 2.8% (regressed)**:
+  - **Why** — v7.0.3 retrain Phase 2 trigger early stop ที่ step 32k / 5M (0.6% ของ target). value_loss spike 31 > threshold 20 ตอน Phase 2 start เพราะ reward distribution shift (Phase 1 [-2,5] → Phase 2 [-15,5] หลังเปิด DD penalty + activity floor). Eval Pass Rate 10.0% (ผ่าน gate baseline) แต่ Phase 2 "เกือบไม่ได้ทำงาน" → potential ที่ขาด
+  - **Fix** — เพิ่ม `warmup_steps` parameter ใน `EarlyStopOnValueLoss`:
+    - Phase 2: `warmup_steps=50_000` (1% ของ 5M target) — ปล่อยให้ value head re-fit reward distribution ใหม่ก่อน enable check
+    - Phase 1: `warmup_steps=0` (default) — backward compat, ไม่กระทบ
+  - **No rebuild** pool / GBM. Retrain RL อย่างเดียว ~25-30 ชม. Backup `*.bak_v7.0.3` เผื่อ rollback
+  - **Gate** > 10.0% = win (warmup ช่วย push), 9-10% = equivalent (no harm), < 9% = restore `*.bak_v7.0.3`
+  - Backups พร้อม rollback. ดู [`wiki/05-invariants.md` v7.0.4 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v7.0.3 (2026-05-02) — Correlation simulator HOLD=0 (over-block fix), Pass Rate 10.0%**:
+  - **Why** — v7.0.2 eval Pass Rate ตก 0.6% (จาก 9.7% baseline). Root cause: time-scale mismatch ระหว่าง pool (4 scans/day = 1 slot ≈ 6h) กับ live (avg position hold 75 นาที) → `HOLD_SIGNALS_APPROX = 1` block correlation 6h ใน live time = over-block 4-5×. Agent skip-all (Take Rate 50% → 32%, Orders/ep 7.7 → 4.8)
+  - **Fix** — single-line: `HOLD_SIGNALS_APPROX = 1 → 0` ใน `ml/signal_filter_env.py`. Drop-stale logic clear `_open_positions` ทันทีทุก step → effective correlation simulator off, infrastructure คงไว้ (เผื่อ tune กลับ)
+  - **No rebuild** pool/GBM (ไม่ขึ้นกับ HOLD). Retrain RL อย่างเดียว ~25-30 ชม.
+  - **Gate** ≥ 9.7% = keep, < 4% = revert. Test isolation: ถ้าผ่าน = Chronos formula fix ใช้งานได้ จริง correlation simulator ต้อง parameter ที่ถูกต้อง. ถ้าไม่ผ่าน = revert + consider Trend Following (Plan B)
+  - Backups `*.bak_v6.14` พร้อม rollback. ดู [`wiki/05-invariants.md` v7.0.3 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v7.0.2 (2026-05-01) — Chronos formula fix + correlation training-live sync**:
+  - **Why** — v7.0 retrain Pass Rate ตก 9.7% → 4.0%. Root cause analysis (pool diagnostics + ftmo_trades audit) พบ 3 จุด: (1) `chronos_uncertainty_norm` saturated 96.2% ที่ค่า max, (2) `chronos_alignment` corr ติดลบ (−0.0178 anti-signal), (3) live correlation block 96.3% ของ TAKE แต่ training env ไม่มี check
+  - **Fix Chronos formula** (`ml/chronos_forecaster.py`): flip alignment sign (`direction × sign(close − median)`) + Brownian-scaled uncertainty (`/ atr × √8`) → distribution กระจาย ไม่ saturate, sign ตรงกับ outcome
+  - **Add correlation simulator** (`ml/signal_filter_env.py`): mirror `TradeExecutor.CORRELATION_GROUPS` (USD_WEAK/STRONG, JPY_CROSS, EUR/GBP_PAIRS, SAFE_HAVEN), `_open_positions` virtual list, `_is_correlation_blocked()` method, forced SKIP ใน `step()` ถ้า block — training distribution ตรงกับ live
+  - **No config change** — ห้ามแตะ Daily DD logic, OBS_DIM ยังคง 29, live source of truth (`TradeExecutor`) ไม่แก้
+  - **Pipeline**: rebuild pool → retrain GBM → retrain RL ทั้งหมด. Eval gate ≥ 9.7% = keep, < 7% = revert จาก `*.bak_v6.14`
+  - Backups `*.bak_v6.14` พร้อม rollback. ดู [`wiki/05-invariants.md` v7.0.2 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v7.0 (2026-05-01) — Amazon Chronos 2 zero-shot forecast features added (obs 27 → 29)**:
+  - **New module** — `ftmo_trading_bot/ml/chronos_forecaster.py` (`ChronosForecaster`). โหลด `amazon/chronos-bolt-small` ผ่าน `BaseChronosPipeline.from_pretrained` ครั้งเดียว, cache forecast per `(symbol, last_bar_ts)`, deterministic via `torch.manual_seed(0)`.
+  - **2 new obs features** — `obs[27] chronos_alignment` (`direction × sign(median_h+8 − close)`, ±1) + `obs[28] chronos_uncertainty_norm` (`(q90−q10)/atr`, [0, 3]). Sync ทั้ง 3 ที่ (`FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM = 29`).
+  - **Pool inject** — `StrategyBacktester.generate_episode_signals` คำนวณ chronos features จาก `ltf_slice` (closed bars only, ห้าม leak future) → เก็บใน signal dict สำหรับ `FTMOSignalFilterEnv._get_obs` อ่าน.
+  - **Live path** — `FTMOTradingBot.__init__` instantiate `ChronosForecaster`. `_build_signal_observation` + `_build_live_context` ส่งค่าเข้า obs + Excel log.
+  - **Excel schema bump** — `Signals` sheet 21 → 23 cols (+ `Chronos Align`, `Chronos Unc`); `Trades` sheet 64 → 66 cols (+ chronos @ entry). Pre-v7 Excel ต้อง `mv logs/ftmo_trades.xlsx logs/ftmo_trades_pre_v7.xlsx` ก่อน first run.
+  - **Config single source of truth** — `bot_config.ml.CHRONOS_MODEL_NAME` (default `"amazon/chronos-bolt-small"`), `CHRONOS_PREDICTION_LENGTH=8`, `CHRONOS_CONTEXT_LENGTH=512`, `CHRONOS_ENABLED=True`. Disable via env `BOT_DISABLE_CHRONOS=1` (unit tests).
+  - **ห้ามแตะ Daily DD** — `RiskManager.update_daily_pnl` / `_initial_balance` / `_daily_start_balance` ไม่ได้รับ touch ใดๆ. Chronos อยู่ที่ pre-trade gate เท่านั้น.
+  - **Pipeline**: ต้อง rebuild pool + retrain GBM + retrain RL (Pass Rate gate ≥ 9.7 % vs v6.13 baseline = keep, ไม่ผ่าน = revert จาก `*.bak_v6.14`).
+  - Backups `*.bak_v6.14` พร้อม rollback. ดู [`wiki/05-invariants.md` v7.0 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v6.14 (2026-04-30) — Live demo log audit, 4 bug fixes** (silent regression vs v6.13 spec):
   - **Fix 1 — SL flow alignment (XAU)**: `SMCStrategy.scan_signal` BUY+SELL ใช้ per-symbol `sl_atr_multiplier` (XAU=1.8×, FX=1.5×) แทน global hardcoded 1.5× + เพิ่ม OB SL `ob_sl_floor = atr × 0.5` ป้องกัน clamp ลด SL ใกล้เกินไป
   - **Fix 1C — XAUUSD `min_sl_pips`**: 300 → **1000 ticks** ($3 → $10) — guard ชั้นสุดท้าย ไม่ให้ Gold SL ต่ำกว่า ~1.0×ATR
   - **Fix 2 — TradeLogger off-by-one**: close-row update path เขียน column 28-31 ทับ `DD@Entry % / MAE / MFE / Time-in-Trade` → แก้เป็น 29-32 ตรงกับ `TRADE_HEADERS`
@@ -47,7 +110,9 @@
 | MIN_SL guard (per-symbol, v6.2 / v6.14 XAU raise) | 10-20 pips FX, **1000 ticks XAUUSD** ($10) | `SymbolConfig.symbol_overrides[X].min_sl_pips` |
 | SL base multiplier (per-symbol, v6.14 wired) | FX 1.5×, **XAUUSD 1.8×** | `SymbolConfig.symbol_overrides[X].sl_atr_multiplier` (fallback `bot_config.indicators.atr_sl_multiplier`) |
 | OB SL clamp lower bound (v6.14) | 0.5 × ATR | hard-coded in `SMCStrategy.scan_signal` |
-| Obs dims | **27** | `SelfLearningAgent.OBS_DIM` |
+| Obs dims | **29** (v7) | `SelfLearningAgent.OBS_DIM` |
+| Chronos model (v7) | `amazon/chronos-bolt-small` | `bot_config.ml.CHRONOS_MODEL_NAME` |
+| Chronos horizon (v7) | 8 M15 bars (~2 h) | `bot_config.ml.CHRONOS_PREDICTION_LENGTH` |
 | RL model | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` | `SelfLearningAgent` |
 | ML model | `data/signal_quality_model.pkl` | `SignalQualityModel` |
 | Pool | `data/signal_pool_3000.pkl` (~158k signals) | `StrategyBacktester` |
@@ -114,8 +179,8 @@ Full module details → [wiki/02-modules.md](wiki/02-modules.md).
 python scripts/build_signal_pool.py --pool_size 3000 --workers 8
 python scripts/train_signal_quality.py
 python scripts/train_signal_filter.py --fresh \
-    --timesteps_p1 300000 --timesteps_p2 200000 \
-    --n_envs 4 --pool_size 3000 --outcome_noise 0.02 \
+    --timesteps_p1 10000000 --timesteps_p2 5000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.05 \
     --ml_threshold 0.36 --risk_per_trade 0.007
 ```
 

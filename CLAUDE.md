@@ -97,7 +97,7 @@ Tell the user in 1–2 lines which docs were updated. Do not ask for approval.
 
 Full list in `wiki/05-invariants.md`. Short version:
 
-- ⛔ Obs 27 dims must be in sync in 3 places: `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, `SelfLearningAgent.OBS_DIM`.
+- ⛔ Obs 29 dims (v7) must be in sync in 3 places: `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, `SelfLearningAgent.OBS_DIM`.
 - ⛔ FTMO anchor (`RiskManager._initial_balance`) must not change mid-challenge. Never delete `logs/bot_state.json` while running.
 - ⛔ MT5 deal matching uses `position_id`, not `ticket`.
 - ⛔ Timezone: broker = EET, config = UTC — convert before comparing. Do not use `mt5.symbol_info_tick().time` directly (FTMO quirk, +3 h drift).
@@ -105,9 +105,45 @@ Full list in `wiki/05-invariants.md`. Short version:
 
 ---
 
+## 📦 Dependency Pin Protocol (MANDATORY)
+
+**ทุกครั้งที่เพิ่ม import ของ external library ใน `.py` ใด ๆ ใต้ `ftmo_trading_bot/`** (รวม top-level import + lazy import ใน function/method):
+
+1. **เช็คว่า package อยู่ใน [`requirements.txt`](ftmo_trading_bot/requirements.txt) หรือยัง** — `grep <pkg> ftmo_trading_bot/requirements.txt`
+2. **ถ้ายังไม่อยู่ → pin version ทันทีในเทิร์นเดียวกัน** ห้ามทิ้งไว้ทีหลัง:
+   - หา version ที่ compatible กับที่มีอยู่ (เช็ค peer deps)
+   - เพิ่มบรรทัด `<pkg>==<exact_version>` ใน `requirements.txt` พร้อม comment ระบุว่าใช้ทำอะไร
+   - ใส่ใน section ที่เกี่ยวข้อง (RL / ML / Logger / etc.)
+3. **Transitive deps ที่สำคัญต่อ behavior** — pin ด้วย ถึงแม้ไม่ได้ `import` ตรง ๆ (เช่น `transformers` / `accelerate` เมื่อใช้ `chronos-forecasting`) เพื่อกัน upstream upgrade ทำลาย compat
+4. **ห้ามใช้ pin แบบ `~=` หรือ `>=`** — ใช้ `==<version>` เท่านั้น (VPS ต้องตรงกับเครื่อง train เป๊ะ)
+5. **อัพเดท [`readme.md`](readme.md)** ถ้า dependency ใหม่ต้องการขั้นตอนพิเศษ (download model, set env var, OS-specific setup)
+
+**Why** — VPS ต้องใช้ version เดียวกับเครื่อง train (`requirements.txt` หัวไฟล์ระบุไว้ชัด). ถ้า import ใหม่หลุด pin → `pip install -r` บน VPS อาจ resolve เป็น version อื่น → silent regression. นี่คือเหตุผลที่ทุก dep ปัจจุบันใช้ `==<exact>` หมด.
+
+**Self-check command** ก่อน commit:
+
+```bash
+.venv/bin/python -c "
+import ast, pathlib, re
+pkgs = set(re.findall(r'^([\w\-]+)==', open('ftmo_trading_bot/requirements.txt').read(), re.M))
+externals = {'chronos','torch','transformers','accelerate','numpy','pandas','sklearn','gymnasium','stable_baselines3','openpyxl','pytz','requests','dotenv','tqdm','rich'}
+for p in pathlib.Path('ftmo_trading_bot').rglob('*.py'):
+    src = p.read_text()
+    for m in re.finditer(r'^(?:from|import)\s+([\w\.]+)', src, re.M):
+        root = m.group(1).split('.')[0]
+        if root in externals:
+            pin_name = {'sklearn':'scikit-learn','dotenv':'python-dotenv','chronos':'chronos-forecasting','stable_baselines3':'stable-baselines3'}.get(root, root)
+            if pin_name not in pkgs:
+                print(f'❌ {p}: import {root} but {pin_name} not pinned')
+"
+```
+
+---
+
 ## 🧪 Before commit
 
 - Confirm `wiki/`, `context.md`, and (if needed) `readme.md` are updated.
+- Confirm every new external import is pinned in `requirements.txt` (Dependency Pin Protocol above).
 - The Stop hook warns when `.py` files changed but no doc files changed.
 - Do not use `--no-verify`. If the hook warns, sync docs first.
 

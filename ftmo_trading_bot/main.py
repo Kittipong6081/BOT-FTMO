@@ -120,7 +120,29 @@ class FTMOTradingBot:
                 print(f"⚠️ [Bot] ML Quality Model ไม่พบที่ {_mpath} — obs[ml_score]=0.5 (neutral)")
         except Exception as e:
             print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
-        
+
+        # === Chronos 2 Forecaster (v7, 2026-05-01) — feeds obs[27,28] ===
+        # Zero-shot M15 forecast (median + q10 + q90 ใน 8 bars ahead)
+        # Disabled via bot_config.ml.CHRONOS_ENABLED = False หรือ env BOT_DISABLE_CHRONOS=1
+        self._chronos = None
+        try:
+            if getattr(bot_config.ml, "CHRONOS_ENABLED", True):
+                from ml.chronos_forecaster import ChronosForecaster
+                self._chronos = ChronosForecaster(
+                    model_name=bot_config.ml.CHRONOS_MODEL_NAME,
+                    device=bot_config.ml.CHRONOS_DEVICE,
+                    prediction_length=bot_config.ml.CHRONOS_PREDICTION_LENGTH,
+                    context_length=bot_config.ml.CHRONOS_CONTEXT_LENGTH,
+                    verbose=1,
+                )
+                if not self._chronos.is_available:
+                    print(f"⚠️ [Bot] Chronos ยังไม่พร้อม — obs[27,28] จะเป็น 0 (neutral)")
+            else:
+                print(f"ℹ️ [Bot] Chronos disabled via config — obs[27,28] = 0")
+        except Exception as e:
+            print(f"⚠️ [Bot] Chronos init fail: {e} — obs[27,28] = 0")
+            self._chronos = None
+
         # === News Calendar Auto-Scheduler (อัพเดททุกอาทิตย์ 23:30 EET) ===
         # _project_root กำหนดข้างบนแล้ว
         self._news_scheduler = NewsCalendarScheduler(
@@ -525,6 +547,23 @@ class FTMOTradingBot:
         except Exception:
             pass
 
+        # === v7 (2026-05-01): Chronos 2 forecast features [27-28] ===
+        # ใช้ M15 cache ของ strategy (อัปเดตทุก scan รอบ ~60s)
+        # cache key (symbol, last_bar_ts) ใน ChronosForecaster → hit ทุก ~15min/symbol
+        chronos_align = 0.0
+        chronos_unc = 0.0
+        if self._chronos is not None and self._chronos.is_available:
+            try:
+                ltf_df = getattr(self._strategy, "_ltf_data", None)
+                if ltf_df is not None and len(ltf_df) >= 32:
+                    chronos_align, chronos_unc = self._chronos.forecast_features(
+                        sig.symbol, ltf_df, float(direction), float(atr_val)
+                    )
+            except Exception as e:
+                if not getattr(self, "_chronos_warned", False):
+                    print(f"⚠️ [main] Chronos forecast failed: {e} — fallback 0")
+                    self._chronos_warned = True
+
         obs = np.array([
             # Signal core [0-11]
             float(np.clip(confluence_norm, -1.0, 1.0)),
@@ -558,6 +597,9 @@ class FTMOTradingBot:
             float(np.clip(self._build_spread_pct_of_atr(sig, atr_pips), 0.0, 3.0)),
             float(self._has_opposite_recently_closed(sig)),
             float(np.clip(bias_align, -1.0, 1.0)),  # htf_trend_alignment — ใช้ bias_align เป็น proxy
+            # v7 Chronos forecast [27-28]
+            float(np.clip(chronos_align, -1.0, 1.0)),
+            float(np.clip(chronos_unc, 0.0, 3.0)),
         ], dtype=np.float32)
         return obs
 
@@ -631,7 +673,25 @@ class FTMOTradingBot:
             "mtf_bias": int(getattr(sig, "market_bias", 0)),
             "d1_bias": int(getattr(sig, "d1_bias", 0)),
             "balance_at_entry": 0.0,
+            # v7 Chronos forecast features (mirror obs[27,28]) — for Excel logging
+            "chronos_align": 0.0,
+            "chronos_unc": 0.0,
         }
+
+        # v7: Chronos forecast — same compute path as _build_signal_observation
+        if self._chronos is not None and self._chronos.is_available:
+            try:
+                ltf_df = getattr(self._strategy, "_ltf_data", None)
+                atr_val = max(float(getattr(sig, "atr_value", 0.0) or 0.0), 1e-8)
+                direction = 1.0 if sig.signal_type.value == "BUY" else -1.0
+                if ltf_df is not None and len(ltf_df) >= 32:
+                    a, u = self._chronos.forecast_features(
+                        sig.symbol, ltf_df, direction, atr_val
+                    )
+                    ctx["chronos_align"] = float(a)
+                    ctx["chronos_unc"] = float(u)
+            except Exception:
+                pass
 
         # ML scores (calibrated via SignalQualityModel + raw via base GBM)
         try:
@@ -728,9 +788,11 @@ class FTMOTradingBot:
         except Exception:
             pass
 
-        # === Obs 27-dim vector (JSON) — for offline RL retrain ===
+        # === Obs vector (JSON) — for offline RL retrain ===
         # ใช้ existing _build_signal_observation (ที่ feed เข้า agent อยู่แล้ว)
-        # round 4 decimals → file size ~250 chars/row
+        # ⚠️ key ยังเก็บชื่อ "obs_27_json" เพื่อ backward-compat กับ Excel retrain reader
+        # แต่ตั้งแต่ v7 (2026-05-01) เก็บ 29 dims จริง (เพิ่ม chronos_align, chronos_uncertainty)
+        # round 4 decimals → file size ~270 chars/row
         try:
             if self._rl_agent is not None:
                 obs = self._build_signal_observation(sig)
@@ -794,6 +856,9 @@ class FTMOTradingBot:
                 "executor_reject_reason": live_context.get("executor_reject_reason", ""),
                 # v6.10b: propagate obs_27_json ลง Signals sheet col 21 (สำหรับ retrain)
                 "obs_27_json": live_context.get("obs_27_json", ""),
+                # v7: Chronos forecast features ลง Signals sheet col 22-23
+                "chronos_align": live_context.get("chronos_align", 0.0),
+                "chronos_unc": live_context.get("chronos_unc", 0.0),
             }
             self._logger.log_signal_scan(scan_data)
         except Exception as e:

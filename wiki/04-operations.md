@@ -178,7 +178,7 @@ In `RiskManager` + `TradeExecutor`:
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | Friday Force Close | `is_friday_close_time` | ศุกร์ 20:45 EET | — | ทุก position | กฎ FTMO weekend rule |
 | 2 | Daily Overnight Close | `is_daily_close_time` | Mon-Thu 23:30 EET | — | ทุก position | **user policy** (กัน swap + gap) — ไม่ใช่กฎ FTMO 2-step Standard |
-| 3 | Friday Warning | `friday_cutoff − 15 min` | — | ศุกร์ 14:45 UTC | ทุก position | guard เสริม (UTC-based) |
+| 3 | Friday Warning | `friday_force_close − 15 min` | ศุกร์ 20:30 EET | — | ทุก position | soft wind-down ก่อน FTMO bell (EET-based, v7.0.1) |
 
 ⚠️ **Removed (2026-04-30)**: NY Session End (winners-only profit lock) ที่เคย trigger ตอน `newyork_end − 15 min` (= 16:45 UTC = 23:45 ICT) — block นี้ไม่มี upper bound → ปิด winners ตลอด ~7 ชั่วโมงต่อวัน ทับ logic BE/Partial/Trailing ใน `TradeManager`. ถอดออกทั้งหมด — TradeManager ดูแล position ผ่าน trailing/BE/partial ตามปกติจน hit SL/TP/timeout หรือเข้า trigger #1-3 ข้างบน
 

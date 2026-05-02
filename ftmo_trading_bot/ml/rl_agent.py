@@ -4,7 +4,7 @@ FTMO Trading Bot — RL Agent (Signal Filter Mode)
 ===============================================================================
 PPO Agent ที่ตัดสินใจ TAKE/SKIP signal แต่ละตัวจาก SMC Strategy
 
-Observation Space (27 dims, v6 2026-04-22) — ต้องตรงกับ FTMOSignalFilterEnv.observation_space
+Observation Space (29 dims, v7 2026-05-01) — ต้องตรงกับ FTMOSignalFilterEnv.observation_space
                                 และ main._build_signal_observation:
   Signal core      [0-11]:   confluence, rr, direction, atr, ob_score, bias_align,
                              sl_atr, rsi, macd, trend_strength, ob_size_atr, adx
@@ -14,6 +14,9 @@ Observation Space (27 dims, v6 2026-04-22) — ต้องตรงกับ FT
                              recent_wr, consecutive_losses
   Cost/Flip/HTF    [24-26]:  spread_pct_of_atr, has_opposite_recently_closed,
                              htf_trend_alignment (v6: fix whipsaw + spread-aware)
+  Chronos forecast [27-28]:  chronos_alignment (direction × sign(median_h+8 − close), ±1)
+                             chronos_uncertainty_norm ((q90−q10)/atr, [0,3])
+                             v7: Amazon Chronos 2 zero-shot forecast features
 
 Action Space (1 dim, continuous [-1, 1]):
   > 0 → TAKE signal
@@ -31,7 +34,7 @@ from stable_baselines3 import PPO
 class SelfLearningAgent:
     """AI Agent สำหรับกรอง signal จาก SMC Strategy — ตัดสินใจ TAKE/SKIP"""
 
-    OBS_DIM: int = 27
+    OBS_DIM: int = 29
 
     def __init__(
         self,

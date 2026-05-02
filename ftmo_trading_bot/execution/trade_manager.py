@@ -13,7 +13,7 @@ FTMO Trading Bot — Trade Manager (ระบบจัดการเทรด�
 """
 
 import time as time_module
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from dataclasses import dataclass
 
@@ -531,18 +531,17 @@ class TradeManager:
 
         1. Friday Force Close (20:45 EET) — กฎ FTMO: ห้ามถือข้ามสุดสัปดาห์
         2. Daily Overnight Close (23:30 EET, Mon-Thu) — user policy: หนี swap + gap
-        3. Friday Warning (friday_cutoff − 15 min UTC) — ปิดทุก position ก่อน Friday cutoff
+        3. Friday Warning (friday_force_close − 15 min EET = 20:30 EET) — soft wind-down ก่อน FTMO bell
+
+        Note (v7.0.1, 2026-05-01): ก่อน fix นี้ trigger #3 ใช้ `friday_cutoff` (UTC) เป็น anchor
+        ทำให้เวลาปิดขยับตาม DST ±1 ชม. และผิด FTMO context (FTMO ใช้ broker EET).
+        Refactor ให้อิง `friday_force_close − 15 min` (EET) เพื่อความ consistent กับ trigger #1.
 
         Returns:
             int: จำนวนเทรดที่ปิด
         """
         from core.time_manager import TimeManager
-        import pytz
         server_time_now = TimeManager.get_server_time()   # EET (Europe/Bucharest)
-        # แปลงเป็น UTC เพื่อเทียบกับค่า Config (ซึ่งเป็น UTC)
-        utc_time_now = server_time_now.astimezone(pytz.UTC)
-        current_time_utc = utc_time_now.time()
-        current_weekday_utc = utc_time_now.weekday()
         sessions = bot_config.sessions
         closed_count = 0
 
@@ -558,7 +557,7 @@ class TradeManager:
 
         # === Zero-Overnight Policy (Mon-Thu 23:30 EET) — ปิดทุก Position ก่อนข้ามวัน ===
         # เหตุผล: หลีกเลี่ยง swap fee + gap risk (user policy ไม่ใช่กฎ FTMO 2-step Standard)
-        # Priority หลัง Friday Force Close แต่ก่อน Friday warning (UTC)
+        # Priority หลัง Friday Force Close แต่ก่อน Friday warning
         if TimeManager.is_daily_close_time(server_time_now):
             active_ct = len(self._executor.active_trades)
             if active_ct > 0:
@@ -568,18 +567,15 @@ class TradeManager:
                         closed_count += 1
             return closed_count
 
-        # === ตรวจวันศุกร์ (แจ้งเตือน) — ปิดทุกเทรดก่อน cutoff (UTC-based) ===
-        from datetime import time as dt_time
-        friday_warning_utc = dt_time(
-            sessions.friday_cutoff.hour,
-            max(0, sessions.friday_cutoff.minute - 15)
-        )
-        # friday_force_close ใน sessions เป็น EET — ไม่นำมา compare กับ UTC time
-        # ใช้ is_friday_close_time (ด้านบน) เป็น guard หลักของ EET แล้ว
-        if current_weekday_utc == 4 and current_time_utc >= friday_warning_utc:
+        # === Friday Warning (EET-based, derive จาก friday_force_close − 15 min) ===
+        # ตัวอย่าง: friday_force_close = 20:45 EET → warning = 20:30 EET
+        # consistent กับ trigger #1 (broker time) ไม่ขยับตาม DST
+        _warning_anchor = datetime.combine(server_time_now.date(), sessions.friday_force_close) - timedelta(minutes=15)
+        friday_warning_eet = _warning_anchor.time()
+        if server_time_now.weekday() == 4 and server_time_now.time() >= friday_warning_eet:
             active_ct = len(self._executor.active_trades)
             if active_ct > 0:
-                print(f"⏰ [Trade Manager] ใกล้หมดวันศุกร์ (UTC) — ปิด {active_ct} positions")
+                print(f"⏰ [Trade Manager] ใกล้ FTMO Friday Force Close ({friday_warning_eet.strftime('%H:%M')} EET) — ปิด {active_ct} positions")
                 for ticket in list(self._executor.active_trades.keys()):
                     if self._executor.close_trade(ticket, reason="Friday Session Close"):
                         closed_count += 1

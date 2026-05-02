@@ -315,6 +315,27 @@ class IndicatorConfig:
 
 
 # =============================================================================
+# 🔮 การตั้งค่า ML / Forecaster (v7 — Chronos 2)
+# =============================================================================
+@dataclass
+class MLConfig:
+    """
+    การตั้งค่าโมเดล ML / Forecaster สำหรับ obs feature engineering
+
+    ⚠️ Chronos model name + prediction_length + context_length
+       ต้องเหมือนกันทั้ง training (StrategyBacktester) และ live (main.py)
+       มิฉะนั้น obs distribution shift → silent regression
+    """
+
+    # Amazon Chronos 2 zero-shot forecaster — obs[27] chronos_alignment, obs[28] chronos_uncertainty_norm
+    CHRONOS_MODEL_NAME: str = "amazon/chronos-bolt-small"
+    CHRONOS_DEVICE: str = "cpu"
+    CHRONOS_PREDICTION_LENGTH: int = 8       # M15 × 8 ≈ 2 hours ahead
+    CHRONOS_CONTEXT_LENGTH: int = 512        # M15 × 512 ≈ 5.3 days history
+    CHRONOS_ENABLED: bool = True             # set False เพื่อ disable Chronos (fallback obs[27,28] = 0)
+
+
+# =============================================================================
 # 📱 การตั้งค่าการแจ้งเตือน (Notifications)
 # =============================================================================
 @dataclass
@@ -377,6 +398,7 @@ class BotConfig:
     symbols: SymbolConfig = field(default_factory=SymbolConfig)
     sessions: SessionConfig = field(default_factory=SessionConfig)
     indicators: IndicatorConfig = field(default_factory=IndicatorConfig)
+    ml: MLConfig = field(default_factory=MLConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     

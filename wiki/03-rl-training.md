@@ -1,9 +1,9 @@
-# 03 — RL Training (Obs 27 dims, Reward, PPO + Auxiliary Task)
-> Last Updated: 2026-04-29 (v6.13) | Scope: RL env, obs space v6, reward shaping, PPO hyperparams, curriculum, aux task (E2). v6.13: TAKE equalize @ ml ≥ 0.36 + SKIP-oracle rebalance + day-10 early undertrading + defaults safety
+# 03 — RL Training (Obs 29 dims, Reward, PPO + Auxiliary Task)
+> Last Updated: 2026-05-01 (v7.0) | Scope: RL env, obs space v7 (+ Chronos forecast), reward shaping, PPO hyperparams, curriculum, aux task (E2). v7.0: Amazon Chronos 2 zero-shot forecast features added (obs 27 → 29).
 
 ## TL;DR (30-second scan)
 
-- Obs = **27 dims** (v6, 2026-04-22) — adds `spread_pct_of_atr`, `has_opposite_recently_closed`, `htf_trend_alignment` on top of the previous 24.
+- Obs = **29 dims** (v7, 2026-05-01) — adds `chronos_alignment`, `chronos_uncertainty_norm` on top of v6 27 (Amazon Chronos 2 zero-shot M15 forecast).
 - Action continuous [−1, 1] — `>0 = TAKE`, `≤0 = SKIP`.
 - **2-phase curriculum**: Phase 1 (Alpha, no DD penalty, oracle SKIP) → Phase 2 (Risk, DD penalty active).
 - **Phase E2 — Auxiliary Task** (verified Pass Rate **9.7 %** at v6.13, 2026-04-29; Phase E2 architecture intact since 2026-04-25): policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
@@ -15,7 +15,8 @@
 
 | Item | Value | Source (symbol) |
 |------|-------|-----------------|
-| Obs dims | 27 | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
+| Obs dims | **29** (v7) | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
+| Chronos forecaster | `ChronosForecaster` (`amazon/chronos-bolt-small`) | `ml/chronos_forecaster.py` |
 | Action space | Box(−1, 1, shape=(1,)) | `FTMOSignalFilterEnv.action_space` |
 | VecNormalize stats | `models/vec_normalize_sf.pkl` | loaded by `SelfLearningAgent._load_normalize_stats` |
 | RL model | `models/ppo_signal_filter.zip` (aux-aware policy) | loaded by `SelfLearningAgent.initialize_model` |
@@ -27,7 +28,7 @@
 
 ---
 
-## Observation Space Layout (27 dims)
+## Observation Space Layout (29 dims)
 
 **Must be kept in sync in three places**:
 
@@ -88,6 +89,32 @@
 | 26 | `htf_trend_alignment` | uses `bias_align` as proxy | ±1 (clip) |
 
 **Why v6**: addresses whipsaw + spread awareness — the agent learns to avoid low-RR setups when spread is wide (GBPJPY) and becomes aware of recent flips, reducing revenge trading.
+
+### v7 Chronos Forecast [27–28] (2026-05-01, formula refactor v7.0.2)
+
+| Idx | Feature | Source | Normalization (v7.0.2) |
+|-----|---------|--------|---------------|
+| 27 | `chronos_alignment` | `ChronosForecaster.forecast_features` (Amazon Chronos 2 zero-shot, M15 × 8 ahead) | `direction × sign(close − median_h+8)`, clip ±1 — flipped จาก v7.0 หลังเจอ corr ติดลบ |
+| 28 | `chronos_uncertainty_norm` | `ChronosForecaster.forecast_features` (q90 − q10) | `(q90 − q10) / (atr_value × √8)`, clip [0, 3] — Brownian-scaled, ไม่ saturate |
+
+**Why v7**: gives the agent forward-looking probabilistic context. Chronos 2 is a zero-shot foundation model — no fine-tune needed. Cache key = `(symbol, last_bar_ts)` so per-scan latency stays ~100 ms cold / <5 ms warm. Disable via `bot_config.ml.CHRONOS_ENABLED = False` or env `BOT_DISABLE_CHRONOS=1` → obs[27,28] = 0.0 (graceful degradation to v6.14 behavior).
+
+**Why v7.0.2 formula refactor** — pool diagnostic หลัง v7.0 retrain (Pass Rate 9.7% → 4.0%) เผย:
+
+- `chronos_uncertainty_norm` saturated ที่ 3.0 ใน 96.2% ของ signals → useless dim. สูตรเดิม `(q90-q10)/atr` ไม่คิด √horizon scaling (forecast variance ของ time-series model ขยายตาม √time per Brownian motion).
+- `chronos_alignment` corr กับ outcome = **−0.0178** (anti-signal). SMC ค้าขาย swing/reversal สวนเทรนด์ระยะสั้น แต่ Chronos forecast เทรนด์ → "Chronos agree with SMC" = SMC ตามเทรนด์ = ช้าเกิน, "Chronos disagree" = SMC จับ reversal = profitable.
+
+→ flip sign ของ alignment + Brownian-scale uncertainty (factor √8 ≈ 2.83).
+
+**Interpretation (v7.0.2)**:
+
+- `alignment = +1` → SMC + Chronos contrarian (e.g. SMC BUY + Chronos median ต่ำกว่า close) = good reversal setup
+- `alignment = −1` → SMC + Chronos agree on trend direction = SMC late, weak setup
+- `uncertainty ≈ 1.0` = forecast band ตามที่ ATR คาด, `< 0.5` = market quiet (Chronos มั่นใจ), `> 2.0` = high vol (uncertainty band กว้างกว่าปกติ)
+
+**Pool path** — `StrategyBacktester.generate_episode_signals` calls `ChronosForecaster.forecast_features(symbol, ltf_slice, direction, atr_val)` using closed-bar slice only (anti-lookahead). Result stored in signal dict as `chronos_alignment` + `chronos_uncertainty_norm` for `FTMOSignalFilterEnv._get_obs` to read.
+
+**Live path** — `FTMOTradingBot._build_signal_observation` reads `self._strategy._ltf_data` (M15 cache, refreshed each scan ~60 s) and calls the same `forecast_features` to compute obs[27,28]. `_build_live_context` mirrors the same values into Excel `Signals`/`Trades` sheets.
 
 ---
 
@@ -165,8 +192,9 @@ Sum if pass  : +7.0 max
 |-------|-----------------|----------------|
 | `enable_risk_penalty` | False | True |
 | Steps (default) | 10M | 5M |
-| `learning_rate` | 3e-4 | 1e-4 |
+| `learning_rate` | 3e-4 | **5e-5** (v7.0.5 — proper fix via `FloatSchedule`) |
 | `ent_coef` schedule | 0.05 → 0.005 | 0.01 → 0.002 |
+| `EarlyStopOnValueLoss` | threshold=10, patience=5, **warmup=0** | threshold=**20** (v7.0.7 revert จาก 30 หลัง v7.0.6 ตก), patience=5, **warmup=50,000** (v7.0.4) |
 | Output | `ppo_signal_filter_p1.zip` | `ppo_signal_filter.zip` |
 
 **Shared**:
@@ -194,10 +222,10 @@ Sum if pass  : +7.0 max
 # Step 2: ML GBM + Isotonic Calibrator (~5 min, re-scores pool in place)
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
 
-# Step 3: RL PPO + Auxiliary Task (~2–3 hr CPU, 2 phases)
+# Step 3: RL PPO + Auxiliary Task (~30–40 hr CPU @ n_envs=8, 2 phases)
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
-    --timesteps_p1 300000 --timesteps_p2 200000 \
-    --n_envs 4 --pool_size 3000 --outcome_noise 0.02 \
+    --timesteps_p1 10000000 --timesteps_p2 5000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.05 \
     --ml_threshold 0.36 --risk_per_trade 0.007
 ```
 

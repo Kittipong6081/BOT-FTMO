@@ -31,6 +31,7 @@ sys.path.insert(0, ROOT)
 from ml.aux_aware_ppo import AuxAwarePPO
 from ml.aux_aware_policy import AuxAwareACPolicy
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
+from stable_baselines3.common.utils import FloatSchedule
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from ml.signal_filter_env import FTMOSignalFilterEnv
@@ -54,13 +55,24 @@ class EntropyScheduleCallback(BaseCallback):
 
 
 class EarlyStopOnValueLoss(BaseCallback):
-    def __init__(self, threshold: float = 10.0, patience: int = 5, verbose: int = 0):
+    def __init__(self, threshold: float = 10.0, patience: int = 5,
+                 warmup_steps: int = 0, verbose: int = 0):
         super().__init__(verbose)
         self.threshold = threshold
         self.patience = patience
+        self.warmup_steps = warmup_steps   # v7.0.4: grace period สำหรับ phase boundary
         self._consecutive = 0
 
     def _on_step(self) -> bool:
+        # v7.0.4 (2026-05-02): warmup grace — ปล่อย value_loss spike ตอน reward
+        # distribution shift (Phase 1 → Phase 2 เปิด DD penalty + activity floor).
+        # Value head ของ Phase 1 ทำนายตามช่วง [-2, 5] เจอ Phase 2 reward [-15, 5]
+        # → MSE spike ชั่วคราว 30-80k steps จนกว่า re-fit. warmup_steps=50_000 ใน Phase 2
+        # = 1% ของ target → ปลอดภัย.
+        if self.num_timesteps < self.warmup_steps:
+            self._consecutive = 0   # reset counter ระหว่าง warmup
+            return True
+
         infos = self.logger.name_to_value
         vl = infos.get("train/value_loss", 0.0)
         if vl > self.threshold:
@@ -604,7 +616,15 @@ def main():
     model_p2 = AuxAwarePPO.load(model_path_p1, env=vec_env_p2)
     # v6.8 P2 stability fix — value_loss explosion ทำให้ early-stop เร็วเกิน
     # หลังเปลี่ยน reward distribution (calibration / ฯลฯ) — ลด LR + ent_coef
+    # v7.0.5 (2026-05-02): Fix LR schedule properly — SB3 PPO `_setup_model()` wrap
+    # `lr_schedule` ตอน init เท่านั้น. การ set `model.learning_rate = X` หลัง
+    # `AuxAwarePPO.load()` ไม่ rebuild schedule → optimizer ใช้ค่า Phase 1 default (3e-4)
+    # → ทำให้ Phase 2 ใช้ LR 6× สูงกว่า intended (latent bug ตั้งแต่ v6.x)
+    # Fix: rebuild lr_schedule + update optimizer param_groups ตรงๆ
     model_p2.learning_rate = 5e-5   # ↓ จาก 2e-4 (4x conservative) — match value-loss scale
+    model_p2.lr_schedule = FloatSchedule(5e-5)   # v7.0.5: rebuild schedule (proper fix)
+    for _pg in model_p2.policy.optimizer.param_groups:
+        _pg['lr'] = 5e-5             # v7.0.5: update optimizer immediately (กัน lag 1 rollout)
     model_p2.ent_coef = 0.02        # ↓ จาก 0.03 — ลด exploration variance ใน P2
     model_p2.gamma = 0.99           # Phase 2 inherit, แต่ explicit set ให้ชัด
     model_p2.tensorboard_log = tb_log_dir
@@ -621,7 +641,14 @@ def main():
         callback=[
             EntropyScheduleCallback(initial=0.02, final=0.005),
             # v6.8: threshold 10 → 20 — value_loss spike ชั่วคราวยอม, ปกป้องเฉพาะ true divergence
-            EarlyStopOnValueLoss(threshold=20.0, patience=5),
+            # v7.0.4: warmup_steps=50_000 — ปล่อยให้ value head re-fit reward distribution Phase 2
+            # ก่อน enable check (กัน trigger เร็วเกินตอน phase boundary, observed v7.0.3 spike 31)
+            # v7.0.6 ทดลอง threshold 30 → Pass Rate ตก 10.7% → 7.4% (Phase 2 รันเต็ม 5M
+            # = over-tune toward safety, ลด pass-rate aggressiveness)
+            # v7.0.7 (2026-05-02): revert threshold 30 → 20 — early stop ที่ value_loss=20.45
+            # ของ v7.0.5 = inflection point detector จริง ไม่ใช่ false positive. threshold 20
+            # หลัง LR fix proper = right calibration (engineered sweet spot @ Phase 2 ~70%)
+            EarlyStopOnValueLoss(threshold=20.0, patience=5, warmup_steps=50_000),
             EpisodeStatsCallback(print_every=20),
             FTMOTradingCallback(),
             ckpt_cb_p2,

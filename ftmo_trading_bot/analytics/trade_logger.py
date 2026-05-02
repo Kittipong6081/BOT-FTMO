@@ -84,6 +84,8 @@ class TradeLogger:
         "Partial Skipped",
         # Retrain capability — full obs vector at decision time (col 64, last)
         "Obs27 JSON",
+        # v7 (2026-05-01): Chronos forecast features @ entry — for post-mortem analysis
+        "Chronos Align", "Chronos Unc",
     ]
 
     # === คอลัมน์สำหรับ Sheet "Signals" (per-scan log) ===
@@ -101,8 +103,10 @@ class TradeLogger:
         # values: signal_invalid / correlation:* / lot_calc_failed / risk_manager:* /
         #         price_fetch_failed / spread_high:* / final_validation:* / order_send_failed
         "Executor Reject",
-        # Retrain capability — full obs vector at decision time (col 21, last)
+        # Retrain capability — full obs vector at decision time (col 21)
         "Obs27 JSON",
+        # v7 (2026-05-01): Chronos forecast features @ scan — same as obs[27,28]
+        "Chronos Align", "Chronos Unc",
     ]
 
     # === คอลัมน์สำหรับ Sheet "Daily" ===
@@ -224,6 +228,9 @@ class TradeLogger:
                 bool(trade_data.get("partial_close_skipped", False)),
                 # --- Obs vector (JSON) — for offline retrain ---
                 str(trade_data.get("obs_27_json", ""))[:600],
+                # v7: Chronos forecast features @ entry (mirrors obs[27,28])
+                round(float(trade_data.get("chronos_align", 0.0) or 0.0), 4),
+                round(float(trade_data.get("chronos_unc", 0.0) or 0.0), 4),
             ]
             ws.append(row)
 
@@ -403,6 +410,9 @@ class TradeLogger:
                 reasons[:500],  # truncate to avoid Excel cell overflow
                 str(scan_data.get("executor_reject_reason", ""))[:80],
                 str(scan_data.get("obs_27_json", ""))[:600],
+                # v7: Chronos forecast features (mirrors obs[27,28])
+                round(float(scan_data.get("chronos_align", 0.0) or 0.0), 4),
+                round(float(scan_data.get("chronos_unc", 0.0) or 0.0), 4),
             ]
             ws.append(row)
 
@@ -443,7 +453,7 @@ class TradeLogger:
             cell.fill = header_fill
             cell.alignment = header_align
 
-        # Column widths (matches SIGNAL_HEADERS length 21)
+        # Column widths (matches SIGNAL_HEADERS length 23 — v7)
         col_widths = [
             20, 10, 6, 18,        # Time, Symbol, Direction, Result
             10, 10, 10,           # Confluence, ATR, RR Target
@@ -454,6 +464,7 @@ class TradeLogger:
             60,                   # Reject/Skip Reasons
             30,                   # Executor Reject (v6.10)
             60,                   # Obs27 JSON
+            10, 10,               # v7: Chronos Align, Chronos Unc
         ]
         for idx, width in enumerate(col_widths, 1):
             ws.column_dimensions[get_column_letter(idx)].width = width

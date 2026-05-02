@@ -1,12 +1,12 @@
-# 01 — Architecture (3-Brain Pipeline)
-> Last Updated: 2026-04-29 (v6.13) | Scope: system overview + data flow
+# 01 — Architecture (3-Brain Pipeline + v7 Chronos Forecaster)
+> Last Updated: 2026-05-01 (v7.0) | Scope: system overview + data flow
 
 ## TL;DR (30-second scan)
 
-- Three brains: **SMC Strategy** (rule-based) → **ML Quality** (GBM + Isotonic calibrator) → **RL Agent** (PPO + Auxiliary Task — TAKE/SKIP).
+- Three brains + 1 forecaster: **SMC Strategy** (rule-based) → **ML Quality** (GBM + Isotonic calibrator) → **Chronos Forecaster** (v7, Amazon Chronos 2 zero-shot, feeds obs[27,28]) → **RL Agent** (PPO + Auxiliary Task — TAKE/SKIP).
 - Live entry point: `FTMOTradingBot` in `ftmo_trading_bot/main.py`.
 - Training pipeline: `build_signal_pool.py` → `train_signal_quality.py` → `train_signal_filter.py`.
-- Observation = 27 dims (v6, 2026-04-22). Must stay in sync across `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, and `SelfLearningAgent.OBS_DIM`.
+- Observation = **29 dims** (v7, 2026-05-01 — adds Chronos forecast features). Must stay in sync across `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, and `SelfLearningAgent.OBS_DIM`.
 - Every live decision flows through gates in this order: **Risk → Session → Strategy → ML gate (v6.12) → RL → Execute → Manage**.
 - v6.13 verified: Pass Rate **9.7 %** (5000-eps eval) via PPO + auxiliary head predicting `outcome_pnl_ratio` (MSE weight=0.5). +185 % vs v6.11.3 baseline 3.4 %.
 
@@ -18,7 +18,8 @@
 | Strategy brain | `SMCStrategy` | `strategy/smc_strategy.py` |
 | ML brain | `SignalQualityModel` (GBM + isotonic calibrator) | `ml/signal_quality.py` |
 | RL brain | `SelfLearningAgent` (PPO inference) | `ml/rl_agent.py` |
-| RL training env | `FTMOSignalFilterEnv` | `ml/signal_filter_env.py` |
+| RL training env | `FTMOSignalFilterEnv` (shape=(29,) v7) | `ml/signal_filter_env.py` |
+| Chronos forecaster (v7) | `ChronosForecaster` (`amazon/chronos-bolt-small`) | `ml/chronos_forecaster.py` |
 | RL training PPO | `AuxAwarePPO` (PPO + aux MSE loss) | `ml/aux_aware_ppo.py` |
 | RL policy | `AuxAwareACPolicy` (actor + value + aux head) | `ml/aux_aware_policy.py` |
 | RL rollout buffer | `AuxRolloutBuffer` (adds `aux_targets`) | `ml/aux_rollout_buffer.py` |
@@ -41,8 +42,11 @@ SMCStrategy.scan_signal()
 SignalQualityModel.score(sig)
    └─→ ml_score ∈ [0, 1]  (GBM P(win))
         ↓
+ChronosForecaster.forecast_features(symbol, m15_df, direction, atr)   ← v7
+   └─→ chronos_alignment, chronos_uncertainty_norm  (cached per (symbol, last_bar_ts))
+        ↓
 FTMOTradingBot._build_signal_observation(sig)
-   └─→ obs (27 dims)  — signal core + market regime + ML + portfolio + cost/flip/HTF
+   └─→ obs (29 dims, v7)  — signal core + market regime + ML + portfolio + cost/flip/HTF + chronos
         ↓
 SelfLearningAgent.should_take_signal(obs)
    └─→ TAKE / SKIP

@@ -135,6 +135,11 @@ class ExecutedTrade:
     # JSON-encoded 27-dim obs vector at decision time → unlock RL retrain from live data
     obs_27_json: str = ""
 
+    # === Chronos forecast features (v7 — added 2026-05-01) ===
+    # mirrors obs[27,28] at entry decision time
+    chronos_align: float = 0.0
+    chronos_unc: float = 0.0
+
     def to_dict(self) -> Dict:
         """แปลงเป็น Dictionary สำหรับ Excel Logging"""
         return {
@@ -205,6 +210,9 @@ class ExecutedTrade:
             "secs_since_last_trade_same_symbol": self.secs_since_last_trade_same_symbol,
             # --- Retrain capability ---
             "obs_27_json": self.obs_27_json,
+            # --- v7 Chronos forecast @ entry ---
+            "chronos_align": self.chronos_align,
+            "chronos_unc": self.chronos_unc,
         }
 
 
@@ -559,6 +567,9 @@ class TradeExecutor:
             )
             # Obs vector (JSON) — for offline retrain reconstruction
             executed.obs_27_json = str(live_context.get("obs_27_json", ""))
+            # v7: Chronos forecast features @ entry (mirrors obs[27,28])
+            executed.chronos_align = float(live_context.get("chronos_align", 0.0) or 0.0)
+            executed.chronos_unc = float(live_context.get("chronos_unc", 0.0) or 0.0)
 
         # เก็บใน Active Trades
         self._active_trades[executed.ticket] = executed

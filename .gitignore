@@ -60,6 +60,16 @@ ftmo_trading_bot/config/news_inbox/*.json
 # State files (per-machine runtime state)
 ftmo_trading_bot/data/bot_state.json
 
+# Training-only data (ไม่ใช้ใน live — VPS ไม่ต้อง)
+ftmo_trading_bot/data/signal_pool_*.pkl
+ftmo_trading_bot/data/ohlcv/*.csv
+
+# Legacy models (v1-v5, ไม่ใช้แล้ว — keep เฉพาะ ppo_signal_filter.zip + vec_normalize_sf.pkl)
+ftmo_trading_bot/models/best_model.zip
+ftmo_trading_bot/models/ppo_ftmo_agent.zip
+ftmo_trading_bot/models/ppo_ftmo_agent.zip.v1bak
+ftmo_trading_bot/models/checkpoints/
+
 # ============================================================
 # Environment / Secrets
 # ============================================================
