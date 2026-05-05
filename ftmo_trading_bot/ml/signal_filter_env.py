@@ -130,11 +130,13 @@ class FTMOSignalFilterEnv(gym.Env):
         if not self._seq_symbols:
             raise RuntimeError("No symbols with enough data for sequential episode")
 
-        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf + 2 chronos = 29
+        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf + 2 chronos + 3 v7.1 = 32
         # v6 (2026-04-22): เพิ่ม spread_pct_of_atr, has_opposite_recently_closed, htf_trend_alignment
         # v7 (2026-05-01): เพิ่ม chronos_alignment, chronos_uncertainty_norm จาก Amazon Chronos 2
+        # v7.1 (2026-05-04): เพิ่ม floating_pnl_norm, losing_count_norm, mins_since_session_norm
+        #                    เพื่อให้ agent รู้ "portfolio risk realtime + session timing"
         self.observation_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(29,), dtype=np.float32
+            low=-5.0, high=5.0, shape=(32,), dtype=np.float32
         )
 
         # Action: 1 dim continuous — >0 = TAKE, ≤0 = SKIP
@@ -262,6 +264,10 @@ class FTMOSignalFilterEnv(gym.Env):
         self._open_positions: List[Dict] = []
         # counter สำหรับ telemetry: trades ที่ถูก correlation block (forced SKIP)
         self._correlation_forced_skips: int = 0
+        # v7.1: floating portfolio state for obs[29-30]
+        # อัพเดทใน step() ตอน open/close position (simulator)
+        self._floating_pnl_norm: float = 0.0
+        self._open_losing_count_norm: float = 0.0
 
     def _pick_episode(self, rng: np.random.Generator):
         symbol = self._seq_symbols[int(rng.integers(0, len(self._seq_symbols)))]
@@ -276,7 +282,7 @@ class FTMOSignalFilterEnv(gym.Env):
 
     def _get_obs(self) -> np.ndarray:
         if self._signal_idx >= len(self._signals):
-            return np.zeros(29, dtype=np.float32)
+            return np.zeros(32, dtype=np.float32)
 
         sig = self._signals[self._signal_idx]
 
@@ -346,11 +352,21 @@ class FTMOSignalFilterEnv(gym.Env):
 
         # ─── v7: Chronos forecast (2) — Amazon Chronos 2 zero-shot ──────
         # [27] chronos_alignment — direction × sign(median_h+8 − close), ±1
-        # [28] chronos_uncertainty_norm — (q90 − q10) / atr_value, [0, 3]
-        # Pool builder ต้องใส่ 2 fields นี้ใน signal dict (StrategyBacktester._inject_chronos_features)
-        # Default 0.0 = neutral (Chronos disabled / fail) → degrades gracefully to v6.14 behavior
+        # [28] chronos_uncertainty_norm — log1p((q90 − q10) / (atr×√8)) / 2, [0, 3]
         chronos_align = float(sig.get('chronos_alignment', 0.0))
         chronos_unc = float(sig.get('chronos_uncertainty_norm', 0.0))
+
+        # ─── v7.1 Portfolio risk realtime + session timing (3) ──────
+        # [29] floating_pnl_norm — sum ของ open positions' floating PnL / daily_start_balance
+        # [30] open_losing_count_norm — จำนวน open positions ที่กำลังขาดทุน / 3
+        # [31] mins_since_session_start_norm — minutes since London/NY open / 480
+        # ใน training env เลียนแบบผ่าน virtual portfolio simulator (ดู step())
+        # Live env: main._build_signal_observation จะอ่าน RiskManager.get_unrealized_drawdown_pct
+        floating_pnl_norm = getattr(self, '_floating_pnl_norm', 0.0)
+        open_losing_count_norm = getattr(self, '_open_losing_count_norm', 0.0)
+        # mins_since_session — pull from sig dict (compute_temporal_features เก็บไว้)
+        mins_since = float(sig.get('minutes_since_session_start', 0.0))
+        mins_since_norm = min(mins_since / 480.0, 1.0)
 
         obs = np.array([
             # Signal core [0-11]
@@ -388,6 +404,10 @@ class FTMOSignalFilterEnv(gym.Env):
             # v7 Chronos forecast [27-28]
             float(np.clip(chronos_align, -1.0, 1.0)),
             float(np.clip(chronos_unc, 0.0, 3.0)),
+            # v7.1 Portfolio realtime + session timing [29-31]
+            float(np.clip(floating_pnl_norm, -3.0, 1.0)),
+            float(np.clip(open_losing_count_norm, 0.0, 1.0)),
+            float(np.clip(mins_since_norm, 0.0, 1.0)),
         ], dtype=np.float32)
         return obs
 
@@ -528,6 +548,30 @@ class FTMOSignalFilterEnv(gym.Env):
                 op for op in self._open_positions if op['opened_at_idx'] >= cutoff
             ]
 
+        # v7.1 — update floating PnL (sum unrealized of open positions, normalized)
+        # Approximation: ใช้ outcome ของ signal ที่เปิด position นั้น (pre-resolved) × decay
+        # เพราะ env เห็น final outcome ตั้งแต่เปิด แต่ live ไม่เห็น → simulate "in-flight" feeling
+        if self._open_positions:
+            floating_sum = 0.0
+            losing_count = 0
+            for op in self._open_positions:
+                # Linear decay: outcome ที่ "เห็น" ตอนนี้ = outcome × (signal_idx - opened) / hold
+                opened_idx = op.get('opened_at_idx', self._signal_idx)
+                hold_progress = max(1, self._signal_idx - opened_idx)
+                # ใช้ pre-resolved outcome จาก signal ที่ open
+                op_outcome = op.get('outcome_partial', 0.0) * min(hold_progress / 4.0, 1.0)
+                floating_sum += op_outcome
+                if op_outcome < 0:
+                    losing_count += 1
+            # Normalize ตาม INITIAL_BALANCE (เทียบเคียง risk_per_trade)
+            self._floating_pnl_norm = float(np.clip(
+                floating_sum * self.risk_per_trade, -3.0, 1.0
+            ))
+            self._open_losing_count_norm = min(losing_count, 3) / 3.0
+        else:
+            self._floating_pnl_norm = 0.0
+            self._open_losing_count_norm = 0.0
+
         # v7.0.2: correlation block — forced SKIP ถ้า live executor จะ reject
         # นี่ทำให้ training distribution ตรงกับ live (live block 96.3% ของ TAKE จาก correlation)
         correlation_forced_skip = False
@@ -573,10 +617,12 @@ class FTMOSignalFilterEnv(gym.Env):
             # v7.0.2: register open position สำหรับ correlation simulator
             # ใช้ตอน step ถัดไปเป็น "exposure" ที่ block correlated entries
             # (live: position ค้างอยู่จน hit SL/TP/timeout. ตรงนี้ approximate hold ≈ HOLD_SIGNALS_APPROX)
+            # v7.1 — เพิ่ม outcome_partial เพื่อให้ floating PnL simulator ทำงานได้
             self._open_positions.append({
                 'symbol': sig.get('symbol', ''),
                 'direction': 1 if sig.get('direction', 0) > 0 else -1,
                 'opened_at_idx': self._signal_idx,
+                'outcome_partial': float(outcome_perturbed),
             })
 
             if pnl > 0:
@@ -623,6 +669,22 @@ class FTMOSignalFilterEnv(gym.Env):
             elif pnl_norm < -0.3 and ml_score < 0.35:
                 reward -= 0.35           # Low-ml + loss → safety branch (rare ที่ gate 0.36)
 
+            # v7.1 — Chronos disagreement penalty (v7.1.6 revert to v7.1.2 levels)
+            # v7.1.5 eval Pass 0.8% (worst): combo (0.40 threshold + -0.90 missed-winner +
+            # softened Chronos/concurrent) คือ 3-way conflict ทำให้ entropy collapse
+            # v7.1.6: revert reward back to v7.1.2 (Pass 3% proven) + keep pool 10k diversity
+            chronos_align_v71 = float(sig.get('chronos_alignment', 0.0))
+            if chronos_align_v71 < 0:
+                if ml_score < 0.55:
+                    reward -= 0.30        # v7.1.6: 0.20 → 0.30 (revert v7.1.2 level)
+                else:
+                    reward -= 0.10        # v7.1.6: 0.05 → 0.10 (revert v7.1.2 level)
+
+            # v7.1 — Concurrent loss penalty (v7.1.6 revert to v7.1.2 level)
+            # v7.1.6: revert 0.15 → 0.20 (back to v7.1.2 medium guard)
+            if self._floating_pnl_norm < -0.01:  # floating < -1% ของ daily start
+                reward -= 0.20            # v7.1.6: 0.15 → 0.20 (revert v7.1.2 level)
+
             # Option B (P1 only): Quality-first responsibility shaping
             # ให้ P1 เรียน "เลือก winner" โดยไม่ต้องพึ่ง DD penalty ของ P2
             # → แทนที่จะ push กิจกรรม ให้ reward เอียงไปทางคุณภาพ
@@ -651,22 +713,31 @@ class FTMOSignalFilterEnv(gym.Env):
             # v6.13: Push agent take more (especially in P2) — agent undertrade ที่ orders/ep 6.1
             #        เพิ่ม penalty missed-winner + เพิ่ม reward smart-skip → bias ไป TAKE คุณภาพ
             is_p1 = not self.enable_risk_penalty
+            # v7.1.6 (2026-05-05) — revert to v7.1.2 levels (Pass 3.0% proven config)
+            # v7.0.x: P2 -0.90 → Pass 11.1% but wipeout 2026-05-04 ใน LIVE
+            # v7.1.2: P2 -0.85 → Pass 3.0% (sweet spot, no wipeout)
+            # v7.1.4: P2 -0.90 (restored aggression) → never trained directly
+            # v7.1.5: combo (10k + 0.40 + -0.90) → Pass 0.8% (entropy collapse)
+            # v7.1.6: ใช้ pool 10k (diversity) + revert reward to v7.1.2 (-0.85) +
+            #         revert ml_threshold 0.36 = combine "best of all worlds"
+            # v7.1.11 push (Pass 5.4%) ไม่ดีกว่า v7.1.9 baseline (Pass 6.1%)
+            # → restore v7.1.9 reward levels (proven best ใต้ FTMO 1% rule)
             if outcome >= 0.5:
-                # Would win big → missed opportunity (v6.13: P2 -0.70 → -0.90)
-                reward -= 0.30 if is_p1 else 0.90
+                # Would win big → missed opportunity (v7.1.2 sweet spot level, v7.1.9 confirmed)
+                reward -= 0.30 if is_p1 else 0.85
                 if ml_score >= 0.40:
-                    reward -= 0.25 if is_p1 else 0.55     # v6.13: P2 -0.40 → -0.55
+                    reward -= 0.25 if is_p1 else 0.50
                 elif ml_score < 0.35:
                     reward += 0.15
             elif outcome >= 0.1:
                 reward -= 0.10 if is_p1 else 0.20
             elif outcome <= -0.5:
-                # Smart skip — v6.13: P2 +0.20 → +0.35 (reward smart skip มากขึ้น)
+                # Smart skip
                 reward += 0.30 if is_p1 else 0.35
                 if ml_score < 0.36:
                     reward += 0.15
             elif outcome <= -0.1:
-                reward += 0.10 if is_p1 else 0.10        # v6.13: P2 +0.06 → +0.10 (symmetry)
+                reward += 0.10 if is_p1 else 0.10        # symmetry
 
             # Passive SKIP cost — สะสมต่อ step
             # v6.3 B1: ลดจาก -0.015 → -0.010 ให้ room SKIP signals คุณภาพต่ำ

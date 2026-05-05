@@ -475,6 +475,13 @@ class RiskManager:
         if halted:
             return (False, f"⏸️ {hmsg}")
 
+        # === ตรวจสอบที่ 1.1b: Unrealized DD Circuit Breaker (v7.1) ===
+        # ConsecLoss counter นับเฉพาะ closed losses → ปัญหา 2026-05-04: 4 positions bleed
+        # พร้อมกันโดย counter ยัง 0. Breaker นี้เช็ค floating drawdown realtime
+        breached, br_msg = self.check_unrealized_circuit_breaker()
+        if breached:
+            return (False, f"⛑️ {br_msg}")
+
         # === ตรวจสอบที่ 1.2: Cooldown ต่อ symbol (Anti-Revenge-Trading) ===
         in_cd, cd_msg = self.is_symbol_in_cooldown(symbol)
         if in_cd:
@@ -995,6 +1002,57 @@ class RiskManager:
             self._halt_until = pause_until.isoformat()
             print(f"⏸️ [Risk Manager] แพ้ติด {self._consecutive_losses} → pause {pause_min}min "
                   f"ถึง {pause_until.strftime('%H:%M:%S')}")
+
+    def get_unrealized_drawdown_pct(self) -> float:
+        """
+        คำนวณ floating drawdown ของทุก open positions เป็น % ของ daily_start_balance.
+
+        Returns:
+            float: เป็นบวกถ้า floating profit, เป็นลบถ้า floating loss.
+                   ใช้ daily_start_balance เป็น base (ไม่ใช่ initial_balance) เพื่อให้
+                   threshold สอดคล้องกับ daily DD limit.
+        """
+        if self._daily_start_balance <= 0:
+            return 0.0
+        try:
+            floating = self._connector.get_total_floating_pnl()
+        except Exception:
+            return 0.0
+        return (float(floating) / self._daily_start_balance) * 100.0
+
+    def check_unrealized_circuit_breaker(self) -> Tuple[bool, str]:
+        """
+        v7.1 — Unrealized DD circuit breaker.
+
+        Block การเปิด trade ใหม่เมื่อ:
+          - floating drawdown ≤ UNREALIZED_PAUSE_PCT (เช่น −1.5%)
+          - AND open positions count ≥ UNREALIZED_PAUSE_MIN_OPEN (เช่น 2)
+
+        เหตุผล: กัน scenario "4 positions bleeding พร้อมกัน" ที่ ConsecLoss counter
+        ไม่ทันเพราะมัน count เฉพาะ closed losses.
+
+        Returns:
+            (breached, reason)
+        """
+        threshold_pct = getattr(self._config, "UNREALIZED_PAUSE_PCT", -1.5)
+        min_open = getattr(self._config, "UNREALIZED_PAUSE_MIN_OPEN", 2)
+
+        try:
+            open_count = self._connector.get_positions_count()
+        except Exception:
+            open_count = 0
+
+        if open_count < min_open:
+            return (False, "")
+
+        fdd_pct = self.get_unrealized_drawdown_pct()
+        if fdd_pct <= threshold_pct:
+            return (
+                True,
+                f"Unrealized DD breaker: floating {fdd_pct:.2f}% "
+                f"(open={open_count}, threshold={threshold_pct:.2f}%) — pause new entries"
+            )
+        return (False, "")
 
     def is_symbol_in_cooldown(self, symbol: str) -> Tuple[bool, str]:
         """

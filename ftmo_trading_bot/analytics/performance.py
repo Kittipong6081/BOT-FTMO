@@ -19,6 +19,12 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
+# v7.1 — read FTMO limits from canonical config (เลิก hardcode 10%/5%)
+try:
+    from config.settings import bot_config
+except Exception:  # pragma: no cover — when imported outside package
+    bot_config = None
+
 
 @dataclass
 class TradeResult:
@@ -470,7 +476,16 @@ class PerformanceAnalyzer:
         """
         current_equity = self._equity_curve[-1]
         total_profit = current_equity - self._initial_balance
-        target_pct = 0.10  # FTMO Challenge Target = 10%
+
+        # v7.1 — อ่าน FTMO limits จาก config จริง (เลิก hardcode 10%/5%)
+        # ค่า config: PROFIT_TARGET_PCT=0.10, DAILY_LOSS_HARD_STOP_PCT=0.04, MAX_DRAWDOWN_HARD_STOP_PCT=0.08
+        if bot_config is not None:
+            target_pct = float(bot_config.ftmo.PROFIT_TARGET_PCT)
+            daily_limit_pct = float(bot_config.ftmo.DAILY_LOSS_HARD_STOP_PCT) * 100
+            max_dd_limit_pct = float(bot_config.ftmo.MAX_DRAWDOWN_HARD_STOP_PCT) * 100
+        else:
+            # Fallback (ใช้เมื่อ import นอก package context)
+            target_pct, daily_limit_pct, max_dd_limit_pct = 0.10, 5.0, 10.0
         target_amount = self._initial_balance * target_pct
 
         progress = total_profit / target_amount * 100 if target_amount > 0 else 0
@@ -485,8 +500,8 @@ class PerformanceAnalyzer:
             "target_amount": round(target_amount, 2),
             "current_profit": round(total_profit, 2),
             "target_progress_pct": round(progress, 1),
-            "max_dd_vs_limit": f"{max_dd_pct * 100:.2f}% / 10%",
-            "worst_daily_vs_limit": f"{abs(worst_daily_pct):.2f}% / 5%",
+            "max_dd_vs_limit": f"{max_dd_pct * 100:.2f}% / {max_dd_limit_pct:.0f}%",
+            "worst_daily_vs_limit": f"{abs(worst_daily_pct):.2f}% / {daily_limit_pct:.0f}%",
             "days_traded": len(self._daily_pnl),
             "remaining_to_target": round(max(0, target_amount - total_profit), 2),
             "on_track": progress >= (len(self._daily_pnl) / 30 * 100) if self._daily_pnl else False,

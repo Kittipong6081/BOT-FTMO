@@ -11,6 +11,16 @@ Claude Code loads this file automatically in every conversation for this project
 - **Chat replies to the user in Thai.** Plan files under `~/.claude/plans/` in Thai.
 - Class, method, and variable names stay in English regardless of surrounding prose language.
 
+### Chat Style — ภาษาง่าย ไม่เน้นศัพท์เทคนิค (User แจ้งซ้ำหลายรอบแล้ว)
+
+- ❌ **อย่าใช้** ใน chat reply: AUC, OOF, EV, value_loss, entropy_loss, explained_variance, isotonic calibration, GroupKFold, vec_normalize, gradient, distribution shift, episode revisit, hyperparameter, KS test, Brownian-scale, log1p formula, ฯลฯ
+- ✅ **ใช้แทน**: คะแนน/ความแม่น/คุณภาพการทำนาย, ความมั่นใจ, ความหลากหลายในการตัดสินใจ, การฝึก, การให้รางวัล/โทษ
+- ✅ **เปรียบเทียบ analogy** เช่น "บอท = เทรดเดอร์", "pool = ห้องสมุดสถานการณ์ฝึก", "reward shaping = การให้รางวัล/โทษ", "obs space = สิ่งที่บอทเห็น"
+- ✅ **ใช้ตาราง + emoji** สื่อสถานะ (✅🟢🟡🔴) แทนคำอธิบายยาว
+- ✅ **บอก trade-off + คาดผล** เป็นตัวเลข/% ไม่ใช่ jargon
+- ✅ **ถ้าจำเป็นต้องใช้ศัพท์เทคนิค** อธิบายในวงเล็บสั้น ๆ เช่น "AUC (= ความแม่นการทำนาย, 0.5 = สุ่ม, 1.0 = perfect)"
+- **ไม่ใช้กับ**: code comments, wiki/context docs (ที่ใช้ศัพท์เทคนิคเต็มตัวเหมือนเดิม) — rule นี้สำหรับ **chat reply ใน Thai เท่านั้น**
+
 ---
 
 ## 🚀 Conversation Start Protocol (MANDATORY)

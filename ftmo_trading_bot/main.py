@@ -24,7 +24,7 @@ from typing import Dict
 import numpy as np
 import argparse
 
-from config.settings import bot_config
+from config.settings import bot_config, get_symbol_config
 from core.mt5_connector import MT5Connector
 from core.risk_manager import RiskManager, BotState
 from core.position_sizer import PositionSizer
@@ -600,8 +600,46 @@ class FTMOTradingBot:
             # v7 Chronos forecast [27-28]
             float(np.clip(chronos_align, -1.0, 1.0)),
             float(np.clip(chronos_unc, 0.0, 3.0)),
+            # v7.1 Portfolio realtime + session timing [29-31]
+            float(np.clip(self._compute_floating_pnl_norm(), -3.0, 1.0)),
+            float(np.clip(self._compute_open_losing_count_norm(), 0.0, 1.0)),
+            float(np.clip(self._compute_mins_since_session_norm(), 0.0, 1.0)),
         ], dtype=np.float32)
         return obs
+
+    def _compute_floating_pnl_norm(self) -> float:
+        """v7.1 — floating PnL ของ open positions / daily_start_balance (เป็น decimal, ไม่ใช่ %)"""
+        try:
+            fdd_pct = self._risk_manager.get_unrealized_drawdown_pct()
+            return fdd_pct / 100.0  # convert % → decimal
+        except Exception:
+            return 0.0
+
+    def _compute_open_losing_count_norm(self) -> float:
+        """v7.1 — count ของ open positions ที่ profit < 0 / 3 (max positions)"""
+        try:
+            positions = self._connector.get_open_positions() or []
+            losing = sum(1 for p in positions if float(p.get("profit", 0.0)) < 0)
+            return min(losing, 3) / 3.0
+        except Exception:
+            return 0.0
+
+    def _compute_mins_since_session_norm(self) -> float:
+        """v7.1 — minutes since London/NY session open / 480 (8 hours)"""
+        try:
+            from datetime import datetime as _dt
+            import pytz as _pytz
+            now_utc = TimeManager.get_server_time().astimezone(_pytz.UTC)
+            hour, minute = now_utc.hour, now_utc.minute
+            if 8 <= hour < 13:
+                mins = (hour - 8) * 60 + minute  # London-relative
+            elif 13 <= hour < 16:
+                mins = (hour - 13) * 60 + minute  # NY-relative
+            else:
+                return 0.0
+            return min(mins / 480.0, 1.0)
+        except Exception:
+            return 0.0
 
     def _build_spread_pct_of_atr(self, sig, atr_pips: float) -> float:
         """spread_pips / atr_pips — normalize ต้นทุน spread (v6)"""
@@ -693,20 +731,59 @@ class FTMOTradingBot:
             except Exception:
                 pass
 
+        # v7.1 — compute temporal/regime features (สำหรับ GBM input + RL obs)
+        try:
+            from ml.signal_quality import compute_temporal_features
+            ltf_df_for_temp = getattr(self._strategy, "_ltf_data", None)
+            symbol_info = self._connector.get_symbol_info(sig.symbol)
+            pip = 0.0001 if symbol_info and symbol_info.get("digits", 5) >= 4 else 0.01
+            is_metal = "XAU" in sig.symbol.upper() or "XAG" in sig.symbol.upper()
+            atr_floor = float(get_symbol_config(
+                sig.symbol, "atr_floor_pips", 100.0 if is_metal else 8.0
+            ))
+            temporal_feats = compute_temporal_features(
+                timestamp=getattr(sig, "timestamp", None) or datetime.utcnow(),
+                ltf_df=ltf_df_for_temp,
+                atr_floor_pips=atr_floor,
+                pip_size=pip,
+            )
+            # Keep ใน ctx เพื่อให้ _build_signal_observation อ่านได้ (RL obs v7.1)
+            ctx["_temporal_feats"] = temporal_feats
+            for k, v in temporal_feats.items():
+                ctx[k] = v
+        except Exception:
+            ctx["_temporal_feats"] = {}
+
         # ML scores (calibrated via SignalQualityModel + raw via base GBM)
+        # v7.1 — augment sig ด้วย temporal_feats ก่อน score (GBM ต้องการ 24 features)
         try:
             if self._quality_model is not None:
-                ctx["ml_score"] = float(self._quality_model.score(sig))
+                # สร้าง dict รวม sig attrs + temporal_feats สำหรับ GBM
+                score_input = {
+                    k: self._quality_model._extract(sig, k)
+                    for k in self._quality_model.keys
+                }
+                # Override ด้วย temporal feats ที่เพิ่ง compute (กัน 0.0 fallback)
+                for k, v in ctx.get("_temporal_feats", {}).items():
+                    if k in self._quality_model.keys:
+                        score_input[k] = float(v)
+                ctx["ml_score"] = float(self._quality_model.score(score_input))
                 # raw probability (skip calibrator)
                 if self._quality_model.calibrator is not None:
                     raw = self._quality_model.model.predict_proba(
-                        np.array([[self._quality_model._extract(sig, k)
-                                   for k in self._quality_model.keys]],
+                        np.array([[score_input[k] for k in self._quality_model.keys]],
                                  dtype=np.float64)
                     )[0, 1]
                     ctx["ml_score_raw"] = float(raw)
                 else:
                     ctx["ml_score_raw"] = ctx["ml_score"]
+
+                # v7.1 — record live signal สำหรับ drift monitor
+                # (record_input = score_input ที่เพิ่งคำนวณ — re-use เพื่อหลีก redundancy)
+                try:
+                    self._quality_model.record_live_signal(score_input)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1131,6 +1208,10 @@ class FTMOTradingBot:
                 if self._loop_count % 60 == 0:
                     self._print_periodic_status()
 
+                # v7.1 — GBM drift monitor ทุก 720 loops (~1 ชม.)
+                if self._loop_count % 720 == 0 and self._loop_count > 0:
+                    self._check_gbm_drift()
+
                 # รอก่อน Loop ถัดไป
                 time_module.sleep(bot_config.main_loop_interval)
 
@@ -1167,6 +1248,34 @@ class FTMOTradingBot:
         # ส่งแจ้งเตือนทุกชั่วโมง (720 loop * 5s = 3600s = 1 ชั่วโมง)
         if self._loop_count % 720 == 0 or self._loop_count == 1:
             self._notifier.send_periodic_status(risk_status, self._loop_count, uptime_str)
+
+    def _check_gbm_drift(self) -> None:
+        """
+        v7.1 — KS test เทียบ live signal distribution กับ training distribution.
+
+        เรียกทุก 720 loops (~1 ชม.). ถ้ามี ≥ 3 features drift → log + Discord ping.
+        ไม่ block trading — แค่ alert ให้ user รู้ว่าควร retrain.
+        """
+        if self._quality_model is None:
+            return
+        try:
+            drifts = self._quality_model.detect_drift(ks_threshold=0.15)
+        except Exception as e:
+            print(f"⚠️ [Drift] check failed: {e}")
+            return
+
+        if len(drifts) >= 3:
+            top = sorted(drifts.items(), key=lambda x: -x[1])[:5]
+            top_str = ", ".join(f"{k}={v:.2f}" for k, v in top)
+            msg = (
+                f"⚠️ [GBM Drift] {len(drifts)} features ห่างจาก training "
+                f"(KS > 0.15). Top: {top_str}"
+            )
+            print(msg)
+            try:
+                self._notifier.send_alert(msg, level="warning")
+            except Exception:
+                pass
 
     # =========================================================================
     # 🛑 Shutdown

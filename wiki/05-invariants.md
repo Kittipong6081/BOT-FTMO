@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-04-30 | Scope: red flags, version log, migration notes (latest: **v6.14** — bug fixes from live demo audit: SMC SL per-symbol multiplier wired, OB SL ATR-floor, XAU min_sl_pips raised, TradeLogger off-by-one fixed, Analyzer replays Excel; **v6.13** combined patch; **v6.12** live ML threshold gate fix)
+> Last Updated: 2026-05-04 | Scope: red flags, version log, migration notes (latest: **v7.1 staged** — code changes for 3-brain RCA from 2026-05-04 5-trade wipeout; OBS_DIM 29→32 + GBM 17→24 + Chronos formula log1p; awaiting full retrain)
 
 ## TL;DR (30-second scan)
 
@@ -20,6 +20,7 @@ Changing obs requires retraining the whole pipeline (pool → ML → RL):
 - `FTMOTradingBot._build_signal_observation` must produce obs matching `FTMOSignalFilterEnv._get_obs` in size, order, and scale.
 - On size mismatch: `SelfLearningAgent._prepare_obs` raises `ValueError` (good — fail fast).
 - On wrong order with correct size: **no error**, but the model returns nonsense (more dangerous than a crash).
+- **v7.1 (2026-05-04)**: bumped 29 → **32** (added `floating_pnl_norm`, `open_losing_count_norm`, `mins_since_session_norm`). ห้ามรัน live ก่อน retrain.
 
 ### 2. FTMO Anchors
 
@@ -171,6 +172,353 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-05 — v7.1.6 Combine "best of all" (after v7.1.5 Pass 0.8% worst)
+
+**Symptom (v7.1.5 eval, 5000 eps)** — Pass Rate **0.8%** (worst yet, regressed -2.2pp from v7.1.2 = 3.0%)
+
+**TensorBoard diagnosis** (phase2_risk_46):
+- value_loss curve: 1.99 → **4.43 (mid spike)** → 2.15 = value function unstable
+- entropy_loss: -0.04 = policy collapsed deterministic
+- std (action width): 0.25 (lowest) = agent committed too narrow
+- explained_variance 0.80 (vs v7.1.3 = 0.90) = value function noisy
+
+**Root cause** = **3-way conflict** (pool 10k diversity + ml_threshold 0.40 + reward -0.90 aggressive):
+- Pool 10k → agent ต้อง generalize
+- ML 0.40 → effective signals/ep ลด (16 → ~9)
+- Reward -0.90 → push TAKE หนัก แต่ pool พื้นฐานบางลง
+- Combination ทำให้ value function ไม่ทัน fit → entropy collapse
+
+**Fix (v7.1.6)** — combine "best of all worlds":
+
+| Lever | v7.1.2 | v7.1.5 | **v7.1.6** | Why |
+|---|---|---|---|---|
+| Pool size | 4.5k | 10k | **10k** ✓ | keep diversity |
+| ML threshold | 0.36 | 0.40 | **0.36** ↓ | revert — pool feed RL หนาขึ้น |
+| Reward missed-winner P2 | -0.85 | -0.90 | **-0.85** ↓ | revert — กัน entropy collapse |
+| Reward Chronos (ml<0.55) | -0.30 | -0.20 | **-0.30** ↑ | revert — keep filter strength |
+| Reward Chronos (ml≥0.55) | -0.10 | -0.05 | **-0.10** ↑ | revert |
+| Reward concurrent loss | -0.20 | -0.15 | **-0.20** ↑ | revert |
+
+**Why this should work**:
+
+1. v7.1.2 ที่ Pass 3.0% ใช้ ml 0.36 + reward -0.85 — proven combination
+2. Pool 10k มี diversity ดีกว่า 4.5k → eval variance ต่ำ + generalization ดี
+3. RL revisit pool 10k = 99× = sweet spot (vs 4.5k = 220× over-fit, vs 100k+ = under-train)
+4. Reward ไม่ aggressive จน push policy แคบ — entropy ไม่ collapse
+
+**Pipeline**: ไม่ rebuild pool / GBM. Retrain RL only (~25 min) ด้วย `--ml_threshold 0.36 --pool_size 10000`.
+
+**Backup**:
+
+```bash
+TS=$(date +%s)
+cp models/ppo_signal_filter.zip models/ppo_signal_filter.zip.bak_v715_${TS}_pre_v716
+cp models/vec_normalize_sf.pkl  models/vec_normalize_sf.pkl.bak_v715_${TS}_pre_v716
+```
+
+**Eval gate**:
+
+| Pass Rate | DD max | Verdict |
+|---|---|---|
+| ≥ 9% | ≤ 4.5% | ✅ Win — deploy live |
+| 5-9% | ≤ 4% | ✅ better than v7.1.2 — deploy live + monitor |
+| 3-5% | ≤ 4% | 🟡 Similar to v7.1.2 — keep |
+| < 3% | — | ❌ Restore v7.1.2 + accept Pass 3% baseline |
+
+**Files modified**: `config/settings.py` (1 line), `ml/signal_filter_env.py` (5 reward values), `wiki/05-invariants.md` (this entry).
+
+---
+
+### 2026-05-05 — v7.1.5 Pool 10k rebuild (Pass 0.8% — worst, REVERTED via v7.1.6)
+
+**Symptom**: pool 10000 eps + ml 0.40 + reward -0.90 (v7.1.4 plan applied) → Pass Rate **0.8%** (worst yet)
+
+**Diagnosis**: 3-way conflict — pool diversity + filter strict + reward aggressive ทำงานสวนกัน → entropy collapse
+
+**Action**: Replaced by v7.1.6 (revert ml threshold + reward to v7.1.2 levels, keep pool 10k diversity)
+
+---
+
+### 2026-05-05 — v7.1.4 Combo C: keep threshold 0.40 + restore v7.0.x reward aggression
+
+**Symptom (cumulative across rounds)**:
+
+| Round | Threshold | Missed-winner P2 | Pass Rate | Take Rate | Orders/ep | DD max |
+|---|---|---|---|---|---|---|
+| v7.0.7 | 0.36 | -0.90 | **11.1%** | ~58% | 7.7 | ~4% (wipeout 4 พ.ค.) |
+| v7.1 | 0.36 | -0.65 | (filter เข้ม pool drop) | — | — | — |
+| v7.1.1 | 0.36 | -0.65 | 1.4% | 46.6% | 3.7 | 2.51% |
+| v7.1.2 | 0.36 | -0.85 | 3.0% | 48.3% | 3.8 | 1.82% |
+| v7.1.3 | **0.40** | -0.85 | 1.1% (KEPT temporarily) | 47.9% | 3.2 | 1.40% |
+| **v7.1.4** ⏳ | **0.40** | **-0.90** | TBD (target ≥ 9%) | TBD | TBD | TBD |
+
+**Hypothesis (Combo C)**:
+
+- v7.1.3 ลด pool 19% (threshold 0.40) แต่ Take Rate ไม่ขยับ → reward ยัง softer เกิน push TAKE
+- v7.1.4 = restore missed-winner P2 ไป -0.90 (v7.0.x level) ทำให้ agent กล้า TAKE ใน pool ที่สะอาดขึ้น
+- Safety nets ทั้งหมดยังอยู่ (SMC pre-filters, runtime UNREALIZED_PAUSE, USD theme cap, obs[29-31]) → wipeout pattern กัน
+
+**Reward changes (`ml/signal_filter_env.py` step())**:
+
+| Line | v7.1.3 | **v7.1.4** | Why |
+|---|---|---|---|
+| missed-winner P2 | -0.85 | **-0.90** | restore v7.0.x level — push TAKE volume |
+| missed-winner P2 + ml ≥ 0.40 | -0.50 | **-0.55** | restore v7.0.x level |
+| Chronos disagreement (ml<0.55) | -0.30 | **-0.20** | soften — threshold 0.40 ก็ filter quality แล้ว |
+| Chronos disagreement (ml≥0.55) | -0.10 | **-0.05** | mild only — trust ML strong signals |
+| Concurrent loss (floating < -1%) | -0.20 | **-0.15** | soften — runtime UNREALIZED_PAUSE block อยู่แล้ว |
+
+**Why safe vs v7.0.7 (despite same -0.90)** — multiple defense layers ที่ v7.0.7 ไม่มี:
+
+1. SMC pre-filters: session warmup +5 conf, post-weekend +5, vol regime block, spread/ATR check, dynamic SL
+2. GBM 24 features (temporal/regime aware) → calibration ดีขึ้น
+3. obs[29-31] portfolio realtime → agent รู้ floating PnL + losing count + session timing
+4. Runtime: UNREALIZED_PAUSE -1.5% × open ≥ 2 + USD_THEME cap = 2
+5. Chronos log1p formula + disagreement penalty (softened but present)
+
+**Pipeline**: ไม่ rebuild pool / GBM. Retrain RL อย่างเดียว ~25 min ด้วย `--ml_threshold 0.40`.
+
+**Backup**:
+
+```bash
+TS=$(date +%s)
+cp models/ppo_signal_filter.zip models/ppo_signal_filter.zip.bak_v713_${TS}_pre_v714
+cp models/vec_normalize_sf.pkl  models/vec_normalize_sf.pkl.bak_v713_${TS}_pre_v714
+```
+
+**Eval gate**:
+
+| Pass Rate | DD max | Verdict |
+|---|---|---|
+| ≥ 9% | ≤ 4.5% | ✅ Win — deploy live demo |
+| 5-9% | ≤ 4% | 🟡 Marginal — keep + monitor live |
+| < 5% | — | ❌ Restore v7.1.2 backup (Pass 3.0%) |
+
+**Files modified**: `ml/signal_filter_env.py` (5 reward values), `wiki/05-invariants.md` (this entry).
+
+---
+
+### 2026-05-05 — v7.1.3 KEPT (eval Pass 1.1%, WR 73.8%, DD 1.40% — safest config)
+
+**Eval result (5000 eps, 2026-05-05)** — Pass Rate **1.1%** (regression −1.9pp จาก v7.1.2 = 3.0%) BUT:
+
+- **Win Rate 73.8%** (vs v7.1.2 = 68.4%) — สูงสุดในทุก rounds — signals คุณภาพสูงขึ้น
+- **DD max 1.40% / 8% limit** (vs v7.1.2 = 1.82%) — **ปลอดภัยสุด**
+- **Daily DD max 1.44% / 4% limit** = ห่างไกล wipeout 4 พ.ค. (2.85%)
+- Profitable rate 80.2% (vs v7.1.2 80.0%) — stable
+
+**User decision (2026-05-05)**: เก็บ v7.1.3 ไว้ใช้ live แม้ Pass Rate ตก. Trade-off:
+
+- ❌ Pass Rate ต่ำ (1.1%) = อาจไม่ทันถึง 10% ใน 45 วัน บน eval distribution
+- ✅ Risk control ดีที่สุด (DD 1.4%, WR 74%) — 4 พ.ค. wipeout pattern ซ้ำไม่ได้
+- ✅ Live ≠ eval — actual market อาจ generate signals คุณภาพดีกว่า pool แบบ random sampling
+
+**Diagnosis ที่ทำให้ Pass Rate ตก**:
+
+- ขึ้น threshold 0.36 → 0.40 = pool effective ลด 19% (33k → 27k signals)
+- Agent ต้องการ data volume เพื่อเรียน — pool บางลง = train แย่ลง
+- WR ขึ้น 5pp (signals สะอาด) แต่ Orders/ep ลด 0.6 (15%) → cumulative profit ลด
+
+**Active config (ใช้ live demo)**:
+
+- `models/ppo_signal_filter.zip` = v7.1.3 (restored from `*.bak_v713_1777947373`)
+- `models/vec_normalize_sf.pkl` = v7.1.3
+- `config/settings.py: ML_FILTER_THRESHOLD = 0.40` (ตรงกับ training)
+- All other v7.1 features active: SMC pre-filters relaxed, GBM 24 features, Chronos log1p, RL obs 32, reward shaping (Chronos disagreement / concurrent loss / missed-winner -0.85)
+
+**Backups**:
+
+- `*.bak_v712_1777913348` (v7.1.2 model — Pass 3.0%) — fallback ถ้า v7.1.3 live ไม่ดี
+- `*.bak_v713_1777947373` (v7.1.3 backup duplicate)
+- `*.bak_v7.0.7` (pre-v7.1 baseline — Pass 11.1% but had wipeout exposure)
+
+**Rollback**: ถ้า live demo > 3 SL ติดกัน หรือ DD > 3% ใน session แรก → restore *.bak_v712 (Pass 3% but tested better trade volume).
+
+---
+
+### 2026-05-04 — v7.1.3 ML threshold bump 0.36 → 0.40 (after v7.1.2 eval Pass 3.0%)
+
+**Symptom (v7.1.2 eval, 5000 eps)** — Pass Rate **3.0%** (ขึ้น 2.1× จาก v7.1.1 = 1.4% ดี) แต่ยังไม่ผ่าน gate ≥ 9%. **Take Rate 48.3%** + **Orders/episode 3.8** แทบไม่ขยับจาก v7.1.1 (46.6% / 3.7) → reward shaping เริ่มทำงาน (Pass Rate ขึ้น) แต่ pool ยังมี borderline signals มากเกิน
+
+**Root cause** — ML threshold 0.36 ใน training+live ปล่อย 49.3% ของ signals ผ่าน → agent ต้อง filter ภายในหนัก. Pool flooded with low-EV signals (WR baseline 45.8% @ 0.36 vs 47.7% @ 0.40).
+
+**Fix (v7.1.3)** — bump ML threshold 0.36 → 0.40 ใน 1 file:
+
+```python
+# config/settings.py:109
+# Before (v7.1/v7.1.1/v7.1.2):
+ML_FILTER_THRESHOLD: float = 0.36
+# After (v7.1.3):
+ML_FILTER_THRESHOLD: float = 0.40
+```
+
+**Why 0.40 is sweet spot** (จาก v7.1.1 GBM threshold analysis on 68k pool):
+
+| Threshold | % kept | WR baseline | EV |
+|---|---|---|---|
+| 0.36 | 49.3% (33,576) | 45.8% | +0.060 |
+| **0.40** ⭐ | 40.0% (27,240) | **47.7%** | **+0.073** (+22%) |
+| 0.45 | 21.3% | 52.6% | +0.097 |
+| 0.50 | 8.6% | 59.8% | +0.196 |
+
+→ 0.40 = best Pareto: signals พอ (40% kept) + WR baseline สูง (47.7%) + EV +22% improvement
+
+**Pipeline**: ไม่ rebuild pool / GBM. Retrain RL อย่างเดียว ~25 min ด้วย `--ml_threshold 0.40`.
+
+**Backup**:
+
+```bash
+TS=$(date +%s)
+cp models/ppo_signal_filter.zip models/ppo_signal_filter.zip.bak_v712_${TS}
+cp models/vec_normalize_sf.pkl  models/vec_normalize_sf.pkl.bak_v712_${TS}
+```
+
+**Eval gate**:
+
+| Pass Rate | Action |
+|---|---|
+| ≥ 9% | ✅ Keep + deploy live demo |
+| 5-9% | 🟡 Marginal — Round 5: combo restore reward + threshold 0.40 |
+| < 5% | ❌ Revert threshold 0.36 |
+
+**Live config sync** — `bot_config.ftmo.ML_FILTER_THRESHOLD = 0.40` ตรงกับ training (invariant #10 sync). Live `FTMOTradingBot.run` จะใช้ค่า 0.40 ใน ML gate ก่อน agent.
+
+**Files modified**: `config/settings.py` (1 line), `wiki/05-invariants.md` (this entry).
+
+---
+
+### 2026-05-04 — v7.1.2 Reward re-balance (after v7.1.1 eval Pass 1.4%)
+
+**Symptom (v7.1.1 eval, 5000 eps)** — Pass Rate **1.4%** (gate ≥ 9% missed by 7.6 pp). Win Rate 71.4% (สูงดี), DD max 2.51%/8% (ปลอดภัย), แต่ Orders/episode 3.7 (ครึ่งของ v6.13 = 7.7) → **agent over-skip — TAKE volume ต่ำเกินจะ accumulate 10% ใน 45 วัน**.
+
+**Root cause** — v7.1 reward shaping ผมเข้มเกินไป:
+
+- missed-winner P2 softened: -0.90 → -0.65 (ลด push TAKE)
+- เพิ่ม Chronos disagreement penalty: -0.40 / -0.15
+- เพิ่ม concurrent loss penalty: -0.25
+
+→ Net effect: SKIP=default, TAKE=expensive → agent learn "wait for perfect setup" ที่หาได้ยาก
+
+**Fix (v7.1.2)** — re-balance ให้สมดุลระหว่าง v7.0.x (over-aggressive) และ v7.1 (over-passive):
+
+| Reward line (`ml/signal_filter_env.py` step()) | v7.1 | **v7.1.2** | Why |
+|---|---|---|---|
+| missed-winner P2 (outcome ≥ 0.5) | -0.65 | **-0.85** | push TAKE ใกล้ v7.0.x แต่ไม่ถึง -0.90 (ห่าง wipeout level) |
+| missed-winner P2 + ml ≥ 0.40 | -0.40 | **-0.50** | extra push สำหรับ high-ml signals |
+| Chronos disagreement (ml < 0.55) | -0.40 | **-0.30** | ลด over-rejection — keep filter จริงๆ heavy cases |
+| Chronos disagreement (ml ≥ 0.55) | -0.15 | **-0.10** | minor tweak — ML แข็งอาจ override forecast |
+| Concurrent loss (floating < -1%) | -0.25 | **-0.20** | ลดเล็กน้อย — keep guard but lighter |
+
+**Safety net ที่กัน wipeout 2026-05-04 ซ้ำ** (ไม่ได้แตะใน v7.1.2):
+
+- Runtime: `RiskManager.check_unrealized_circuit_breaker` (-1.5% floating × open ≥ 2)
+- Runtime: `MAX_USD_THEME_POSITIONS = 2` cross-group cap
+- Runtime: SMC vol_regime "explosive" hard veto + spread/ATR > 30%
+- Obs: floating_pnl_norm + open_losing_count + mins_since_session [29-31]
+- Reward: Chronos disagreement (ลดลงแต่ยังมี) + concurrent loss (ลดลงแต่ยังมี)
+
+**Pipeline**: ไม่ rebuild pool / GBM. Retrain RL อย่างเดียว ~25 min. Backups `*.bak_v7.0.7` ยังอยู่.
+
+**Eval gate** (5000 eps):
+
+| Pass Rate | DD max | Verdict |
+|---|---|---|
+| ≥ 9% | ≤ 4.5% | ✅ Keep + deploy |
+| 5-9% | ≤ 4% | 🟡 Marginal — ดู Profit avg + Win Rate |
+| < 5% | — | ❌ Re-tune (consider bump ml_threshold 0.36 → 0.40) |
+
+**Files modified**: `ml/signal_filter_env.py` (3 reward lines, 5 numeric values).
+
+---
+
+### 2026-05-04 — v7.1.1 Filter relax (after v7.1 pool dropped 90%)
+
+**Symptom (v7.1 pool build)** — pool ตก 90% (158k → 14k signals, 9.2 sigs/ep) → GBM AUC 0.69 ดีมากแต่ pool size บางเกินทำให้ FTMO 10% target unrealistic ใน 45 วัน.
+
+**Root cause** — SMC pre-filters G/H ตึงเกินไป (hard veto):
+- HTF=Neutral + ADX H1 < 25 = hard veto
+- vol_regime "high" = hard veto
+- spread/ATR > 20% = hard veto
+
+→ Stack ของ hard vetos ตัด signals 90%
+
+**Fix (v7.1.1)**:
+
+| Filter | v7.1 | **v7.1.1** |
+|---|---|---|
+| HTF=Neutral + ADX H1 < 25 | hard veto | **soft −15 confluence** |
+| vol_regime "high" | hard veto | **soft −10 confluence** |
+| vol_regime "explosive" | hard veto | hard veto (เก็บ — rare event z>2) |
+| Spread/ATR limit | 0.20 | **0.30** (gate ที่ตึงน้อยลง — ยังกัน Trade 3 GBPJPY 91%) |
+
+**Result**: Pool 4254 eps × 16 sigs/ep = **68,155 signals** (+369%). GBM AUC 0.6437 (vs v7.1 0.6931 — drop เพราะ noise มากขึ้น แต่ EV+ stable).
+
+**Files modified**: `config/settings.py` (SPREAD_ATR_RATIO_LIMIT 0.20→0.30), `strategy/smc_strategy.py` (G/H veto → soft penalties + apply ใน scoring loop).
+
+---
+
+### 2026-05-04 — v7.1 Staged: 3-brain root-cause patch (RCA from 5-trade wipeout)
+
+**Symptom (2026-05-04 live demo)** — 5 ออเดอร์ 3 ชม. โดน SL ทั้ง 5 (-$284.68 / Daily DD 2.85% เกือบชน 4%). HTF ตรง 4/5, ML cal ≥ 0.44 ทั้ง 5, RL TAKE ทั้ง 5 → **3 brains มอง "OK" ทั้งหมด แต่ผลคือ wipeout**.
+
+**Root cause (เชิงโครงสร้าง ไม่ใช่ bug จุดเดียว)**:
+
+1. **SMC** ไม่รู้ "เวลา" — HTF=Neutral เป็น soft penalty, ไม่มี session warmup gate, ไม่มี post-weekend window detector, vol_regime "high" ไม่มี classifier
+2. **GBM** 17 features ไม่มี temporal/regime เลย — Monday warmup signal มี cal=0.65+ แต่ขาดทุน
+3. **RL obs** ไม่มี portfolio realtime — agent ไม่รู้ว่า "อีก 2 ออเดอร์กำลังขาดทุน"
+4. **Chronos** uncertainty saturated ที่ 3.0 ทุก signal → no gradient → RL ไม่ใช้ feature
+5. **Reward** P2 missed-winner -0.90 → agent over-tuned toward TAKE → กล้าเปิดสวน Chronos
+
+**Code changes (no eval gate ผ่านแล้ว — ยังไม่ retrain)**:
+
+- `core/risk_manager.py`: `+get_unrealized_drawdown_pct`, `+check_unrealized_circuit_breaker` (เรียกใน `can_open_trade`)
+- `config/settings.py`: `+UNREALIZED_PAUSE_PCT=-1.5`, `+UNREALIZED_PAUSE_MIN_OPEN=2`, `+MAX_USD_THEME_POSITIONS=2`, `+SPREAD_ATR_RATIO_LIMIT=0.20`
+- `analytics/performance.py`: Stats sheet limits อ่านจาก `bot_config.ftmo` (เลิก hardcode 10%/5%)
+- `execution/trade_executor.py`: `+_populate_close_metadata` helper (Bid@Exit/Balance@Close/Equity Peak), `+USD_THEME_DIR` cross-group guard ใน `_check_correlation_risk`
+- `strategy/smc_strategy.py`: `+_is_session_warmup`, `+_is_post_weekend_window`, `+_check_spread_atr_ratio`, `+_required_confluence`, `+_compute_dynamic_sl_multiplier` + pre-filters G/H/I ใน BUY+SELL paths (HTF Neutral + ADX H1 < 25 veto, vol regime high/explosive block, spread/ATR > 20% block)
+- `strategy/indicators.py`: `+classify_volatility_regime`, `+compute_atr_zscore_30bars`
+- `ml/signal_quality.py`: `FEATURES` 17 → 24 (เพิ่ม temporal/regime), `+compute_temporal_features`, `+detect_drift` (KS test), `+record_live_signal`
+- `ml/chronos_forecaster.py`: formula `(q90-q10)/(atr×√8)` → `log1p(...)/2` (กัน saturation)
+- `ml/signal_filter_env.py`: obs 29 → 32 (`+floating_pnl_norm`, `+open_losing_count_norm`, `+mins_since_session_norm`); reward shaping (`+chronos_disagreement_penalty`, `+concurrent_loss_penalty`, missed-winner P2 -0.90 → -0.65)
+- `ml/rl_agent.py`: `OBS_DIM` 29 → 32
+- `main.py`: `+_check_gbm_drift` (1 hr), `+_compute_floating_pnl_norm`, `+_compute_open_losing_count_norm`, `+_compute_mins_since_session_norm`, `_build_live_context` คำนวณ temporal feats + ส่งให้ GBM, drift recording
+- `scripts/build_signal_pool.py` (ผ่าน `ml/strategy_backtester.py`): inject 7 temporal features ต่อ signal
+- `scripts/train_signal_quality.py`: FEATURE_KEYS 17 → 24 + บันทึก `train_dist` snapshot ใน payload
+- `scripts/chronos_distribution_audit.py`: **ใหม่** — audit pool histogram + percentile
+
+**Pipeline (ต้องทำตามลำดับ)**:
+
+```bash
+TS=$(date +%s)
+cp models/ppo_signal_filter.zip models/ppo_signal_filter.zip.bak_v7.0.7
+cp models/vec_normalize_sf.pkl  models/vec_normalize_sf.pkl.bak_v7.0.7
+cp data/signal_quality_model.pkl data/signal_quality_model.pkl.bak_v7.0.7
+cp data/signal_pool_3000.pkl    data/signal_pool_3000.pkl.bak_v7.0.7
+mv logs/ftmo_trades.xlsx        logs/ftmo_trades_pre_v71_${TS}.xlsx
+
+python scripts/build_signal_pool.py --pool_size 3000 --workers 8        # ~6 ชม.
+python scripts/chronos_distribution_audit.py --pool data/signal_pool_3000.pkl   # verify formula
+python scripts/train_signal_quality.py                                  # ~5 นาที
+python scripts/train_signal_filter.py --fresh \
+  --timesteps_p1 10_000_000 --timesteps_p2 5_000_000 \
+  --n_envs 8 --pool_size 3000 --outcome_noise 0.05 \
+  --ml_threshold 0.36 --risk_per_trade 0.007                            # ~30 ชม.
+```
+
+**Eval gate (5000 eps)**:
+
+| Pass Rate | DD max | Profitable | Verdict |
+|---|---|---|---|
+| ≥ 9% | ≤ 4.5% | ≥ 70% | ✅ Keep + deploy |
+| 7-9% | ≤ 4% | ≥ 65% | 🟡 Marginal — keep flag |
+| < 7% | > 5% | — | ❌ Restore `*.bak_v7.0.7` |
+
+**ห้ามรัน live** ก่อน retrain — `OBS_DIM` mismatch (env 32, model 29) จะ raise `ValueError` ใน `SelfLearningAgent._prepare_obs`.
+
+**Backup discipline**: ก่อน Step 8 ต้อง execute backup commands ครบ. v7.0.7 lesson — skip backup → ลอบ regression rollback ไม่ได้.
+
+---
 
 ### 2026-05-02 — v7.0.7 Revert threshold 30 → 20 (v7.0.5 retrain — backup recovery)
 

@@ -43,6 +43,10 @@ ftmo_trading_bot/models/checkpoints_sf/
 *.pkl.bak*
 *.zip.bak*
 
+# Process / runtime locks
+*.pid
+.claude/scheduled_tasks.lock
+
 # TensorBoard logs
 ftmo_trading_bot/logs/tb_*/
 tfevents*
@@ -60,8 +64,10 @@ ftmo_trading_bot/config/news_inbox/*.json
 # State files (per-machine runtime state)
 ftmo_trading_bot/data/bot_state.json
 
-# Training-only data (ไม่ใช้ใน live — VPS ไม่ต้อง)
+# Training-only data — pool .pkl ไม่ track (110MB ใหญ่เกิน GitHub limit)
+# track เฉพาะ .pkl.gz (compressed ~34MB) เพื่อให้ VPS pull ได้ (build pool บน VPS ไม่ไหว)
 ftmo_trading_bot/data/signal_pool_*.pkl
+!ftmo_trading_bot/data/signal_pool_*.pkl.gz
 ftmo_trading_bot/data/ohlcv/*.csv
 
 # Legacy models (v1-v5, ไม่ใช้แล้ว — keep เฉพาะ ppo_signal_filter.zip + vec_normalize_sf.pkl)

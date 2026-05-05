@@ -293,6 +293,25 @@ class TradeExecutor:
     # (ใช้จาก config FTMOConfig.MAX_CORRELATED_POSITIONS ถ้ามี)
     MAX_CORRELATED_POSITIONS: int = getattr(bot_config.ftmo, "MAX_CORRELATED_POSITIONS", 1)
 
+    # === Cross-group USD Theme Guard (v7.1) ===
+    # ปัญหา 2026-05-04: USDCHF SELL (USD_STRONG group, effective −1) + NZDUSD BUY (USD_WEAK,
+    # effective +1) ผ่านได้เพราะอยู่คนละ group แม้ทั้งคู่คือ "shorting USD"
+    # USD_THEME_DIR map: (symbol, direction) → "SHORT" (เก็งกำไร USD อ่อน) หรือ "LONG"
+    USD_THEME_DIR = {
+        # USD weak — short USD theme (BUY ของ xxxUSD = USD ขายออก)
+        ("EURUSD", "BUY"): "SHORT", ("EURUSD", "SELL"): "LONG",
+        ("GBPUSD", "BUY"): "SHORT", ("GBPUSD", "SELL"): "LONG",
+        ("AUDUSD", "BUY"): "SHORT", ("AUDUSD", "SELL"): "LONG",
+        ("NZDUSD", "BUY"): "SHORT", ("NZDUSD", "SELL"): "LONG",
+        # USD strong base — SELL ของ USDxxx = USD ขายออก
+        ("USDJPY", "BUY"): "LONG",  ("USDJPY", "SELL"): "SHORT",
+        ("USDCAD", "BUY"): "LONG",  ("USDCAD", "SELL"): "SHORT",
+        ("USDCHF", "BUY"): "LONG",  ("USDCHF", "SELL"): "SHORT",
+        # Gold inverted — BUY XAU = USD weak/risk-off
+        ("XAUUSD", "BUY"): "SHORT", ("XAUUSD", "SELL"): "LONG",
+    }
+    MAX_USD_THEME_POSITIONS: int = getattr(bot_config.ftmo, "MAX_USD_THEME_POSITIONS", 2)
+
     def __init__(
         self,
         connector: MT5Connector,
@@ -717,6 +736,27 @@ class TradeExecutor:
                     f"(จำกัด {self.MAX_CORRELATED_POSITIONS})"
                 )
 
+        # === 3. USD Theme Cross-group Check (v7.1) ===
+        # กัน scenario "ทุก position ชอร์ต USD พร้อมกัน" ที่ legacy correlation guard มองไม่เห็น
+        # เพราะ USD_STRONG/USD_WEAK เป็น 2 group แยก
+        new_theme = self.USD_THEME_DIR.get((symbol_upper, tt_upper))
+        if new_theme is not None:
+            same_theme_count = 0
+            for trade in self._active_trades.values():
+                if not trade.is_open:
+                    continue
+                ex_theme = self.USD_THEME_DIR.get(
+                    (trade.symbol.upper(), trade.trade_type.upper())
+                )
+                if ex_theme == new_theme:
+                    same_theme_count += 1
+            if same_theme_count >= self.MAX_USD_THEME_POSITIONS:
+                return (
+                    False,
+                    f"USD theme {new_theme} เปิดแล้ว {same_theme_count} ตำแหน่ง "
+                    f"(จำกัด {self.MAX_USD_THEME_POSITIONS}) — กัน double-bet on USD direction"
+                )
+
         return (True, "ผ่านการตรวจ Correlation Risk")
 
     # =========================================================================
@@ -871,6 +911,38 @@ class TradeExecutor:
             print(f"❌ [Executor] ปิดเทรด Ticket {ticket} ล้มเหลว")
             return False
 
+    def _populate_close_metadata(self, trade) -> None:
+        """
+        v7.1 — populate close-time metadata บน trade object.
+
+        เดิม `record_external_close` (path SL/TP hit) ข้ามขั้นนี้ → trade_data dict ที่ส่งให้
+        TradeLogger.log_trade_closed มี bid_at_exit / ask_at_exit / balance_at_close /
+        equity_peak_during_trade = 0.0 (default จาก dataclass) → Excel เห็น 0/None.
+
+        ตอนนี้เรียกจากทุก close path (self-close แล้วก็ทำ inline, external-close เรียก method นี้).
+        """
+        # Bid/Ask snapshot ณ ตอนปิด
+        try:
+            tick = self._connector.get_current_price(trade.symbol)
+            if tick:
+                trade.bid_at_exit = float(tick.get("bid", 0.0))
+                trade.ask_at_exit = float(tick.get("ask", 0.0))
+        except Exception:
+            pass
+
+        # Balance + Equity peak ณ ตอนปิด — ผ่าน RiskManager (single source of truth)
+        try:
+            rs = self._risk_manager.get_risk_status()
+            trade.balance_at_close = float(rs.get("current_balance", 0.0))
+            # Equity peak สูงสุดในวัน (ไม่ใช่ peak ของ trade อย่างเดียว — แต่ใช้แทนได้)
+            trade.equity_peak_during_trade = float(rs.get("current_equity", 0.0))
+        except Exception:
+            pass
+
+        # Final SL ใช้ค่าปัจจุบัน (อาจถูก trailing/BE updated ก่อนปิด)
+        if not getattr(trade, "final_sl_at_close", 0):
+            trade.final_sl_at_close = float(getattr(trade, "sl_price", 0.0) or 0.0)
+
     def record_external_close(
         self,
         ticket: int,
@@ -904,6 +976,10 @@ class TradeExecutor:
             if trade.open_time:
                 trade.time_in_trade = int((trade.close_time - trade.open_time).total_seconds())
             trade.exit_path = reason
+
+            # v7.1 — populate close-time metadata (Bid@Exit, Balance@Close, Equity Peak)
+            # เดิม record_external_close ข้ามขั้นนี้ → Excel close rows มี field เป็น 0/None
+            self._populate_close_metadata(trade)
 
             self._closed_trades.append(trade)
             del self._active_trades[ticket]

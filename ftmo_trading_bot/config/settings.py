@@ -92,6 +92,9 @@ class FTMOConfig:
     # === Anti-Overtrading Guardrails ===
     MAX_TRADES_PER_DAY: Optional[int] = None    # None = ปิด cap (ใช้ filter ชั้นอื่นคุม); revert: ใส่เลขกลับ (เช่น 5)
     MAX_CORRELATED_POSITIONS: int = 1           # 1 ตำแหน่งต่อกลุ่ม correlation
+    # v7.1.10b (2026-05-05): 70 → 65 ทดลองผ่อน filter — eval Pass 4.9% (worse than v7.1.9 6.1%)
+    #   borderline signals ทำให้ agent ระมัดระวังเกิน + Daily DD แตะ 4.00% (FTMO limit)
+    # v7.1.11 (2026-05-05): 65 → 70 — กลับ filter เข้ม + push reward ดัน TAKE
     MIN_CONFLUENCE_SCORE: float = 70.0          # เกณฑ์ confluence ขั้นต่ำ (ปรับได้ runtime)
 
     # === FTMO Consistency Rule ===
@@ -104,8 +107,11 @@ class FTMOConfig:
 
     # === ML Quality Filter (live ↔ training distribution sync, v6.12) ===
     # Live ต้องบังคับ ML threshold ให้ตรงกับค่า --ml_threshold ที่ใช้ตอน train
-    # ค่าปัจจุบัน 0.36 = Phase E2 calibrated threshold (matches FTMOSignalFilterEnv.ml_filter_threshold)
-    # หากปรับค่านี้ → ต้อง retrain RL ทั้ง pipeline (build_signal_pool → train_signal_quality → train_signal_filter)
+    # v7.1.3 (2026-05-04): tried 0.40 — eval Pass 1.1% (regression). Pool effective ลด → agent ไม่มี data พอ
+    # v7.1.6 (2026-05-05): revert 0.40 → 0.36 — combine กับ pool 10k (v7.1.5) + reward soft (v7.1.2):
+    #   v7.1.2 (4.5k pool, 0.36, soft reward) = Pass 3.0% best. v7.1.5 (10k, 0.40, hard reward) = Pass 0.8% worst
+    #   v7.1.6 (10k, 0.36, soft reward) = expected Pass 4-7% (combine "best of all")
+    # หากปรับค่านี้ → ต้อง retrain RL ด้วย --ml_threshold ตรงกัน (training-live sync invariant #10)
     ML_FILTER_THRESHOLD: float = 0.36
 
     # === Cooldown / Anti-Revenge-Trading ===
@@ -126,6 +132,30 @@ class FTMOConfig:
     # เหตุผล: tick/spread noise ไม่ใช่ decision error → ไม่ควร trigger anti-revenge
     # ค่า 0.0005 = 0.05% = $5 บน $10K
     MIN_LOSS_TO_COUNT_PCT: float = 0.0005
+
+    # === Unrealized DD Circuit Breaker (v7.1) ===
+    # เบรกเกอร์ใหม่: ถ้า floating loss สะสม ≤ UNREALIZED_PAUSE_PCT (% ของ daily_start_balance)
+    # และมี open positions ≥ UNREALIZED_PAUSE_MIN_OPEN → block การเปิด trade ใหม่
+    # เหตุผล (v7.1 RCA 2026-05-04): ConsecutiveLoss counter นับเฉพาะ closed losses → 4 trades
+    # bleed พร้อมกันได้โดย counter ยังเป็น 0. UNREALIZED_PAUSE = gate เพิ่มเติมที่ track real-time risk
+    # ค่า −1.5%: 1.5% floating + 1 trade ≈ 2% effective DD = ห่าง FTMO 4% Daily limit ~50%
+    UNREALIZED_PAUSE_PCT: float = -1.5  # % ของ daily_start_balance (เป็นลบ)
+    UNREALIZED_PAUSE_MIN_OPEN: int = 2  # ต้อง open ≥ 2 ก่อน gate ถึง active
+
+    # === Cross-group USD Theme Guard (v7.1) ===
+    # MAX_CORRELATED_POSITIONS เดิมเช็คเฉพาะภายใน group เดียว (USD_STRONG, USD_WEAK ฯลฯ)
+    # ปัญหาที่เจอ 2026-05-04: USDCHF SELL (USD_STRONG, effective −1) + NZDUSD BUY (USD_WEAK,
+    # effective +1) = ทั้งคู่ short USD แต่อยู่คนละ group → guard ปล่อยผ่าน
+    # MAX_USD_THEME_POSITIONS = cap "ฝั่ง USD เดียวกัน" ข้าม group (USD_SHORT/USD_LONG virtual)
+    MAX_USD_THEME_POSITIONS: int = 2
+
+    # === Spread/ATR Liquidity Guard (v7.1, relaxed v7.1.1, v7.1.10) ===
+    # ถ้า spread > SPREAD_ATR_RATIO_LIMIT × ATR → reject signal (สภาพคล่องแย่ / ตลาดเปิดผันผวน)
+    # v7.1.1 (2026-05-04): 0.20 → 0.30 — เดิมตึงเกิน ตัด pool 90% (Trade 3 GBPJPY 91% ratio
+    # ยังถูก block ที่ 30%, แต่ normal-spread signals กลับมา)
+    # v7.1.10b (2026-05-05): 0.30 → 0.40 — Pass drop 6.1% → 4.9% (borderline signals confuse agent)
+    # v7.1.11 (2026-05-05): 0.40 → 0.30 — กลับเข้มเดิม + push reward แทน
+    SPREAD_ATR_RATIO_LIMIT: float = 0.30
 
     # === Post-TP Pullback Lock ===
     # หลัง TP hit บน (symbol, direction) ใดก็ตาม block การเข้าทิศเดิมใน symbol นั้น

@@ -1,5 +1,7 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-04-30 (v6.13) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-04 (v7.1 staged) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+>
+> **v7.1 changes** — `RiskManager.check_unrealized_circuit_breaker` (เรียกใน `can_open_trade` หลัง global pause) + cross-group `MAX_USD_THEME_POSITIONS` ใน `TradeExecutor._check_correlation_risk` + GBM drift monitor (`_check_gbm_drift`) ทุก 720 loops
 
 ## TL;DR (30-second scan)
 

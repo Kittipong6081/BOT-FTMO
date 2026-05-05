@@ -1,5 +1,16 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-02 (v7.0.7) | Scope: every module + key class / method / variable (v7.0.7 — Chronos accuracy benchmark tool added (`test_chronos_accuracy.py`); v7.0.5 Phase 2 LR proper fix; v7.0.3 correlation simulator HOLD=0; v7.0.2 Chronos formula refactor; v7.0 Chronos 2 zero-shot forecaster added: obs 27 → 29)
+> Last Updated: 2026-05-04 (v7.1 staged) | Scope: every module + key class / method / variable
+>
+> **v7.1 new methods/symbols (awaiting retrain)**:
+> - `RiskManager.get_unrealized_drawdown_pct`, `RiskManager.check_unrealized_circuit_breaker`
+> - `TradeExecutor._populate_close_metadata`, `TradeExecutor.USD_THEME_DIR`, `TradeExecutor.MAX_USD_THEME_POSITIONS`
+> - `SMCStrategy._is_session_warmup`, `_is_post_weekend_window`, `_check_spread_atr_ratio`, `_required_confluence`, `_compute_dynamic_sl_multiplier`
+> - `TechnicalIndicators.classify_volatility_regime`, `TechnicalIndicators.compute_atr_zscore_30bars`
+> - `SignalQualityModel.detect_drift`, `SignalQualityModel.record_live_signal`, `SignalQualityModel._train_dist`
+> - `compute_temporal_features` (module-level in `ml/signal_quality.py`)
+> - `FTMOTradingBot._check_gbm_drift`, `_compute_floating_pnl_norm`, `_compute_open_losing_count_norm`, `_compute_mins_since_session_norm`
+> - `scripts/chronos_distribution_audit.py` — new audit script
+> - `FTMOConfig.UNREALIZED_PAUSE_PCT`, `UNREALIZED_PAUSE_MIN_OPEN`, `MAX_USD_THEME_POSITIONS`, `SPREAD_ATR_RATIO_LIMIT`
 
 ## TL;DR (30-second scan)
 

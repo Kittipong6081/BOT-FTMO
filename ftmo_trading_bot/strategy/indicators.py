@@ -312,6 +312,65 @@ class TechnicalIndicators:
         return df
 
     # =========================================================================
+    # 🌪️ Volatility Regime Classifier (v7.1)
+    # =========================================================================
+
+    @staticmethod
+    def classify_volatility_regime(
+        atr_value: float,
+        atr_floor_pips: float,
+        pip_size: float,
+        atr_zscore: float,
+    ) -> str:
+        """
+        v7.1 — จำแนก regime จาก ATR pips + z-score เทียบ 30-bar mean.
+
+        ใช้ใน SMC pre-filter:
+          - 'high' / 'explosive' → block ทุกสัญญาณ (เกินกว่า SL จะรับมือไหว)
+          - 'normal' → trade ปกติ
+          - 'quiet' → ต้องมี session multiplier ≥ 1.0 (off-overlap quiet = noise)
+
+        Args:
+            atr_value: ATR value (price units)
+            atr_floor_pips: per-symbol floor (e.g., 8 pips FX, 100 ticks XAU)
+            pip_size: 0.0001 / 0.01
+            atr_zscore: ATR vs 30-bar mean z-score (จาก compute_atr_zscore_30bars)
+
+        Returns:
+            'quiet' | 'normal' | 'high' | 'explosive'
+        """
+        if pip_size <= 0:
+            return "normal"
+        atr_pips = atr_value / pip_size
+        # quiet: under floor × 1.2 (ตามเดิม Tier F2)
+        if atr_pips < atr_floor_pips * 1.2:
+            return "quiet"
+        # explosive: z-score > 2.0 = ATR สูงกว่า 30-bar mean ≥ 2 sigma (rare event)
+        if atr_zscore > 2.0:
+            return "explosive"
+        # high: z-score > 1.0 OR atr > 3× floor (gold expansion / news shock)
+        if atr_zscore > 1.0 or atr_pips > atr_floor_pips * 3.0:
+            return "high"
+        return "normal"
+
+    @staticmethod
+    def compute_atr_zscore_30bars(df: pd.DataFrame) -> float:
+        """
+        v7.1 — z-score ของ ATR ปัจจุบันเทียบ 30 bars ล่าสุด.
+
+        > 0 = volatility ขยาย, > 1 = expanding regime, > 2 = explosive event.
+        ใช้เป็น input ให้ classify_volatility_regime + GBM feature.
+        """
+        if "atr" not in df.columns or len(df) < 30:
+            return 0.0
+        recent = df["atr"].tail(30)
+        mean = float(recent.mean())
+        std = float(recent.std())
+        if std <= 1e-10:
+            return 0.0
+        return (float(df["atr"].iloc[-1]) - mean) / std
+
+    # =========================================================================
     # 🚀 Price ROC — การเปลี่ยนแปลงราคาล่าสุด (Momentum)
     # =========================================================================
 

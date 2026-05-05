@@ -791,6 +791,26 @@ class StrategyBacktester:
                     except Exception:
                         chronos_align, chronos_unc = 0.0, 0.0
 
+                # v7.1 — temporal/regime features สำหรับ GBM (เพิ่ม 7 ตัว)
+                # ใช้ scan timestamp = last bar ใน ltf_slice
+                try:
+                    scan_ts = pd.to_datetime(ltf_slice['time'].iloc[-1])
+                except Exception:
+                    scan_ts = None
+                # atr_floor_pips per-symbol — กัน mis-classify regime
+                from config.settings import get_symbol_config
+                is_metal = "XAU" in symbol.upper() or "XAG" in symbol.upper()
+                _default_floor = 100.0 if is_metal else 8.0
+                _atr_floor_pips = float(get_symbol_config(symbol, "atr_floor_pips", _default_floor))
+
+                from ml.signal_quality import compute_temporal_features
+                temporal_feats = compute_temporal_features(
+                    timestamp=scan_ts,
+                    ltf_df=ltf_slice,
+                    atr_floor_pips=_atr_floor_pips,
+                    pip_size=pip_size,
+                )
+
                 signals.append({
                     'day': day,
                     'symbol': symbol,
@@ -823,6 +843,8 @@ class StrategyBacktester:
                     # v7: Chronos forecast features สำหรับ RL obs [27-28]
                     'chronos_alignment': float(chronos_align),
                     'chronos_uncertainty_norm': float(chronos_unc),
+                    # v7.1: GBM temporal/regime features (7 ใหม่)
+                    **temporal_feats,
                 })
 
         self._strategy.MIN_CONFLUENCE_SCORE = saved_confluence

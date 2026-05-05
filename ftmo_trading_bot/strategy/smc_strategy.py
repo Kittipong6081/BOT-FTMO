@@ -586,6 +586,44 @@ class SMCStrategy:
             ]
             return no_signal
 
+        # === v7.1 PRE-FILTERS (G-I — relaxed v7.1.1) ===
+        # G. HTF=Neutral + ADX H1 < 25 → soft penalty −15 (v7.1.1: was hard veto)
+        # ใน v6.x มี ADX H1 < 20 reject อยู่แล้ว HTF=Neutral ที่ ADX 20-25 = sideways trap
+        # v7.1.1: เปลี่ยนจาก hard veto เป็น soft penalty — pool ลด 90% เกินไป
+        # ที่ confluence baseline 70 + warmup +5 = 75 → -15 = 60 ก็ยัง pass ได้ถ้ามี OB+FVG strong
+        v71_neutral_penalty = 0
+        if self._htf_bias == 0 and self._mtf_data is not None and "adx" in self._mtf_data.columns:
+            adx_h1_v71 = float(self._mtf_data["adx"].iloc[-1])
+            if pd.notna(adx_h1_v71) and adx_h1_v71 < 25.0:
+                v71_neutral_penalty = -15
+                # apply ที่ scoring loop ด้านล่างผ่าน reasons + score adjustment
+
+        # H. Volatility regime classifier — soft penalty 'high', hard veto 'explosive'
+        # v7.1.1: 'high' = soft -10 (ปกติเทรดได้ถ้า confluence แข็ง), 'explosive' = hard veto (rare)
+        atr_z_for_regime = TechnicalIndicators.compute_atr_zscore_30bars(ltf_df)
+        vol_regime = TechnicalIndicators.classify_volatility_regime(
+            atr_value=atr_value,
+            atr_floor_pips=min_atr_pips,
+            pip_size=pip_size,
+            atr_zscore=atr_z_for_regime,
+        )
+        v71_vol_penalty = 0
+        if vol_regime == "explosive":
+            no_signal.confluence_score = 0
+            no_signal.reasons = [
+                f"❌ [REJECT v7.1] Volatility regime = explosive (z={atr_z_for_regime:.2f}) — rare event, wait"
+            ]
+            return no_signal
+        elif vol_regime == "high":
+            v71_vol_penalty = -10  # apply ที่ scoring loop
+
+        # I. Spread/ATR ratio block (thin liquidity / news shock guard) — relaxed 0.20→0.30
+        spread_ok, spread_reason = self._check_spread_atr_ratio(symbol, atr_value, price_info, pip_size)
+        if not spread_ok:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [spread_reason]
+            return no_signal
+
         # v6.11.2 (rollback Tier 2.2 + 2.3 hard gates → soft scoring)
         # — eval ด้วย pool ที่ rebuild ด้วย hard gates ได้ Pass Rate 0.0% เพราะ
         # Sweep + Fresh BOS prereq stack ทำให้ pool หาย 96% (avg 36.9 → 1.3 sigs/ep)
@@ -726,6 +764,14 @@ class SMCStrategy:
         else:  # 0.4 - 0.7
             reasons.append(f"⚠️ BB %B={bb_pctb:.2f} (กลาง/บน)")
 
+        # === v7.1.1 Soft Penalties (จาก pre-filter G + H) ===
+        if v71_neutral_penalty:
+            score += v71_neutral_penalty
+            reasons.append(f"⚠️ HTF Neutral + ADX H1 weak ({v71_neutral_penalty})")
+        if v71_vol_penalty:
+            score += v71_vol_penalty
+            reasons.append(f"⚠️ Volatility regime high ({v71_vol_penalty})")
+
         # === Session Weighting — ปรับคะแนนตามช่วงเวลา ===
         session_mult = self._get_session_multiplier()
         if session_mult != 1.0:
@@ -737,18 +783,22 @@ class SMCStrategy:
 
         # === ตรวจสอบว่าผ่านเกณฑ์หรือไม่ ===
         # v6.11: Counter-D1 ย้ายเป็น hard veto ที่ pre-filter F → ไม่ใช้ soft threshold bump แล้ว
-        if score < self.MIN_CONFLUENCE_SCORE:
+        # v7.1: required confluence = base + warmup/post-weekend uplift
+        required_score = self._required_confluence()
+        if score < required_score:
             no_signal.confluence_score = score
+            if required_score > self.MIN_CONFLUENCE_SCORE:
+                reasons.append(
+                    f"⏳ Required {required_score:.0f} (warmup/post-weekend uplift)"
+                )
             no_signal.reasons = reasons
             return no_signal
 
         # === คำนวณ Entry, SL, TP ===
         entry_price = price_info["ask"]  # BUY ที่ราคา Ask
 
-        # v6.14: SL ใช้ per-symbol multiplier (XAUUSD = 1.8×, FX default = 1.5×)
-        sl_atr_mult = get_symbol_config(
-            symbol, "sl_atr_multiplier", bot_config.indicators.atr_sl_multiplier
-        )
+        # v7.1: SL multiplier dynamic ตาม ATR z-score (per-symbol base × regime scale)
+        sl_atr_mult = self._compute_dynamic_sl_multiplier(symbol, ltf_df)
         sl_distance = atr_value * sl_atr_mult
 
         # ถ้ามี OB → วาง SL ใต้ OB (ถ้าระยะอยู่ในช่วงสมเหตุสมผล)
@@ -950,6 +1000,39 @@ class SMCStrategy:
             ]
             return no_signal
 
+        # === v7.1 PRE-FILTERS (G-I — relaxed v7.1.1) — mirror ของ BUY ===
+        # G. HTF=Neutral + ADX H1 < 25 → soft penalty −15 (v7.1.1: was hard veto)
+        v71_neutral_penalty = 0
+        if self._htf_bias == 0 and self._mtf_data is not None and "adx" in self._mtf_data.columns:
+            adx_h1_v71 = float(self._mtf_data["adx"].iloc[-1])
+            if pd.notna(adx_h1_v71) and adx_h1_v71 < 25.0:
+                v71_neutral_penalty = -15
+
+        # H. Volatility regime — soft 'high' (-10), hard 'explosive' (rare)
+        atr_z_for_regime = TechnicalIndicators.compute_atr_zscore_30bars(ltf_df)
+        vol_regime = TechnicalIndicators.classify_volatility_regime(
+            atr_value=atr_value,
+            atr_floor_pips=min_atr_pips,
+            pip_size=pip_size,
+            atr_zscore=atr_z_for_regime,
+        )
+        v71_vol_penalty = 0
+        if vol_regime == "explosive":
+            no_signal.confluence_score = 0
+            no_signal.reasons = [
+                f"❌ [REJECT v7.1] Volatility regime = explosive (z={atr_z_for_regime:.2f}) — rare event, wait"
+            ]
+            return no_signal
+        elif vol_regime == "high":
+            v71_vol_penalty = -10
+
+        # I. Spread/ATR ratio block (relaxed 0.20→0.30)
+        spread_ok, spread_reason = self._check_spread_atr_ratio(symbol, atr_value, price_info, pip_size)
+        if not spread_ok:
+            no_signal.confluence_score = 0
+            no_signal.reasons = [spread_reason]
+            return no_signal
+
         # v6.11.2 (rollback Tier 2.2 + 2.3 hard gates → soft scoring) — mirror ของ BUY
 
         # === ปัจจัยที่ 1: HTF Trend (25 คะแนน) ===
@@ -1081,6 +1164,14 @@ class SMCStrategy:
         else:  # 0.3 - 0.6
             reasons.append(f"⚠️ BB %B={bb_pctb:.2f} (กลาง/ล่าง)")
 
+        # === v7.1.1 Soft Penalties (จาก pre-filter G + H) ===
+        if v71_neutral_penalty:
+            score += v71_neutral_penalty
+            reasons.append(f"⚠️ HTF Neutral + ADX H1 weak ({v71_neutral_penalty})")
+        if v71_vol_penalty:
+            score += v71_vol_penalty
+            reasons.append(f"⚠️ Volatility regime high ({v71_vol_penalty})")
+
         # === Session Weighting — ปรับคะแนนตามช่วงเวลา ===
         session_mult = self._get_session_multiplier()
         if session_mult != 1.0:
@@ -1092,18 +1183,22 @@ class SMCStrategy:
 
         # === ตรวจสอบเกณฑ์ ===
         # v6.11: Counter-D1 ย้ายเป็น hard veto ที่ pre-filter F → ไม่ใช้ soft threshold bump แล้ว
-        if score < self.MIN_CONFLUENCE_SCORE:
+        # v7.1: required confluence = base + warmup/post-weekend uplift
+        required_score = self._required_confluence()
+        if score < required_score:
             no_signal.confluence_score = score
+            if required_score > self.MIN_CONFLUENCE_SCORE:
+                reasons.append(
+                    f"⏳ Required {required_score:.0f} (warmup/post-weekend uplift)"
+                )
             no_signal.reasons = reasons
             return no_signal
 
         # === คำนวณ Entry, SL, TP ===
         entry_price = price_info["bid"]  # SELL ที่ราคา Bid
 
-        # v6.14: SL ใช้ per-symbol multiplier (XAUUSD = 1.8×, FX default = 1.5×)
-        sl_atr_mult = get_symbol_config(
-            symbol, "sl_atr_multiplier", bot_config.indicators.atr_sl_multiplier
-        )
+        # v7.1: SL multiplier dynamic ตาม ATR z-score
+        sl_atr_mult = self._compute_dynamic_sl_multiplier(symbol, ltf_df)
         sl_distance = atr_value * sl_atr_mult
 
         # v6.14: เพิ่ม ATR-relative floor (0.5×ATR) ป้องกัน OB clamp ลด SL ใกล้เกินไป
@@ -1212,6 +1307,115 @@ class SMCStrategy:
         elif 16 <= hour < 17:
             return 0.90   # Late NY
         return 1.0
+
+    # =========================================================================
+    # 🕐 v7.1 — Time-aware Pre-filters (session warmup, post-weekend)
+    # =========================================================================
+
+    def _is_session_warmup(self) -> Tuple[bool, str]:
+        """
+        v7.1 — first 60 min ของ London / NY = noisy, BOS false-breakouts.
+
+        สาเหตุ 2026-05-04: ไม้ 1-3 เปิดในช่วง 10:00-10:43 EET = ชั่วโมงแรก London
+        ตลาดเพิ่งเปิด, liquidity sweeps + spread กว้าง, SMC pattern ยังไม่ confirm
+
+        Returns:
+            (is_warmup, label)
+        """
+        try:
+            now_utc = TimeManager.get_server_time().astimezone(pytz.UTC)
+            hour, minute = now_utc.hour, now_utc.minute
+        except Exception:
+            return (False, "")
+
+        # London open = 08:00 UTC (= 10:00 EET in EEST/CEST normal)
+        if hour == 8:
+            return (True, "London warmup (first 60 min)")
+        # NY open = 13:00 UTC ≈ 15:30 EET (within first hour ของ NY)
+        if hour == 13:
+            return (True, "NY warmup (first 60 min)")
+        return (False, "")
+
+    def _is_post_weekend_window(self) -> bool:
+        """
+        v7.1 — จันทร์ก่อน 12:00 UTC = ตลาดเพิ่งเปิด, weekend gap risk สูง.
+
+        FX trading reopens Sunday 22:00 UTC (Sydney) — แต่ liquidity ยังต่ำ
+        ถึง London open จันทร์ 08:00 UTC. ใช้ window 08:00-12:00 UTC เป็น "post-weekend
+        first 4 hours" ที่ price discovery ยังไม่ stabilize
+        """
+        try:
+            now_utc = TimeManager.get_server_time().astimezone(pytz.UTC)
+            return now_utc.weekday() == 0 and 8 <= now_utc.hour < 12
+        except Exception:
+            return False
+
+    def _check_spread_atr_ratio(
+        self,
+        symbol: str,
+        atr_value: float,
+        price_info: Dict,
+        pip_size: float,
+    ) -> Tuple[bool, str]:
+        """
+        v7.1 — block ถ้า spread > SPREAD_ATR_RATIO_LIMIT × ATR.
+
+        ไม้ 3 GBPJPY (2026-05-04): spread 18 pips / ATR 19.8 pips = 91% ratio = thin liquidity.
+
+        Returns:
+            (passed, reject_reason)
+        """
+        if not price_info:
+            return (True, "")
+        bid = float(price_info.get("bid", 0.0) or 0.0)
+        ask = float(price_info.get("ask", 0.0) or 0.0)
+        if bid <= 0 or ask <= 0 or pip_size <= 0:
+            return (True, "")
+        spread_pips = max(0.0, (ask - bid) / pip_size)
+        atr_pips = atr_value / pip_size if pip_size > 0 else 0.0
+        if atr_pips <= 0:
+            return (True, "")
+        ratio = spread_pips / atr_pips
+        limit = float(getattr(bot_config.ftmo, "SPREAD_ATR_RATIO_LIMIT", 0.20))
+        if ratio > limit:
+            return (
+                False,
+                f"❌ [REJECT] spread/ATR {ratio:.0%} > {limit:.0%} "
+                f"(spread={spread_pips:.1f} pips, ATR={atr_pips:.1f}) — thin liquidity"
+            )
+        return (True, "")
+
+    def _required_confluence(self) -> float:
+        """
+        v7.1 — confluence threshold dynamic ตาม regime.
+
+        - session warmup → +5
+        - post-weekend Monday < 12:00 UTC → +5 (stack ได้ ถ้าทั้งคู่ tag → +10)
+        """
+        base = float(self.MIN_CONFLUENCE_SCORE)
+        warmup, _ = self._is_session_warmup()
+        if warmup:
+            base += 5.0
+        if self._is_post_weekend_window():
+            base += 5.0
+        return base
+
+    def _compute_dynamic_sl_multiplier(self, symbol: str, ltf_df: pd.DataFrame) -> float:
+        """
+        v7.1 — per-symbol SL multiplier scaled by ATR z-score.
+
+        เมื่อ vol expanding → SL กว้างขึ้น (clip 0.8-1.8×) → ลด tight-SL chop ใน high-vol regime.
+        """
+        base_mult = float(get_symbol_config(
+            symbol, "sl_atr_multiplier",
+            getattr(bot_config.indicators, "atr_sl_multiplier", 1.5)
+        ))
+        try:
+            atr_z = TechnicalIndicators.compute_atr_zscore_30bars(ltf_df)
+        except Exception:
+            atr_z = 0.0
+        scale = float(np.clip(1.0 + atr_z * 0.3, 0.8, 1.8))
+        return base_mult * scale
 
     def _is_trading_session(self) -> bool:
         """

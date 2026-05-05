@@ -250,11 +250,19 @@ class ChronosForecaster:
             if atr <= 0 or not np.isfinite(q90) or not np.isfinite(q10):
                 uncertainty = 0.0
             else:
-                # v7.0.2 Change B: Brownian-scale by √prediction_length (= √8 ≈ 2.83)
-                # forecast variance ของ time-series model ขยายตาม √horizon
-                # → expected band = ATR × √8 → ratio = 1 หมายถึง "ตามที่ ATR คาดไว้"
+                # v7.1 Change: log1p-scale (smooth gradient even when band > ATR×√8)
+                # ปัญหา v7.0.2: linear ratio (q90-q10)/(atr×√8) saturate ที่ 3.0 ในทุก signal
+                # ของ live data 2026-05-04 (5/5 trades = 3.0 = no information).
+                # log1p gives gradient ที่ทำงานทั้ง low + high uncertainty regimes:
+                #   ratio=0  → log1p=0  → 0.0
+                #   ratio=1  → log1p=0.69 → 0.35
+                #   ratio=3  → log1p=1.39 → 0.69
+                #   ratio=10 → log1p=2.40 → 1.20
+                #   ratio=50 → log1p=3.93 → clip 3.0
+                # → คนละ feature value ระหว่าง ratio 3 vs 10 vs 50 (เก่า: ทั้งหมด = 3)
                 horizon_factor = 2.8284271247461903   # √8 (DEFAULT_PREDICTION_LENGTH)
-                uncertainty = float(np.clip((q90 - q10) / (atr * horizon_factor), 0.0, 3.0))
+                raw_ratio = (q90 - q10) / (atr * horizon_factor)
+                uncertainty = float(np.clip(np.log1p(max(0.0, raw_ratio)) / 2.0, 0.0, 3.0))
 
             return alignment, uncertainty
         except Exception:

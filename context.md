@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-02 (v7.0.7) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-05 (v7.1.4 staged — Combo C: keep threshold 0.40 + restore v7.0.x missed-winner -0.90, retrain pending) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
@@ -14,7 +14,19 @@
 - **v6.11.2 (2026-04-29 evening)**: Partial rollback — Tier 2.2 (Sweep prereq) + Tier 2.3 (Fresh M15 BOS prereq) hard gates → soft bonuses. Pool หาย 99 % ภายใต้ v6.11 hard gates → 0.0 % Pass Rate. หย่อน 2 จุด → pool 78k signals, Pass Rate 2.7 %, WR 65.6 %.
 - **v6.11.3 (2026-04-29 evening)**: Mild tune — IDM penalty 5→2 + ADX H4 floor 22→20. Pool 90k (+15 %), Pass Rate 2.7→**3.4 %**, WR 65.6→**68.8 %**, DD max 4.46→**3.23 %** (safer). Pure improvement ทุกมิติ. **KEEP + deploy demo**. Backups `*.bak_v6.11.2` พร้อมสำหรับ rollback.
 - **v6.12 (2026-04-29 night)**: Live-vs-train sync fix — `FTMOConfig.ML_FILTER_THRESHOLD = 0.36` + ML gate ใน `FTMOTradingBot.run` ก่อน agent. ปิด silent regression จากการที่ live ไม่บังคับ ML threshold (training บังคับ). Logging fix — `ML Threshold` column ใน `Signals` sheet ตอนนี้แสดง 0.36 จริง (เดิม 0.0 เพราะ getattr ผิด attribute). ไม่ต้อง retrain.
-- **v7.0.7 (2026-05-02) ⭐ current — Revert threshold 30 → 20 (v7.0.5 retrain after backup loss)**:
+- **v7.1 (2026-05-04) — Code staged, awaiting retrain ⚠️ ห้ามรัน live จนกว่าจะ retrain (OBS_DIM 29→32 mismatch)**:
+  - **RCA**: 5 ออเดอร์โดน SL hit 100% ใน 3 ชม. (Daily DD 2.85% / Max DD 3.97%) แม้ HTF ตรง 4/5 + ML cal ≥ 0.44 + RL TAKE ทั้งหมด → 3 brains "ไม่รู้เวลา + ไม่รู้ portfolio risk" — ไม่ใช่ bug จุดเดียว
+  - **Runtime guards (no retrain)**: `RiskManager.check_unrealized_circuit_breaker` (floating ≤ −1.5% × open ≥ 2 → pause), `MAX_USD_THEME_POSITIONS=2` (cross-group cap), `SPREAD_ATR_RATIO_LIMIT=0.20` (thin liquidity), Stats sheet limits จาก config (เลิก hardcode 10%/5%), close payload populate (Bid@Exit/Balance@Close/Equity Peak)
+  - **SMC pre-filters ใหม่ (G/H/I)**: HTF=Neutral + ADX H1 < 25 hard veto, vol_regime ∈ {high, explosive} block, spread/ATR > 20% block, session warmup + post-weekend → required confluence +5/+10
+  - **Volatility regime classifier**: `TechnicalIndicators.classify_volatility_regime` (quiet/normal/high/explosive) + `compute_atr_zscore_30bars`
+  - **Dynamic SL multiplier**: `_compute_dynamic_sl_multiplier` (per-symbol base × clip(1+atr_z×0.3, 0.8, 1.8))
+  - **GBM features 17→24**: เพิ่ม `hour_of_day_sin/cos`, `day_of_week`, `minutes_since_session_start`, `is_post_weekend_first_hour`, `volatility_regime_score`, `atr_zscore_30bars` + `compute_temporal_features` helper + `detect_drift` (KS test live vs train)
+  - **Chronos formula**: linear `(q90-q10)/(atr×√8)` → `log1p(...)/2` (กัน saturation ที่ 3.0 ทุก signal)
+  - **RL obs 29→32**: เพิ่ม `floating_pnl_norm`, `open_losing_count_norm`, `mins_since_session_norm`
+  - **Reward shaping**: Chronos disagreement penalty (-0.40 ถ้า align<0 + ml<0.55, -0.15 อื่น), concurrent loss penalty (-0.25 ถ้า floating<-1%), missed-winner softened P2 -0.90→-0.65
+  - **Pipeline**: ต้อง rebuild pool + retrain GBM + retrain RL ทั้งหมด ~36 ชม. compute. Backups `*.bak_v7.0.7` ก่อนเริ่ม
+  - **Eval gate**: Pass Rate ≥ 9% + DD max ≤ 4.5% + Profitable ≥ 70% → keep. < 7% → restore. ดู [`wiki/05-invariants.md` v7.1 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological)
+- **v7.0.7 (2026-05-02) — Revert threshold 30 → 20 (v7.0.5 retrain after backup loss)**:
   - **Why** — v7.0.6 (threshold 30) eval Pass Rate **7.4%** (regression −3.3 pp จาก v7.0.5 = 10.7%). User skip backup step → v7.0.5 model หาย → ต้อง retrain ใหม่
   - **Lesson learned** — Early stop ที่ value_loss=20.45 = **inflection point detector** (ไม่ใช่ false positive). Phase 2 หลังจุดนี้ทำให้ agent over-tune toward safety: WR ขึ้น (65→68%), Profitable ขึ้น (86→88%), แต่ **passes น้อยลง** (selective เกินไม่ aggressive พอจะถึง 10% ใน 45 วัน)
   - **Fix** — single-line revert: `threshold=20.0` (กลับ v7.0.5 config) — engineered sweet spot @ Phase 2 ~70%
@@ -110,7 +122,11 @@
 | MIN_SL guard (per-symbol, v6.2 / v6.14 XAU raise) | 10-20 pips FX, **1000 ticks XAUUSD** ($10) | `SymbolConfig.symbol_overrides[X].min_sl_pips` |
 | SL base multiplier (per-symbol, v6.14 wired) | FX 1.5×, **XAUUSD 1.8×** | `SymbolConfig.symbol_overrides[X].sl_atr_multiplier` (fallback `bot_config.indicators.atr_sl_multiplier`) |
 | OB SL clamp lower bound (v6.14) | 0.5 × ATR | hard-coded in `SMCStrategy.scan_signal` |
-| Obs dims | **29** (v7) | `SelfLearningAgent.OBS_DIM` |
+| Obs dims | **32** (v7.1) — staged, retrain pending | `SelfLearningAgent.OBS_DIM` |
+| GBM features | **24** (v7.1, 17→24 +temporal/regime) | `SignalQualityModel.FEATURES` |
+| Unrealized DD breaker | −1.5% × open ≥ 2 | `FTMOConfig.UNREALIZED_PAUSE_PCT` |
+| USD theme cap | 2 positions / theme | `FTMOConfig.MAX_USD_THEME_POSITIONS` |
+| Spread/ATR limit | 0.20 (thin liquidity block) | `FTMOConfig.SPREAD_ATR_RATIO_LIMIT` |
 | Chronos model (v7) | `amazon/chronos-bolt-small` | `bot_config.ml.CHRONOS_MODEL_NAME` |
 | Chronos horizon (v7) | 8 M15 bars (~2 h) | `bot_config.ml.CHRONOS_PREDICTION_LENGTH` |
 | RL model | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` | `SelfLearningAgent` |
@@ -180,8 +196,8 @@ python scripts/build_signal_pool.py --pool_size 3000 --workers 8
 python scripts/train_signal_quality.py
 python scripts/train_signal_filter.py --fresh \
     --timesteps_p1 10000000 --timesteps_p2 5000000 \
-    --n_envs 8 --pool_size 3000 --outcome_noise 0.05 \
-    --ml_threshold 0.36 --risk_per_trade 0.007
+    --n_envs 8 --pool_size 4500 --outcome_noise 0.05 \
+    --ml_threshold 0.40 --risk_per_trade 0.007
 ```
 
 Phase E2 trainer uses `AuxAwarePPO` + `AuxAwareACPolicy` automatically (aux loss weight = 0.5).
@@ -190,7 +206,7 @@ Phase E2 trainer uses `AuxAwarePPO` + `AuxAwareACPolicy` automatically (aux loss
 
 ```bash
 python scripts/train_signal_filter.py --eval_only \
-    --pool_size 3000 --ml_threshold 0.36 --risk_per_trade 0.007
+    --pool_size 4500 --ml_threshold 0.40 --risk_per_trade 0.007
 ```
 
 Default 5000 episodes. Use `.venv/bin/python` (not bare `python`) — version mismatch can shift Pass Rate.

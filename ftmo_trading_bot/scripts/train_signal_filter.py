@@ -539,14 +539,22 @@ def main():
         clip_obs=10.0, clip_reward=20.0, gamma=0.99,
     )
 
+    # v7.1.7b (2026-05-05) — MPS rollback: small network [256,128] = MPS overhead > benefit
+    # Tested v7.1.7a: MPS 1535 steps/sec vs CPU baseline 10000 steps/sec = 6× SLOWER
+    # → ใช้ CPU สำหรับ small network (PPO inference per-step ดี on CPU)
+    # MPS เหมาะกับ network ใหญ่ (millions params) ไม่ใช่ small policy network
+    # Other v7.1.7 optimizations เก็บไว้: n_steps 8192, weight_decay 1e-5, slower entropy
+    _device = 'cpu'
+    print(f"   Device: {_device} (CPU — small network, MPS overhead > benefit)")
+
     # v6.9 E2: AuxAwarePPO + AuxAwareACPolicy — auxiliary regression head on signal outcome
     model_p1 = AuxAwarePPO(
         AuxAwareACPolicy,
         vec_env_p1,
         aux_loss_weight=0.5,   # weight for MSE(predict_aux, outcome_pnl_ratio)
         learning_rate=3e-4,
-        n_steps=4096,
-        batch_size=256,
+        n_steps=8192,          # v7.1.7: 4096 → 8192 — larger batch สำหรับ pool diversity
+        batch_size=512,        # v7.1.7: 256 → 512 — match larger n_steps (8192/16 mini-batches)
         n_epochs=5,
         gamma=0.99,
         gae_lambda=0.95,
@@ -556,8 +564,13 @@ def main():
         max_grad_norm=0.5,
         verbose=1,
         tensorboard_log=tb_log_dir,
+        device=_device,        # v7.1.7: enable MPS Apple Silicon
         # Network [256, 128] — ใหญ่พอ approximate value function ระยะยาว (γ=0.99)
-        policy_kwargs=dict(net_arch=dict(pi=[256, 128], vf=[256, 128])),
+        # v7.1.7: เพิ่ม weight_decay 1e-5 → regularize policy network สำหรับ pool 10k diversity
+        policy_kwargs=dict(
+            net_arch=dict(pi=[256, 128], vf=[256, 128]),
+            optimizer_kwargs=dict(weight_decay=1e-5),
+        ),
     )
 
     ckpt_cb_p1 = CheckpointCallback(
@@ -570,7 +583,7 @@ def main():
     model_p1.learn(
         total_timesteps=args.timesteps_p1,
         callback=[
-            EntropyScheduleCallback(initial=0.05, final=0.005),
+            EntropyScheduleCallback(initial=0.05, final=0.015),  # v7.1.7: 0.005 → 0.015 (slower decay = กัน entropy collapse)
             EarlyStopOnValueLoss(threshold=10.0, patience=5),
             EpisodeStatsCallback(print_every=20),
             FTMOTradingCallback(),
@@ -639,7 +652,7 @@ def main():
     model_p2.learn(
         total_timesteps=args.timesteps_p2,
         callback=[
-            EntropyScheduleCallback(initial=0.02, final=0.005),
+            EntropyScheduleCallback(initial=0.02, final=0.010),  # v7.1.7: 0.005 → 0.010 (slower decay)
             # v6.8: threshold 10 → 20 — value_loss spike ชั่วคราวยอม, ปกป้องเฉพาะ true divergence
             # v7.0.4: warmup_steps=50_000 — ปล่อยให้ value head re-fit reward distribution Phase 2
             # ก่อน enable check (กัน trigger เร็วเกินตอน phase boundary, observed v7.0.3 spike 31)

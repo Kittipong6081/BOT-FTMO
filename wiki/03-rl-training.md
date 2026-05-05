@@ -1,5 +1,17 @@
-# 03 — RL Training (Obs 29 dims, Reward, PPO + Auxiliary Task)
-> Last Updated: 2026-05-02 (v7.0.7) | Scope: RL env, obs space v7 (+ Chronos forecast), reward shaping, PPO hyperparams, curriculum, aux task (E2). v7.0.7: Pass Rate 11.1% (+1.4 pp vs v6.13 baseline), Chronos accuracy benchmark added (Dir 50.5%, Coverage 79.8%, MAPE 0.12%).
+# 03 — RL Training (Obs 32 dims v7.1 staged, Reward, PPO + Auxiliary Task)
+> Last Updated: 2026-05-04 (v7.1.2 staged — reward re-balance, RL retrain pending) | Scope: RL env, obs space v7.1 (+ portfolio realtime + session timing), reward shaping, PPO hyperparams, curriculum, aux task (E2).
+>
+> **v7.1.2 reward re-balance (after v7.1.1 eval Pass 1.4%)**:
+> - missed-winner P2: −0.65 → **−0.85** (push TAKE back, ใกล้ v7.0.x แต่ไม่ถึง −0.90 wipeout level)
+> - missed-winner P2 + ml ≥ 0.40: −0.40 → **−0.50**
+> - Chronos disagreement (ml<0.55): −0.40 → **−0.30**
+> - Chronos disagreement (ml≥0.55): −0.15 → **−0.10**
+> - Concurrent loss penalty: −0.25 → **−0.20**
+>
+> **v7.1 changes (kept in v7.1.2)**:
+> - **Obs 29 → 32**: `[29] floating_pnl_norm`, `[30] open_losing_count_norm`, `[31] mins_since_session_norm` (training simulator + live ผ่าน `RiskManager.get_unrealized_drawdown_pct`)
+> - **GBM features 17 → 24**: เพิ่ม `hour_of_day_sin/cos`, `day_of_week`, `minutes_since_session_start`, `is_post_weekend_first_hour`, `volatility_regime_score`, `atr_zscore_30bars` (`compute_temporal_features` helper)
+> - **Chronos formula**: `clip((q90-q10)/(atr×√8), 0, 3)` → `clip(log1p(...)/2, 0, 3)` (กัน saturation ที่ 3.0)
 
 ## TL;DR (30-second scan)
 
@@ -24,7 +36,7 @@
 | RL policy | `AuxAwareACPolicy` (actor + value + `aux_head`) | `ml/aux_aware_policy.py` |
 | Aux target | `info['aux_target']` = `outcome_pnl_ratio` | `FTMOSignalFilterEnv.step()` |
 | Pool | `data/signal_pool_3000.pkl` | loaded by `FTMOSignalFilterEnv` |
-| ML threshold | 0.36 (calibrated) | CLI `--ml_threshold 0.36` |
+| ML threshold | **0.40 (v7.1.3)** ↑ จาก 0.36 (calibrated) | CLI `--ml_threshold 0.40` |
 
 ---
 

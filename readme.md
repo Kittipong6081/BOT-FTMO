@@ -173,7 +173,7 @@ BOT-FTMO/
     │
     ├── data/
     │   ├── ohlcv/                     # 27 CSV files (9 symbols × 3 TF)
-    │   ├── signal_pool_3000.pkl       # Pre-generated signal pool
+    │   ├── signal_pool_10000.pkl.gz   # Pre-generated signal pool (compressed ~34MB ใน git, ungz เป็น .pkl 110MB ก่อนใช้)
     │   └── signal_quality_model.pkl   # GBM (with calibrator inside)
     │
     ├── logs/
@@ -334,13 +334,18 @@ pip freeze > vps_versions.txt
 | `ftmo_trading_bot/models/ppo_signal_filter.zip` | RL agent weights |
 | `ftmo_trading_bot/models/vec_normalize_sf.pkl` | Obs normalization stats — **ขาดไม่ได้** ไม่งั้น obs scale ผิด → agent พัง |
 | `ftmo_trading_bot/data/signal_quality_model.pkl` | GBM + calibrator |
+| `ftmo_trading_bot/data/signal_pool_10000.pkl.gz` | Signal pool (compressed) — **ใช้สำหรับ retrain ใน VPS** ถ้าต้องการ. Live trading ไม่ต้องใช้ pool โดยตรงแต่เก็บไว้สำหรับ retrain |
 | `ftmo_trading_bot/config/settings.py` | Risk/symbols config |
 
-ถ้าใน `.gitignore` มี `*.zip` หรือ `*.pkl` → ต้องลบออก หรือใช้ `git lfs` แทน
+ถ้าใน `.gitignore` มี `*.zip` หรือ `*.pkl` → ต้องลบออก หรือใช้ `git lfs` แทน. **Pool .pkl ใหญ่เกิน GitHub limit (110MB) — เก็บเป็น .pkl.gz (~34MB) แทน.**
 
 ### รัน live bot บน VPS
 
 ```cmd
+REM 1) คลายไฟล์ pool ครั้งเดียวหลัง git pull (ถ้าจะ retrain)
+gzip -d -k ftmo_trading_bot\data\signal_pool_10000.pkl.gz
+
+REM 2) รัน bot
 .venv\Scripts\python ftmo_trading_bot\main.py
 ```
 
@@ -370,7 +375,7 @@ pip freeze > vps_versions.txt
 
 - ชื่อไฟล์: `EURUSD_M15.csv`, `EURUSD_H1.csv`, ..., `XAUUSD_D1.csv`
 - คอลัมน์: `time, open, high, low, close, tick_volume, real_volume, spread`
-- แนะนำ ≥ 6 ปีย้อนหลัง สำหรับ pool ขนาด 3000 episodes
+- แนะนำ ≥ 6 ปีย้อนหลัง สำหรับ pool ขนาด 10000 episodes
 
 ---
 
@@ -383,18 +388,24 @@ pip freeze > vps_versions.txt
 **macOS / Linux:**
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py \
-    --pool_size 3000 --workers 8 --max_days 45
+    --pool_size 10000 --workers 8 --max_days 45
 ```
 
 **Windows:**
 ```cmd
 .venv\Scripts\python ftmo_trading_bot\scripts\build_signal_pool.py ^
-    --pool_size 3000 --workers 8 --max_days 45
+    --pool_size 10000 --workers 8 --max_days 45
 ```
 
-**ทำอะไร:** simulate SMC strategy run บน historical data → save 3000 episodes (แต่ละ ep = 45 วัน, มี 0–N signals พร้อม outcome) ลง `data/signal_pool_3000.pkl`
+**ทำอะไร:** simulate SMC strategy run บน historical data → save 10000 episodes (แต่ละ ep = 45 วัน, มี 0–N signals พร้อม outcome) ลง `data/signal_pool_10000.pkl`
 
-**เวลา:** ~30–45 นาทีบน CPU 8 cores
+**เวลา:** ~60–70 นาทีบน CPU 8 cores
+
+**บีบอัดเพื่อ commit ขึ้น git:**
+```bash
+gzip -k -6 ftmo_trading_bot/data/signal_pool_10000.pkl
+# ได้ signal_pool_10000.pkl.gz (~34MB) — ส่ง git ได้
+```
 
 ### Step 2 — Train ML Quality Model (GBM + Calibrator)
 
@@ -409,7 +420,7 @@ pip freeze > vps_versions.txt
 ```
 
 **ทำอะไร:**
-1. Load `signal_pool_3000.pkl`
+1. Load `signal_pool_10000.pkl`
 2. Train GBM ด้วย `GroupKFold cross_val_predict` (group = episode_id) → OOF predictions
 3. Fit `IsotonicRegression` calibrator บน OOF
 4. Save `data/signal_quality_model.pkl` (มี GBM + calibrator)
@@ -422,9 +433,9 @@ pip freeze > vps_versions.txt
 **macOS / Linux:**
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
-    --pool_size 3000 \
+    --pool_size 10000 \
     --ml_threshold 0.36 \
-    --risk_per_trade 0.007 \
+    --risk_per_trade 0.0099 \
     --n_envs 8 \
     --outcome_noise 0.05 \
     --timesteps_p1 10000000 \
@@ -434,9 +445,9 @@ pip freeze > vps_versions.txt
 **Windows:**
 ```cmd
 .venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py --fresh ^
-    --pool_size 3000 ^
+    --pool_size 10000 ^
     --ml_threshold 0.36 ^
-    --risk_per_trade 0.007 ^
+    --risk_per_trade 0.0099 ^
     --n_envs 8 ^
     --outcome_noise 0.05 ^
     --timesteps_p1 10000000 ^
@@ -465,18 +476,18 @@ pip freeze > vps_versions.txt
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py \
     --eval_only \
-    --pool_size 3000 \
+    --pool_size 10000 \
     --ml_threshold 0.36 \
-    --risk_per_trade 0.007
+    --risk_per_trade 0.0099
 ```
 
 **Windows:**
 ```cmd
 .venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py ^
     --eval_only ^
-    --pool_size 3000 ^
+    --pool_size 10000 ^
     --ml_threshold 0.36 ^
-    --risk_per_trade 0.007
+    --risk_per_trade 0.0099
 ```
 
 รัน 5000 episodes (default) แล้ว report:

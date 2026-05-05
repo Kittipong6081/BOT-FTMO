@@ -34,12 +34,18 @@ from sklearn.metrics import roc_auc_score, brier_score_loss
 
 
 # Features ต้อง match กับ SignalQualityModel.FEATURES
+# v7.1 — เพิ่ม 7 temporal/regime features (17 → 24)
 FEATURE_KEYS = [
     'confluence_score', 'rr_ratio', 'atr_pips', 'ob_score',
     'market_bias', 'bias_alignment', 'sl_distance_atr',
     'rsi_value', 'trend_strength', 'macd_histogram', 'ob_size_atr',
     'adx', 'stoch_k', 'bb_pctb', 'atr_change_ratio', 'price_roc',
     'direction',
+    # v7.1 temporal/regime
+    'hour_of_day_sin', 'hour_of_day_cos',
+    'day_of_week', 'minutes_since_session_start',
+    'is_post_weekend_first_hour',
+    'volatility_regime_score', 'atr_zscore_30bars',
 ]
 
 
@@ -207,16 +213,27 @@ def main():
         X, y, outs, groups, random_state=args.seed,
     )
 
-    # Save model + calibrator (Phase E1)
+    # v7.1 — Snapshot training distribution per feature (sample 5000 rows) สำหรับ live drift monitor
+    # KS test ใน SignalQualityModel.detect_drift จะเทียบ live signals กับ snapshot นี้
+    rng_drift = np.random.default_rng(args.seed)
+    sample_n = min(5000, X.shape[0])
+    sample_idx = rng_drift.choice(X.shape[0], size=sample_n, replace=False)
+    train_dist = {
+        feat: X[sample_idx, i].astype(np.float32)
+        for i, feat in enumerate(FEATURE_KEYS)
+    }
+
+    # Save model + calibrator (Phase E1) + drift baseline (v7.1)
     os.makedirs(os.path.dirname(args.save), exist_ok=True)
     with open(args.save, 'wb') as f:
         pickle.dump({
             'model': model,
             'calibrator': calibrator,
             'keys': FEATURE_KEYS,
+            'train_dist': train_dist,  # v7.1 drift baseline
         }, f, protocol=4)
     size_mb = os.path.getsize(args.save) / (1024 * 1024)
-    print(f"\n✓ Saved model + calibrator: {args.save} ({size_mb:.1f} MB)")
+    print(f"\n✓ Saved model + calibrator + drift baseline: {args.save} ({size_mb:.1f} MB)")
 
     # Re-score pool with CALIBRATED OOF predictions (anti-leakage + calibrated)
     if not args.no_rescore:
