@@ -114,8 +114,8 @@
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
 | Daily DD stop | 4 % | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | Total DD stop | 8 % | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
-| Default risk per trade | **0.7 %** (verified optimal) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
-| Risk floor / cap | 0.5 % / 0.8 % | `FTMOConfig.MIN/MAX_RISK_PER_TRADE_PCT` |
+| Default risk per trade | **0.99 %** (v7.1.9 — FTMO 1% rule, sync กับ RL training) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
+| Risk floor / cap | 0.5 % / 0.99 % | `FTMOConfig.MIN/MAX_RISK_PER_TRADE_PCT` |
 | Min confluence | 70 | `FTMOConfig.MIN_CONFLUENCE_SCORE` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | ATR floor (signal gate, per-symbol) | 3-8 pips FX, 500 ticks XAUUSD | `SymbolConfig.symbol_overrides[X].atr_floor_pips` |

@@ -135,7 +135,7 @@ Inside `TradeExecutor._check_correlation`:
 
 ## ⚠️ Soft Invariants (best practice)
 
-- **Risk per trade**: train with `--risk_per_trade 0.007` → live `DEFAULT_RISK_PER_TRADE_PCT = 0.007` (must match).
+- **Risk per trade**: train with `--risk_per_trade 0.0099` → live `DEFAULT_RISK_PER_TRADE_PCT = 0.0099` (must match). v7.1.9 (2026-05-05): bumped 0.007 → 0.0099 (FTMO 1% rule max).
 - **Eval sample size**: 100 eps has ±5 pp variance — use ≥ 500 eps for true performance.
 - **Pool + ML + RL dependency**: changing obs → rebuild pool → retrain ML → retrain RL (order matters).
 - **VecNormalize stats**: `models/vec_normalize_sf.pkl` must match `models/ppo_signal_filter.zip` (otherwise obs is in the wrong scale).

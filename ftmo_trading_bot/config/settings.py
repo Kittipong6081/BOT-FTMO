@@ -68,12 +68,13 @@ class FTMOConfig:
     MAX_DRAWDOWN_HARD_STOP_PCT: float = 0.08  # 8%
     
     # === ความเสี่ยงต่อการเทรดแต่ละครั้ง ===
-    # ⚠️ ตอนนี้ใช้ 0.7% ตาม verified eval (5000 eps): Pass 12.5%, Profit +2.59%, Breach 0%
-    # (Agent trained at 0.6% — +16% shift แต่ verified ว่าไม่กระทบ performance)
-    # หาก retrain ในอนาคต ต้อง sync ตรงนี้
+    # v7.1.9 (2026-05-05): bump 0.7% → 0.99% — sync กับ RL training (--risk_per_trade 0.0099)
+    # FTMO 1% rule: strictly < 1% per trade. 0.99% = max allowed under rule.
+    # Eval: Pass 6.1%, Profit +2.58%, DD max 5.30%/8% (66% buffer), Daily DD 3.04%/4% (76% buffer).
+    # Daily worst-case = 4 losing trades × 0.99% = 3.96% (under FTMO 4% Daily limit).
     MIN_RISK_PER_TRADE_PCT: float = 0.005   # 0.5% ขั้นต่ำ (floor ปลอดภัย)
-    MAX_RISK_PER_TRADE_PCT: float = 0.008   # 0.8% สูงสุด (cap ป้องกัน DD)
-    DEFAULT_RISK_PER_TRADE_PCT: float = 0.007  # 0.7% ค่าเริ่มต้น (verified optimal)
+    MAX_RISK_PER_TRADE_PCT: float = 0.0099  # 0.99% สูงสุด (FTMO < 1% rule)
+    DEFAULT_RISK_PER_TRADE_PCT: float = 0.0099  # 0.99% — sync กับ RL training v7.1.9
     
     # === อัตราส่วน Risk:Reward ขั้นต่ำ ===
     MIN_RISK_REWARD_RATIO: float = 1.5      # ต้องได้อย่างน้อย 1:1.5

@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-04 (v7.1 staged) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-05 (v7.1.9 — risk 0.99%) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 >
 > **v7.1 changes** — `RiskManager.check_unrealized_circuit_breaker` (เรียกใน `can_open_trade` หลัง global pause) + cross-group `MAX_USD_THEME_POSITIONS` ใน `TradeExecutor._check_correlation_risk` + GBM drift monitor (`_check_gbm_drift`) ทุก 720 loops
 
@@ -8,7 +8,7 @@
 - Entry: `python main.py` — builds `FTMOTradingBot` and loops every 5 s.
 - FTMO program = **2-step Standard** → `CONSISTENCY_RULE_THRESHOLD = 1.0` (check disabled because the program has no Consistency Rule).
 - Risk hard stops: **4 % daily DD**, **8 % total DD** (buffer vs FTMO 5 %/10 %), target **10 % profit**.
-- Default risk per trade = **0.7 %** (verified at 5000 eps).
+- Default risk per trade = **0.99 %** (v7.1.9 — FTMO 1% rule, sync กับ RL training).
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
 - News block: weekly auto-import every Sunday 23:30 EET from `config/news_inbox/`.
 - **Console quiet mode (v6.9)**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
@@ -23,7 +23,7 @@
 | Daily DD stop | 4 % | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | Total DD stop | 8 % | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
-| Default risk / trade | 0.7 % | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
+| Default risk / trade | 0.99 % | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | Min confluence | 70 | `FTMOConfig.MIN_CONFLUENCE_SCORE` |
 | Cooldown after loss | 60 min | `FTMOConfig.COOLDOWN_AFTER_LOSS_MIN` |
