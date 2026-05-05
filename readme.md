@@ -341,13 +341,16 @@ pip freeze > vps_versions.txt
 
 ### รัน live bot บน VPS
 
-```cmd
-REM 1) คลายไฟล์ pool ครั้งเดียวหลัง git pull (ถ้าจะ retrain)
-gzip -d -k ftmo_trading_bot\data\signal_pool_10000.pkl.gz
+```powershell
+# 1) คลายไฟล์ pool ครั้งเดียวหลัง git pull (ถ้าจะ retrain)
+#    Windows ไม่มี gunzip — ใช้ Python (จาก .venv) แทน
+.venv\Scripts\python -c "import gzip, shutil; shutil.copyfileobj(gzip.open('ftmo_trading_bot/data/signal_pool_10000.pkl.gz','rb'), open('ftmo_trading_bot/data/signal_pool_10000.pkl','wb'))"
 
-REM 2) รัน bot
+# 2) รัน bot
 .venv\Scripts\python ftmo_trading_bot\main.py
 ```
+
+(macOS/Linux: ใช้ `gunzip -k ftmo_trading_bot/data/signal_pool_10000.pkl.gz` ตามปกติ)
 
 จะรัน loop ทุก 5 วินาที + scan signals ทุก 1 นาที + log ทุก trade ลง Excel
 
