@@ -109,6 +109,53 @@ class TradeSignal:
     def is_valid(self) -> bool:
         """สัญญาณถูกต้องหรือไม่ (ต้องไม่ใช่ NO_SIGNAL)"""
         return self.signal_type != SignalType.NO_SIGNAL
+
+    # ── v7.2.2 (2026-05-06) — Derived properties for ML/RL feature parity ──
+    # Pool gen (StrategyBacktester) เก็บ derived fields ใน signal dict ตอน save.
+    # Live ก่อนหน้านี้ใช้ getattr(sig, key, 0.0) → 5 features หาย → return 0
+    # → KS drift = 1.00. แก้ที่ root: expose properties ใน TradeSignal
+    # → ทุก call site (live ML score, RL obs, drift detector) ได้ค่าตรงกับ pool dict
+    @property
+    def pip_size(self) -> float:
+        """Pip size อิงจาก symbol (JPY pairs / metals = 0.01, อื่น = 0.0001)."""
+        sym = self.symbol.upper()
+        if sym.endswith("JPY") or "XAU" in sym or "XAG" in sym:
+            return 0.01
+        return 0.0001
+
+    @property
+    def atr_pips(self) -> float:
+        """ATR ในหน่วย pips (ตรงกับ pool dict 'atr_pips')."""
+        ps = self.pip_size
+        return self.atr_value / ps if ps > 0 else 0.0
+
+    @property
+    def sl_distance_atr(self) -> float:
+        """SL distance ในหน่วย ATR (ตรงกับ pool dict 'sl_distance_atr')."""
+        return self.sl_distance / self.atr_value if self.atr_value > 0 else 0.0
+
+    @property
+    def direction(self) -> float:
+        """+1 = BUY, -1 = SELL, 0 = NO_SIGNAL (ตรงกับ pool dict 'direction')."""
+        if self.signal_type == SignalType.BUY:
+            return 1.0
+        if self.signal_type == SignalType.SELL:
+            return -1.0
+        return 0.0
+
+    @property
+    def bias_alignment(self) -> float:
+        """direction × market_bias = สอดคล้องเทรนด์หรือไม่ (-1, 0, +1)."""
+        return self.direction * float(self.market_bias)
+
+    @property
+    def ob_size_atr(self) -> float:
+        """ขนาด OB ในหน่วย ATR (ตรงกับ pool dict 'ob_size_atr')."""
+        if self.ob_high is None or self.ob_low is None:
+            return 0.0
+        if self.atr_value <= 0:
+            return 0.0
+        return abs(self.ob_high - self.ob_low) / self.atr_value
     
     def to_dict(self) -> Dict:
         """แปลงเป็น Dictionary สำหรับ Logging"""

@@ -173,6 +173,82 @@ Inside `TradeExecutor._check_correlation`:
 
 ## 📚 Version Log (reverse chronological)
 
+### 2026-05-06 — v7.2.2 TradeSignal derived properties (live ML feature parity fix)
+
+**Root cause** — Live VPS เห็น `⚠️ [GBM Drift] 23 features ห่างจาก training (KS > 0.15). Top: atr_pips=1.00, sl_distance_atr=1.00, bias_alignment=0.88, ...`
+
+ตรวจพบ: `TradeSignal` dataclass ([smc_strategy.py](ftmo_trading_bot/strategy/smc_strategy.py)) ขาด 5 attributes ที่ ML/RL ต้องการ — มีแค่ raw values:
+
+| ML ต้องการ | TradeSignal เก่า |
+|-----------|-----------------|
+| `atr_pips` | มีแค่ `atr_value` (ราคา) |
+| `sl_distance_atr` | มีแค่ `sl_distance` (ราคา) |
+| `bias_alignment` | มีแค่ `market_bias` |
+| `ob_size_atr` | มีแค่ `ob_high`, `ob_low` |
+| `direction` | มีแค่ `signal_type` (enum) |
+
+[main.py:783-786](ftmo_trading_bot/main.py#L783) ใช้ `_extract(sig, k)` → `getattr(sig, k, 0.0)` → 5 features ที่หาย return `0.0` ทุก signal → KS = 1.00 (perfect mismatch กับ pool dict ที่ populate ครบ)
+
+**Pool gen vs Live mismatch** (มีมาตั้งแต่ v7.1):
+- `StrategyBacktester.generate_episode_signals` เก็บ `signal dict` ที่ populate `'atr_pips'`, `'sl_distance_atr'`, `'direction'`, `'bias_alignment'`, `'ob_size_atr'` ครบ
+- Live ใช้ `TradeSignal` object → 5 features หาย
+
+**Impact**:
+- Live ML score คำนวณบน obs ที่ 5/24 features = 0 ตลอด → score เพี้ยน
+- เป็นเหตุผล (ส่วนหนึ่ง) ที่ Live Pass Rate ตก vs Pool eval (5.9% v7.2.1 = pool eval ที่ feature ครบ)
+
+**Fix v7.2.2** — เพิ่ม `@property` ใน `TradeSignal` ที่คำนวณ derived values อัตโนมัติจาก raw fields ที่มีอยู่แล้ว:
+
+```python
+@property
+def pip_size(self) -> float:
+    sym = self.symbol.upper()
+    if sym.endswith("JPY") or "XAU" in sym or "XAG" in sym:
+        return 0.01
+    return 0.0001
+
+@property
+def atr_pips(self) -> float:
+    return self.atr_value / self.pip_size if self.pip_size > 0 else 0.0
+
+@property
+def sl_distance_atr(self) -> float:
+    return self.sl_distance / self.atr_value if self.atr_value > 0 else 0.0
+
+@property
+def direction(self) -> float:
+    if self.signal_type == SignalType.BUY: return 1.0
+    if self.signal_type == SignalType.SELL: return -1.0
+    return 0.0
+
+@property
+def bias_alignment(self) -> float:
+    return self.direction * float(self.market_bias)
+
+@property
+def ob_size_atr(self) -> float:
+    if self.ob_high is None or self.ob_low is None: return 0.0
+    if self.atr_value <= 0: return 0.0
+    return abs(self.ob_high - self.ob_low) / self.atr_value
+```
+
+**Why @property approach**:
+- Single source of truth — ไม่ต้อง populate ใน 10+ จุด ที่ create TradeSignal
+- `getattr(sig, 'atr_pips')` ทำงานทันทีอัตโนมัติ — ไม่ต้องแก้ caller code
+- Match กับ pool dict keys/values เป๊ะ — drift detector กลับมาทำงาน
+
+**Verification** — unit test (BUY EURUSD / SELL USDJPY / BUY XAUUSD):
+- atr_pips: 12.00 / 30.00 / 800.00 ✅
+- sl_distance_atr: 1.6667 / 1.6667 / 1.25 ✅
+- direction: +1 / -1 / +1 ✅
+- bias_alignment: +1 (SELL × bearish = +1 = aligned) ✅
+- pip_size: 0.0001 / 0.01 (JPY) / 0.01 (XAU) ✅
+
+**ไม่ต้อง retrain** — fix อยู่ใน live path เท่านั้น. Pool ไม่กระทบ. หลัง fix → live ML score กลับมา meaningful → drift warning ควรหายภายใน ~100 signals แรก
+
+**Files**:
+- [`ftmo_trading_bot/strategy/smc_strategy.py`](ftmo_trading_bot/strategy/smc_strategy.py) — `TradeSignal` dataclass + 6 new `@property` methods
+
 ### 2026-05-06 — v7.2.1 obs[29/30] leak fix (audit-driven, post-v7.2 eval Pass 6.3%)
 
 **Audit trigger** — v7.2 (Chronos un-flip) retrain เสร็จเร็วผิดปกติ (~20 นาที vs ~12 ชม. ที่คาด) → eval Pass Rate **6.3%** (vs baseline v6.13 = 9.7%, gate fail). User ขอ data leakage audit ทั่วระบบ
