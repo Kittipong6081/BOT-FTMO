@@ -634,6 +634,15 @@ Optional flags:
 2. วางไฟล์ใน `config/news_inbox/`
 3. รอ Sunday 23:30 EET — bot import auto, หรือรัน manual
 
+### News Filter พฤติกรรม (v7.1.10)
+
+บอทกัน 2 ระดับ:
+
+1. **Block สัญญาณใหม่** — ก่อนข่าว 30 นาที + หลังข่าว 15 นาที (ปรับใน `config.no_trade_before_news_minutes` / `no_trade_after_news_minutes`) → SMC strategy ไม่ scan signal ของ symbol ที่กระทบ
+2. **ปิด position ที่เปิดอยู่** (v7.1.10) — ก่อนข่าว 30 นาที (sync กับข้อ 1) → `TradeManager.check_news_close()` ปิดทุก position ของ symbol ที่กระทบ ด้วย reason `"Pre-news close"`
+
+**Currency mapping** — USD news (NFP/CPI/FOMC) กระทบ: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, **XAUUSD** (ทอง spike แรงตาม USD strength โดยตรง)
+
 ---
 
 ## 🔄 เริ่ม FTMO Challenge ใหม่

@@ -101,8 +101,9 @@ HIGH_IMPACT_EVENTS: List[RecurringNewsEvent] = [
 
 
 # Currency → symbols ที่ถูกกระทบ
+# XAUUSD รวมใน USD: ทอง spike แรงตอน NFP/CPI/FOMC ตาม USD strength โดยตรง
 _CURRENCY_TO_SYMBOLS = {
-    "USD": {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"},
+    "USD": {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "XAUUSD"},
     "EUR": {"EURUSD", "EURJPY"},
     "GBP": {"GBPUSD", "GBPJPY"},
     "JPY": {"USDJPY", "EURJPY", "GBPJPY"},

@@ -1,5 +1,7 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-05 (v7.1.9 — risk 0.99%) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-06 (v7.1.10 — pre-news close fix) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+>
+> **v7.1.10 (2026-05-06)** — `TradeManager.check_news_close()` ปิด position ก่อนชนข่าว sync กับ scan-signal block (window 30 นาที ก่อน event) + `XAUUSD` รวมใน USD news map
 >
 > **v7.1 changes** — `RiskManager.check_unrealized_circuit_breaker` (เรียกใน `can_open_trade` หลัง global pause) + cross-group `MAX_USD_THEME_POSITIONS` ใน `TradeExecutor._check_correlation_risk` + GBM drift monitor (`_check_gbm_drift`) ทุก 720 loops
 
@@ -49,7 +51,7 @@
 | 7 | RL decision | `SelfLearningAgent.should_take_signal` | SKIP → drop signal (logged to `Signals` sheet as AGENT_SKIP) |
 | 8 | Build live context | `FTMOTradingBot._build_live_context(sig)` | computes ml_score, ADX, biases, balance, overtrading metrics, **`obs_27_json`** |
 | 9 | Execute | `TradeExecutor.execute_signal(sig, live_context)` | final risk / correlation / cooldown check; logs to Trades sheet |
-| 10 | Manage open | `TradeManager.update_positions` | trailing / BE / partial / Friday Force Close (EET) / Daily Overnight Close (EET) / Friday warning (UTC) |
+| 10 | Manage open | `TradeManager.manage_all_positions` → `check_news_close` → `check_session_close` | trailing/BE/partial → **pre-news close (v7.1.10, T-30 min ก่อนข่าวแรง)** → Friday Force Close / Daily Overnight Close / Friday warning |
 
 ---
 
@@ -198,6 +200,7 @@ In `RiskManager` + `TradeExecutor`:
 - Each event: `datetime_utc`, `currency`, `name`, `impact`.
 - Auto-imported every Sunday 23:30 EET via `NewsCalendarScheduler.check_and_run`.
 - Blocks signals inside the window `[event − 30 min, event + 15 min]` (`no_trade_before_news_minutes`, `no_trade_after_news_minutes`).
+- **v7.1.10 — Pre-news position close**: `TradeManager.check_news_close()` ปิด position ที่เปิดอยู่ก่อนข่าว 30 นาที (window_before sync กับ scan-signal block, window_after = 0). USD news → ปิด EURUSD/GBPUSD/USDJPY/AUDUSD/USDCAD/USDCHF/NZDUSD + **XAUUSD** (ทอง spike แรงตาม USD strength). Close reason = `"Pre-news close"`
 
 ### Priority 2: Hardcoded fallback
 

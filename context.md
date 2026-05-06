@@ -1,8 +1,9 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-05 (v7.1.4 staged — Combo C: keep threshold 0.40 + restore v7.0.x missed-winner -0.90, retrain pending) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-06 (v7.1.10 — pre-news close fix) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
+- **v7.1.10 (2026-05-06) — Pre-news close fix**: ก่อนหน้านี้ news filter block สัญญาณใหม่อย่างเดียว แต่ position ที่เปิดอยู่ถูกถือผ่านข่าว = ผิดกฎ FTMO. เพิ่ม `TradeManager.check_news_close()` ปิด position ที่ symbol จะชนข่าวแรงใน 30 นาที (sync กับ `no_trade_before_news_minutes`). เรียกใน main loop ก่อน `check_session_close`. Priority: Friday/Daily Overnight > Pre-News > Trailing/BE/Partial. เพิ่ม `XAUUSD` เข้า `_CURRENCY_TO_SYMBOLS["USD"]` (ทอง spike แรงตอน NFP/CPI/FOMC). ไม่ต้อง retrain — fix อยู่ใน execution path เท่านั้น
 - **Goal**: pass the FTMO 2-step Standard Challenge (10 % profit, 4 % daily DD, 8 % total DD).
 - **3 brains + 1 forecaster**: `SMCStrategy` (rules) → `SignalQualityModel` (GBM + Isotonic calibrator) → **`ChronosForecaster`** (Amazon Chronos 2 zero-shot, v7) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
 - **Live entry**: `python main.py` → `FTMOTradingBot.run` loops every 5 s. Console runs in **quiet mode** (announce-once for idle states; per-signal SKIP/NO_AGENT logged to Excel `Signals` sheet, not console).

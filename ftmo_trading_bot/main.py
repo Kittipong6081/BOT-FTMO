@@ -1196,7 +1196,12 @@ class FTMOTradingBot:
                 # === ขั้นตอนที่ 4: จัดการ Position ที่เปิดอยู่ (Trailing, BE, Partial TP) ===
                 try:
                     self._trade_manager.manage_all_positions()
-                    
+
+                    # v7.1.10: Pre-news close — ปิด position ก่อนข่าวแรง sync กับ block สัญญาณใหม่
+                    news_closed = self._trade_manager.check_news_close()
+                    if news_closed > 0:
+                        print(f"📰 [Bot] ปิด {news_closed} Position ก่อนชนข่าว")
+
                     # ตรวจ Session Close
                     closed = self._trade_manager.check_session_close()
                     if closed > 0:

@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-04 | Scope: red flags, version log, migration notes (latest: **v7.1 staged** — code changes for 3-brain RCA from 2026-05-04 5-trade wipeout; OBS_DIM 29→32 + GBM 17→24 + Chronos formula log1p; awaiting full retrain)
+> Last Updated: 2026-05-06 | Scope: red flags, version log, migration notes (latest: **v7.1.10** — pre-news close fix + XAUUSD เข้า USD news map)
 
 ## TL;DR (30-second scan)
 
@@ -172,6 +172,23 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-06 — v7.1.10 Pre-news close + XAUUSD USD news mapping
+
+**Bug** — News filter ทำงานครึ่งเดียว: `is_near_high_impact_news()` ถูกเรียกที่เดียวคือ `SMCStrategy.scan_signal` (block สัญญาณใหม่). `TradeManager` ไม่เคยเช็ค news → position ที่เปิดก่อนข่าวถูกถือผ่าน event = ผิดกฎ FTMO ห้ามเทรดชนข่าว
+
+**Fix**:
+- เพิ่ม `TradeManager.check_news_close()` — loop `_executor.active_trades`, สำหรับแต่ละ position เช็ค `is_near_high_impact_news(symbol, now_utc, window_before=30, window_after=0)` → ถ้า True เรียก `_executor.close_trade(ticket, reason="Pre-news close")`
+- เรียกใน `FTMOTradingBot.run` หลัง `manage_all_positions()` ก่อน `check_session_close()` (priority: Friday/Daily Overnight > Pre-News > Trailing/BE)
+- เพิ่ม `"XAUUSD"` เข้า `_CURRENCY_TO_SYMBOLS["USD"]` set ใน `config/news_events.py` — ทอง spike แรงตอน NFP/CPI/FOMC ตาม USD strength โดยตรง. กระทบทั้ง scan-signal block และ pre-news close
+- Buffer = 0 นาที — ปิดที่ T-30 ตรงเดียวกับ block สัญญาณใหม่. Retry ผ่าน 5-วิ loop ถ้า close fail
+
+**ไม่ต้อง retrain** — fix อยู่ใน live execution path (TradeManager) เท่านั้น ไม่กระทบ obs/reward/training distribution
+
+**Files**:
+- `ftmo_trading_bot/execution/trade_manager.py` — เพิ่ม `check_news_close()` + import `is_near_high_impact_news`, `TimeManager`, `pytz`
+- `ftmo_trading_bot/main.py` — wire ใน main loop section "ขั้นตอนที่ 4"
+- `ftmo_trading_bot/config/news_events.py` — เพิ่ม `XAUUSD` ใน USD set
 
 ### 2026-05-05 — v7.1.6 Combine "best of all" (after v7.1.5 Pass 0.8% worst)
 

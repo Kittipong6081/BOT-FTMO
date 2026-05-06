@@ -17,9 +17,13 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from dataclasses import dataclass
 
+import pytz
+
 from config.settings import bot_config
+from config.news_events import is_near_high_impact_news
 from core.mt5_connector import MT5Connector
 from core.risk_manager import RiskManager
+from core.time_manager import TimeManager
 from execution.trade_executor import TradeExecutor, ExecutedTrade
 
 # พยายาม Import MT5 สำหรับ Modify Order
@@ -580,6 +584,51 @@ class TradeManager:
                     if self._executor.close_trade(ticket, reason="Friday Session Close"):
                         closed_count += 1
             return closed_count
+
+        return closed_count
+
+    # =========================================================================
+    # 📰 Pre-News Close (v7.1.10)
+    # =========================================================================
+
+    def check_news_close(self) -> int:
+        """
+        ปิด position ที่ symbol จะชนข่าวแรงในช่วง no_trade window
+
+        Sync กับ scan-signal news block (`SMCStrategy.scan_signal` ขั้น 1.5):
+        ถ้า symbol อยู่ใน window [event - no_trade_before_news_minutes, event] →
+        ปิดทุก position ของ symbol นั้น
+
+        - window_before = bot_config.sessions.no_trade_before_news_minutes (default 30)
+        - window_after = 0 (หลังข่าวออกปล่อยให้ trailing/SL/TP ทำงานปกติ)
+        - Buffer = 0 — ปิดที่ T-30 ตรงเดียวกับ block สัญญาณใหม่
+
+        Returns:
+            int: จำนวน position ที่ปิดสำเร็จ
+        """
+        active_tickets = list(self._executor.active_trades.keys())
+        if not active_tickets:
+            return 0
+
+        now_utc = TimeManager.get_server_time().astimezone(pytz.UTC)
+        window_before = getattr(bot_config.sessions, "no_trade_before_news_minutes", 30)
+        closed_count = 0
+
+        for ticket in active_tickets:
+            trade = self._executor.active_trades.get(ticket)
+            if trade is None:
+                continue
+            is_news, news_reason = is_near_high_impact_news(
+                trade.symbol,
+                now_utc,
+                window_minutes_before=window_before,
+                window_minutes_after=0,
+            )
+            if not is_news:
+                continue
+            print(f"📰 [Trade Manager] {trade.symbol} ticket={ticket} — {news_reason} → ปิด position")
+            if self._executor.close_trade(ticket, reason="Pre-news close"):
+                closed_count += 1
 
         return closed_count
 
