@@ -1,5 +1,5 @@
 # 03 — RL Training (Obs 32 dims v7.1 staged, Reward, PPO + Auxiliary Task)
-> Last Updated: 2026-05-04 (v7.1.2 staged — reward re-balance, RL retrain pending) | Scope: RL env, obs space v7.1 (+ portfolio realtime + session timing), reward shaping, PPO hyperparams, curriculum, aux task (E2).
+> Last Updated: 2026-05-06 (v7.2.1 — obs[29/30] leak fix, RL retrain pending) | Scope: RL env, obs space v7.1 (+ portfolio realtime + session timing), reward shaping, PPO hyperparams, curriculum, aux task (E2).
 >
 > **v7.1.2 reward re-balance (after v7.1.1 eval Pass 1.4%)**:
 > - missed-winner P2: −0.65 → **−0.85** (push TAKE back, ใกล้ v7.0.x แต่ไม่ถึง −0.90 wipeout level)
@@ -35,8 +35,8 @@
 | RL training PPO | `AuxAwarePPO` (aux loss weight = 0.5) | `ml/aux_aware_ppo.py` |
 | RL policy | `AuxAwareACPolicy` (actor + value + `aux_head`) | `ml/aux_aware_policy.py` |
 | Aux target | `info['aux_target']` = `outcome_pnl_ratio` | `FTMOSignalFilterEnv.step()` |
-| Pool | `data/signal_pool_3000.pkl` | loaded by `FTMOSignalFilterEnv` |
-| ML threshold | **0.40 (v7.1.3)** ↑ จาก 0.36 (calibrated) | CLI `--ml_threshold 0.40` |
+| Pool | `data/signal_pool_10000.pkl` | loaded by `FTMOSignalFilterEnv` |
+| ML threshold | **0.36** (live = `FTMOConfig.ML_FILTER_THRESHOLD` — train must match) | CLI `--ml_threshold 0.36` |
 
 ---
 
@@ -102,26 +102,29 @@
 
 **Why v6**: addresses whipsaw + spread awareness — the agent learns to avoid low-RR setups when spread is wide (GBPJPY) and becomes aware of recent flips, reducing revenge trading.
 
-### v7 Chronos Forecast [27–28] (2026-05-01, formula refactor v7.0.2)
+### v7 Chronos Forecast [27–28] (2026-05-06, semantics refactor v7.2)
 
-| Idx | Feature | Source | Normalization (v7.0.2) |
+| Idx | Feature | Source | Normalization (v7.2) |
 |-----|---------|--------|---------------|
-| 27 | `chronos_alignment` | `ChronosForecaster.forecast_features` (Amazon Chronos 2 zero-shot, M15 × 8 ahead) | `direction × sign(close − median_h+8)`, clip ±1 — flipped จาก v7.0 หลังเจอ corr ติดลบ |
-| 28 | `chronos_uncertainty_norm` | `ChronosForecaster.forecast_features` (q90 − q10) | `(q90 − q10) / (atr_value × √8)`, clip [0, 3] — Brownian-scaled, ไม่ saturate |
+| 27 | `chronos_alignment` | `ChronosForecaster.forecast_features` (Amazon Chronos 2 zero-shot, M15 × 8 ahead) | `direction × sign(median_h+8 − close)`, clip ±1 — un-flipped vs v7.0.2 (live audit fix) |
+| 28 | `chronos_uncertainty_norm` | `ChronosForecaster.forecast_features` (q90 − q10) | `log1p((q90 − q10) / (atr_value × √8)) / 2`, clip [0, 3] — Brownian-scaled + log1p (v7.1) |
 
 **Why v7**: gives the agent forward-looking probabilistic context. Chronos 2 is a zero-shot foundation model — no fine-tune needed. Cache key = `(symbol, last_bar_ts)` so per-scan latency stays ~100 ms cold / <5 ms warm. Disable via `bot_config.ml.CHRONOS_ENABLED = False` or env `BOT_DISABLE_CHRONOS=1` → obs[27,28] = 0.0 (graceful degradation to v6.14 behavior).
 
-**Why v7.0.2 formula refactor** — pool diagnostic หลัง v7.0 retrain (Pass Rate 9.7% → 4.0%) เผย:
+**Why v7.2 un-flip** — live audit ของ `logs/ftmo_trades.xlsx` 2026-05-05 (524 signals, strong DOWN-trend day, 100% SELL) พบ `chronos_alignment = -1` ติดทุก signal:
 
-- `chronos_uncertainty_norm` saturated ที่ 3.0 ใน 96.2% ของ signals → useless dim. สูตรเดิม `(q90-q10)/atr` ไม่คิด √horizon scaling (forecast variance ของ time-series model ขยายตาม √time per Brownian motion).
-- `chronos_alignment` corr กับ outcome = **−0.0178** (anti-signal). SMC ค้าขาย swing/reversal สวนเทรนด์ระยะสั้น แต่ Chronos forecast เทรนด์ → "Chronos agree with SMC" = SMC ตามเทรนด์ = ช้าเกิน, "Chronos disagree" = SMC จับ reversal = profitable.
+- ตลาดลง → Chronos median forecast ก็ลง → `last_close > median_h` → `delta > 0` → v7.0.2 formula `forecast_dir = +1` → `alignment = SELL(-1) × +1 = -1`
+- v7.0.2 design assumed SMC = contrarian/reversal strategy → alignment +1 = "Chronos disagree = good reversal setup"
+- ความจริง: SMC ที่ใช้จริงรัน **trend-following** (Tier 1 hard veto Counter-D1, HTF bias filter) — ไม่ใช่ contrarian
+- Reward penalty (`signal_filter_env.py:677-682`) `if chronos_align < 0 → reward -= 0.30 (ml<0.55) หรือ -0.10` → ลงทุก TAKE → agent learned skip-default
+- Live consequence: SKIP signal ML 0.693 (สูงสุด!), TAKE สูงสุดแค่ 0.598 = discrimination ผิดทาง
 
-→ flip sign ของ alignment + Brownian-scale uncertainty (factor √8 ≈ 2.83).
+→ **Fix v7.2**: un-flip → `delta = median_h - last_close`. Reward penalty ไม่แก้ — semantics ใหม่ -1 = warning จริง (counter-trend) → penalty ใช้งานได้ปกติ
 
-**Interpretation (v7.0.2)**:
+**Interpretation (v7.2)**:
 
-- `alignment = +1` → SMC + Chronos contrarian (e.g. SMC BUY + Chronos median ต่ำกว่า close) = good reversal setup
-- `alignment = −1` → SMC + Chronos agree on trend direction = SMC late, weak setup
+- `alignment = +1` → SMC + Chronos agree on direction (good — trend-following confirmed, e.g. SMC SELL + Chronos median ต่ำกว่า close)
+- `alignment = −1` → SMC สวน Chronos forecast (warning — counter-trend setup, reward penalty active)
 - `uncertainty ≈ 1.0` = forecast band ตามที่ ATR คาด, `< 0.5` = market quiet (Chronos มั่นใจ), `> 2.0` = high vol (uncertainty band กว้างกว่าปกติ)
 
 **Pool path** — `StrategyBacktester.generate_episode_signals` calls `ChronosForecaster.forecast_features(symbol, ltf_slice, direction, atr_val)` using closed-bar slice only (anti-lookahead). Result stored in signal dict as `chronos_alignment` + `chronos_uncertainty_norm` for `FTMOSignalFilterEnv._get_obs` to read.
@@ -251,7 +254,7 @@ Sum if pass  : +7.0 max
 
 ```bash
 # Step 1: Pool (~8 min, 8 workers)
-.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 3000 --workers 8
+.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 10000 --workers 8
 
 # Step 2: ML GBM + Isotonic Calibrator (~5 min, re-scores pool in place)
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
@@ -259,8 +262,8 @@ Sum if pass  : +7.0 max
 # Step 3: RL PPO + Auxiliary Task (~30–40 hr CPU @ n_envs=8, 2 phases)
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
     --timesteps_p1 10000000 --timesteps_p2 5000000 \
-    --n_envs 8 --pool_size 3000 --outcome_noise 0.05 \
-    --ml_threshold 0.36 --risk_per_trade 0.007
+    --n_envs 8 --pool_size 10000 --outcome_noise 0.05 \
+    --ml_threshold 0.36 --risk_per_trade 0.0099
 ```
 
 The trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5). P2 stability tuning: LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20.
@@ -269,7 +272,7 @@ The trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5)
 
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --eval_only \
-    --pool_size 3000 --ml_threshold 0.36 --risk_per_trade 0.007
+    --pool_size 10000 --ml_threshold 0.36 --risk_per_trade 0.0099
 ```
 
 ⚠️ Always invoke via `.venv/bin/python` (or activate venv) — system `python` may resolve to a different interpreter with non-pinned package versions, shifting Pass Rate by 1–3 pp due to RNG init / BLAS differences.

@@ -83,7 +83,7 @@ Three steps, in order. The order matters: pool must exist before ML training; ML
 
 | Step | Script | Class / function | Output |
 |------|--------|------------------|--------|
-| 1 | `scripts/build_signal_pool.py` | `StrategyBacktester.generate_episode_signals` × N (multiprocessing) | `data/signal_pool_3000.pkl` |
+| 1 | `scripts/build_signal_pool.py` | `StrategyBacktester.generate_episode_signals` × N (multiprocessing) | `data/signal_pool_10000.pkl` |
 | 2 | `scripts/train_signal_quality.py` | GBM + `GroupKFold cross_val_predict` (OOF) → `IsotonicRegression` calibrator | `data/signal_quality_model.pkl` (model + calibrator) + in-place pool re-score |
 | 3 | `scripts/train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` + `FTMOSignalFilterEnv` (2-phase curriculum, aux loss weight=0.5) | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` |
 

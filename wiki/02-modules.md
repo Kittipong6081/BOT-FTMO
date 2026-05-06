@@ -320,7 +320,7 @@ Key dataclasses:
 
 | Script | Role |
 |--------|------|
-| `build_signal_pool.py` | Multiprocessing 8 workers — calls `StrategyBacktester.generate_episode_signals` × N → `data/signal_pool_3000.pkl` |
+| `build_signal_pool.py` | Multiprocessing 8 workers — calls `StrategyBacktester.generate_episode_signals` × N → `data/signal_pool_10000.pkl` |
 | `train_signal_quality.py` | GBM + `GroupKFold cross_val_predict` (group=episode_id, OOF) → fits `IsotonicRegression` calibrator on OOF probs → saves `{model, calibrator, ...}` payload + re-scores pool with calibrated probs in place |
 | `train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` 2-phase curriculum (P1 Alpha **10M steps** → P2 Risk **5M steps**, aux loss weight=0.5, LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20) → `models/ppo_signal_filter.zip` |
 | `fetch_mt5_data.py` | (Windows only) fetches OHLCV from MT5 → CSV under `data/ohlcv/` |

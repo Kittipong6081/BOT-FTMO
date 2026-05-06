@@ -608,21 +608,42 @@ class FTMOTradingBot:
         return obs
 
     def _compute_floating_pnl_norm(self) -> float:
-        """v7.1 — floating PnL ของ open positions / daily_start_balance (เป็น decimal, ไม่ใช่ %)"""
-        try:
-            fdd_pct = self._risk_manager.get_unrealized_drawdown_pct()
-            return fdd_pct / 100.0  # convert % → decimal
-        except Exception:
-            return 0.0
+        """v7.2.1 (Option B) — return 0 to match training env (leak fix).
+
+        Training env ตั้ง obs[29] = 0 ตลอดเพื่อตัด future leak (ดู
+        signal_filter_env.py v7.2.1 comment). Live ก็ต้อง 0 ตามเพื่อ
+        distribution match — ป้องกัน VecNormalize blow-up จาก var≈0 ตอน train.
+        Concurrent risk awareness ทำผ่าน RiskManager.check_unrealized_circuit_breaker
+        (execution path, ไม่ใช่ obs).
+        """
+        return 0.0
 
     def _compute_open_losing_count_norm(self) -> float:
-        """v7.1 — count ของ open positions ที่ profit < 0 / 3 (max positions)"""
+        """v7.2.1 (Option B) — return 0 to match training env (leak fix). ดู
+        _compute_floating_pnl_norm docstring."""
+        return 0.0
+
+    def _compute_current_session(self) -> str:
+        """Mirror TradeExecutor session classifier (server time = EET).
+
+        Used by `_log_signal_scan` to populate Signals sheet `Session` column,
+        which was previously hardcoded empty (Trades sheet got it via different path).
+        """
         try:
-            positions = self._connector.get_open_positions() or []
-            losing = sum(1 for p in positions if float(p.get("profit", 0.0)) < 0)
-            return min(losing, 3) / 3.0
+            h = TimeManager.get_server_time().hour
+            if 7 <= h < 12:
+                return "LONDON"
+            if 12 <= h < 13:
+                return "LONDON_NY_OVERLAP"
+            if 13 <= h < 17:
+                return "NEW_YORK"
+            if 17 <= h < 21:
+                return "NY_AFTERNOON"
+            if 0 <= h < 7:
+                return "ASIAN"
+            return "OFF_HOURS"
         except Exception:
-            return 0.0
+            return ""
 
     def _compute_mins_since_session_norm(self) -> float:
         """v7.1 — minutes since London/NY session open / 480 (8 hours)"""
@@ -925,7 +946,7 @@ class FTMOTradingBot:
                 "htf_bias": getattr(sig, "htf_bias", "") or live_context.get("htf_bias", ""),
                 "mtf_bias": live_context.get("mtf_bias", 0),
                 "d1_bias": live_context.get("d1_bias", 0),
-                "session": "",  # filled by TimeManager if needed
+                "session": live_context.get("session", "") or self._compute_current_session(),
                 "spread_pips": live_context.get("spread_pips_actual", 0),
                 "reasons": sig.reasons[:5] if isinstance(sig.reasons, list) else str(sig.reasons),
                 # v6.10d: propagate executor reject reason ลง Signals sheet col 20

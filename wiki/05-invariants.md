@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-06 | Scope: red flags, version log, migration notes (latest: **v7.1.10** — pre-news close fix + XAUUSD เข้า USD news map)
+> Last Updated: 2026-05-06 | Scope: red flags, version log, migration notes (latest: **v7.2.1** — obs[29/30] leak fix, audit-driven)
 
 ## TL;DR (30-second scan)
 
@@ -172,6 +172,101 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-06 — v7.2.1 obs[29/30] leak fix (audit-driven, post-v7.2 eval Pass 6.3%)
+
+**Audit trigger** — v7.2 (Chronos un-flip) retrain เสร็จเร็วผิดปกติ (~20 นาที vs ~12 ชม. ที่คาด) → eval Pass Rate **6.3%** (vs baseline v6.13 = 9.7%, gate fail). User ขอ data leakage audit ทั่วระบบ
+
+**Audit results** (6 surfaces):
+- ✅ GBM features 24 ตัว — `ltf_slice = m15_df.iloc[scan_idx-499:scan_idx+1]` รวมแค่ signal-time bar เดียว
+- ✅ HTF (H1/H4) — `_end_idx_at_or_before(h1_df, m15_end_ts)` ตัดที่หรือก่อน M15 boundary
+- ✅ GBM training — `GroupKFold(n_splits=5, groups=episode_id)` + `cross_val_predict` + IsotonicRegression fit บน OOF probs + pool re-score ใช้ OOF
+- ✅ Chronos forecast — closed-bar slice เดียวกับ signal extraction; cache key (symbol, last_bar_ts); outcome window [t+1, t+96] แยกจาก forecast horizon [t+8]
+- ✅ Aux task — `AuxAwarePolicy.predict_aux(obs)` รับ obs (ไม่มี outcome); outcome เป็น MSE target ภายนอก
+- ❌ **obs[29] floating_pnl_norm + obs[30] open_losing_count_norm — LEAK**
+
+**Bug — obs[29/30] training env leak**:
+
+`FTMOSignalFilterEnv.step()` (3 จุดเชื่อม):
+- `_open_positions.append({..., 'outcome_partial': float(outcome_perturbed)})` — เก็บ pre-resolved final outcome
+- `_floating_pnl_norm = floating_sum × risk_per_trade` ที่ floating_sum = `sum(op['outcome_partial'] × decay)` — sign คงที่ตั้งแต่ position เปิด
+- `_open_losing_count_norm = sum(1 for op_outcome < 0) / 3` — direct count ของ positions ที่ outcome ติดลบ
+- Comment ใน code ยอมรับเอง: "env เห็น final outcome ตั้งแต่เปิด แต่ live ไม่เห็น → simulate 'in-flight' feeling"
+
+Live ใช้ true unrealized PnL ที่ oscillate กับ price path → distribution mismatch:
+- Live: `RiskManager.get_unrealized_drawdown_pct()` (oscillating, sign อาจกลับได้ระหว่างถือ)
+- Train (เก่า): monotonic toward final outcome (sign คงเดิมตลอด hold)
+
+**Fix v7.2.1 (Option B — train + live ตรงกัน)**:
+
+`FTMOSignalFilterEnv` ([signal_filter_env.py](ftmo_trading_bot/ml/signal_filter_env.py)):
+- Hard-set `self._floating_pnl_norm = 0.0` + `self._open_losing_count_norm = 0.0` ใน `step()` (ลบ block calculation ทั้งหมด)
+- ลบ `'outcome_partial'` field จาก `_open_positions.append({...})` (ไม่จำเป็นต่อ correlation simulator)
+
+`FTMOTradingBot` ([main.py:610-625](ftmo_trading_bot/main.py#L610)):
+- `_compute_floating_pnl_norm()` → `return 0.0` (เดิม `RiskManager.get_unrealized_drawdown_pct()`)
+- `_compute_open_losing_count_norm()` → `return 0.0` (เดิม `count(positions if profit < 0)`)
+- เหตุผล: VecNormalize ตอน train เก็บ `mean=0, var≈0` ของ obs[29/30] → ถ้า live ส่งค่าจริง (-0.02) → normalized = -2.0 (extreme) → policy output เพี้ยน. Force live = 0 → match train distribution
+
+**Concurrent risk awareness ที่หาย (obs[29/30])**:
+- ทดแทนด้วย `RiskManager.check_unrealized_circuit_breaker()` ที่อยู่ใน execution path (ไม่ผ่าน agent obs):
+  - ถ้า floating ≤ -1.5% AND open ≥ 2 → pause เปิดออเดอร์ใหม่
+- agent ยังเรียน "ระวัง daily DD" ผ่าน obs[18] `daily_dd_n` (realized loss) ปกติ
+
+**Pipeline**: ไม่ต้อง rebuild pool/GBM (leak อยู่ที่ env เท่านั้น). Retrain RL อย่างเดียว ~12-15 ชม. (จริง ๆ อาจ ~20 นาทีถ้า early stop kicks in)
+
+**Eval gate**: Pass Rate ≥ 9.7% (baseline v6.13) → keep | < 7% = restore `*.bak_v7.1`
+
+**Files**:
+- [`ftmo_trading_bot/ml/signal_filter_env.py`](ftmo_trading_bot/ml/signal_filter_env.py) — `step()` floating PnL block + `_open_positions.append`
+- [`context.md`](context.md) + [`wiki/03-rl-training.md`](wiki/03-rl-training.md) + [`wiki/05-invariants.md`](wiki/05-invariants.md)
+
+### 2026-05-06 — v7.2 Chronos un-flip semantics + Session log fix (audit-driven)
+
+**Audit trigger** — ผู้ใช้ขอวิเคราะห์ `logs/ftmo_trades.xlsx` หลัง live session 2026-05-05 13:33–19:58 (EET, ~6.5 ชม.). พบ **524 signals → 1 trade ออกได้** (USDJPY SELL → BE +$44.37). Funnel: ML กรอง 188 (36%) | Agent SKIP 294 (56%) | TAKE 42 ติด correlation 41 = **97.6% block rate**
+
+**Bug 1 — Chronos alignment = -1 ทุก signal (524/524)**
+- Day = strong DOWN trend → SMC SELL ทั้งหมด → Chronos median forecast ก็ลง → ใช้ v7.0.2 flip-sign formula `delta = last_close - median_h > 0 → forecast_dir = +1` → `alignment = SELL(-1) × +1 = -1`
+- v7.0.2 design assumed SMC = contrarian/reversal strategy → alignment +1 = "Chronos disagree = good reversal setup"
+- ความจริง: SMC ใช้ HTF Tier 1 hard veto Counter-D1 = **trend-following**, ไม่ใช่ contrarian
+- Reward shaping `signal_filter_env.py` (line 677-682): `if chronos_align < 0 → reward -= 0.30 (ml<0.55) หรือ -0.10` → ลงทุก TAKE ระหว่าง train → agent learned **skip-default** → live: SKIP signal ML 0.693 (สูงสุด!) แต่ TAKE สูงสุดแค่ ML 0.598
+
+**Bug 2 — Session column = None ใน Signals sheet**
+- `FTMOTradingBot._log_signal_scan` (`main.py:928`) hardcode `"session": ""` พร้อม comment "filled by TimeManager if needed" — แต่ไม่เคย fill จริง
+- Trades sheet ปกติเพราะ `TradeExecutor` ส่ง session ผ่าน path ต่าง
+
+**Fix**:
+- **Patch A (Session log)** — `FTMOTradingBot._log_signal_scan` (`main.py:928`): `"session": live_context.get("session", "") or self._compute_current_session()` + เพิ่ม helper method `_compute_current_session()` ที่ mirror `TradeExecutor` session classifier (LONDON/LONDON_NY_OVERLAP/NEW_YORK/NY_AFTERNOON/ASIAN/OFF_HOURS)
+- **Patch B (Chronos un-flip)** — `ChronosForecaster.compute_features` (`ml/chronos_forecaster.py:243-247`): `delta = median_h - last_close` (un-flip vs v7.0.2). Semantics ใหม่:
+  - alignment **+1** = SMC + Chronos agree on direction (good — trend-following confirmed)
+  - alignment **-1** = SMC สวน Chronos forecast (warning — counter-trend setup)
+- Reward penalty (`signal_filter_env.py:677-682`) **ไม่แก้** — ตาม semantics ใหม่ -1 = warning จริง (counter-trend) → penalty ใช้งานได้ปกติ
+
+**Pipeline (ต้องรัน 6 step ตามลำดับ, ~36 ชม.)**:
+
+1. ✅ Backup: `signal_pool_10000.pkl`, `signal_quality_model.pkl`, `ppo_signal_filter.zip`, `vec_normalize_sf.pkl` → `*.bak_v7.1` (เสร็จแล้ว)
+2. ✅ Edit code (เสร็จแล้ว)
+3. Rebuild pool: `.venv/bin/python scripts/build_signal_pool.py --pool_size 10000 --workers 8`
+4. Retrain GBM: `.venv/bin/python scripts/train_signal_quality.py`
+5. Retrain RL Phase 1+2: `.venv/bin/python scripts/train_signal_filter.py --fresh --timesteps_p1 10000000 --timesteps_p2 5000000 --n_envs 8 --pool_size 10000 --outcome_noise 0.05 --ml_threshold 0.36 --risk_per_trade 0.0099`
+6. Eval: `.venv/bin/python scripts/train_signal_filter.py --eval_only --pool_size 10000 --ml_threshold 0.36 --risk_per_trade 0.0099`
+
+**Eval gate**:
+- **≥ 9.7%** (baseline v6.13) → keep + deploy
+- **7-9.7%** → equivalent (decision พร้อม user)
+- **< 7%** → restore จาก `*.bak_v7.1`
+
+**Live verification หลัง retrain**:
+- Signals sheet column `Chronos Align` กระจาย {-1, 0, +1} (ไม่ใช่ -1 ค้าง)
+- Signals sheet column `Session` ไม่ว่าง
+- TAKE mean ML > SKIP mean ML (ปัจจุบัน 0.503 vs 0.482 = ใกล้เกินไป)
+- Top SKIP by ML ≤ Top TAKE by ML (ปัจจุบัน 0.693 SKIP > 0.598 TAKE = ผิด)
+
+**Files**:
+- `ftmo_trading_bot/main.py` — `FTMOTradingBot._log_signal_scan` + new `_compute_current_session`
+- `ftmo_trading_bot/ml/chronos_forecaster.py` — `ChronosForecaster.compute_features` formula + docstring + header
+
+**ห้ามแตะ**: `RiskManager.update_daily_pnl` / `_initial_balance` / `_daily_start_balance`, `OBS_DIM = 32`, `DEFAULT_RISK_PER_TRADE_PCT = 0.0099`
 
 ### 2026-05-06 — v7.1.10 Pre-news close + XAUUSD USD news mapping
 

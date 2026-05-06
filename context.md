@@ -1,8 +1,10 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-06 (v7.1.10 — pre-news close fix) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-06 (v7.2.1 — obs[29/30] leak fix) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
+- **v7.2.1 (2026-05-06) — obs[29/30] leak fix (audit-driven)**: Audit หา data leakage หลัง v7.2 retrain Pass Rate **6.3%** (ต่ำกว่า baseline v6.13 = 9.7%). พบ leak ใน `FTMOSignalFilterEnv` — `_open_positions` เก็บ `outcome_partial` (final outcome × decay) → `_floating_pnl_norm` (obs[29]) + `_open_losing_count_norm` (obs[30]) **เห็น sign ของ outcome ตั้งแต่ position เปิด**. Live ใช้ true unrealized PnL จาก `RiskManager` ที่ oscillate กับ price path → distribution mismatch + future leak. Fix: zero-out obs[29/30] ใน training env (ลบ block calculation + `outcome_partial` field). 5 surface อื่น (GBM features/HTF align/training OOF/Chronos/Aux) ผ่าน clean. Pool/GBM ไม่ต้อง rebuild — leak อยู่ที่ env เท่านั้น. Retrain RL อย่างเดียว.
+- **v7.2 (2026-05-06) — Chronos un-flip + Session log fix (audit-driven)**: Live audit ของ `logs/ftmo_trades.xlsx` (524 signals 2026-05-05, strong DOWN-trend day, 100% SELL) พบ `chronos_alignment = -1` ติดทุก signal → reward penalty `-0.30` ลงทุก TAKE ระหว่าง train → agent learned skip-default (TAKE max ML 0.598 vs SKIP max ML 0.693 = discrimination ผิดทาง). Root cause = v7.0.2 flip-sign semantics ออกแบบสำหรับ contrarian/reversal strategy แต่ SMC จริง ๆ เป็น trend-following (ใช้ HTF Tier 1 hard veto Counter-D1) → mismatch. **Patch B**: un-flip formula ใน `ChronosForecaster.compute_features` → `delta = median_h - last_close` (alignment +1 = SMC+Chronos agree on direction). **Patch A**: `FTMOTradingBot._log_signal_scan` Session column ที่ค้าง None ใน Signals sheet → เพิ่ม `_compute_current_session()` helper. **Pipeline**: rebuild pool + retrain GBM + retrain RL (~36 ชม.). Backups `*.bak_v7.1` พร้อม rollback.
 - **v7.1.10 (2026-05-06) — Pre-news close fix**: ก่อนหน้านี้ news filter block สัญญาณใหม่อย่างเดียว แต่ position ที่เปิดอยู่ถูกถือผ่านข่าว = ผิดกฎ FTMO. เพิ่ม `TradeManager.check_news_close()` ปิด position ที่ symbol จะชนข่าวแรงใน 30 นาที (sync กับ `no_trade_before_news_minutes`). เรียกใน main loop ก่อน `check_session_close`. Priority: Friday/Daily Overnight > Pre-News > Trailing/BE/Partial. เพิ่ม `XAUUSD` เข้า `_CURRENCY_TO_SYMBOLS["USD"]` (ทอง spike แรงตอน NFP/CPI/FOMC). ไม่ต้อง retrain — fix อยู่ใน execution path เท่านั้น
 - **Goal**: pass the FTMO 2-step Standard Challenge (10 % profit, 4 % daily DD, 8 % total DD).
 - **3 brains + 1 forecaster**: `SMCStrategy` (rules) → `SignalQualityModel` (GBM + Isotonic calibrator) → **`ChronosForecaster`** (Amazon Chronos 2 zero-shot, v7) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
@@ -132,7 +134,7 @@
 | Chronos horizon (v7) | 8 M15 bars (~2 h) | `bot_config.ml.CHRONOS_PREDICTION_LENGTH` |
 | RL model | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` | `SelfLearningAgent` |
 | ML model | `data/signal_quality_model.pkl` | `SignalQualityModel` |
-| Pool | `data/signal_pool_3000.pkl` (~158k signals) | `StrategyBacktester` |
+| Pool | `data/signal_pool_10000.pkl` (~88MB) | `StrategyBacktester` |
 | FTMO program | 2-step Standard (no Consistency Rule → threshold = 1.0) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
 
 ## Verified Performance (v6.13 — Combined patch + obs no-leak audit, risk 0.7 %, 5000 eps, 2026-04-29)
@@ -193,12 +195,12 @@ Full module details → [wiki/02-modules.md](wiki/02-modules.md).
 **Training (3 steps, in order):**
 
 ```bash
-python scripts/build_signal_pool.py --pool_size 3000 --workers 8
+python scripts/build_signal_pool.py --pool_size 10000 --workers 8
 python scripts/train_signal_quality.py
 python scripts/train_signal_filter.py --fresh \
     --timesteps_p1 10000000 --timesteps_p2 5000000 \
-    --n_envs 8 --pool_size 4500 --outcome_noise 0.05 \
-    --ml_threshold 0.40 --risk_per_trade 0.007
+    --n_envs 8 --pool_size 10000 --outcome_noise 0.05 \
+    --ml_threshold 0.36 --risk_per_trade 0.0099
 ```
 
 Phase E2 trainer uses `AuxAwarePPO` + `AuxAwareACPolicy` automatically (aux loss weight = 0.5).
@@ -207,7 +209,7 @@ Phase E2 trainer uses `AuxAwarePPO` + `AuxAwareACPolicy` automatically (aux loss
 
 ```bash
 python scripts/train_signal_filter.py --eval_only \
-    --pool_size 4500 --ml_threshold 0.40 --risk_per_trade 0.007
+    --pool_size 10000 --ml_threshold 0.36 --risk_per_trade 0.0099
 ```
 
 Default 5000 episodes. Use `.venv/bin/python` (not bare `python`) — version mismatch can shift Pass Rate.

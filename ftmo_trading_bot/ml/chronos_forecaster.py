@@ -1,13 +1,15 @@
 """
 ===============================================================================
-FTMO Trading Bot — Chronos 2 Zero-shot Forecaster (v7.0)
+FTMO Trading Bot — Chronos 2 Zero-shot Forecaster (v7.2)
 ===============================================================================
 Wrapper รอบ Amazon Chronos foundation model (Hugging Face) สำหรับ M15 forecast
 ใช้เป็น obs feature แทนการเทรน fine-tune (zero-shot only).
 
 Output features ที่ป้อนเข้า PPO obs:
   obs[27] chronos_alignment       — direction × sign(median_h+8 − close_now), clip ±1
-  obs[28] chronos_uncertainty_norm — (q90 − q10) / atr_value, clip [0, 3]
+                                    +1 = SMC + Chronos agree on direction (good)
+                                    -1 = SMC สวน Chronos forecast (counter-trend warning)
+  obs[28] chronos_uncertainty_norm — log1p((q90 − q10) / (atr×√8)) / 2, clip [0, 3]
 
 ⚠️ CRITICAL:
   - Model name ต้องเหมือนกันทั้ง training (StrategyBacktester) และ live (main.py)
@@ -211,14 +213,20 @@ class ChronosForecaster:
         """
         แปลง raw forecast → 2 obs features
 
-        v7.0.2 (2026-05-01): formula refactor หลังเจอ regression v7.0:
-          A. flip sign ของ alignment — pool diagnostic v7.0 พบ corr(align, outcome) = -0.0178
-             (anti-signal!). SMC ค้าขาย swing/reversal สวนเทรนด์ → Chronos forecast เทรนด์ →
-             "Chronos ทำนายลง + SMC BUY" คือ reversal setup ที่ถูก ไม่ใช่ผิด.
-             สูตรใหม่: forecast_dir = sign(last_close - median) → flip vs เดิม.
-          B. Brownian-scale uncertainty — เดิม (q90-q10)/atr saturated ที่ 3.0 ใน 96.2% ของ
-             signals (variance ของ 8-bar forecast ขยายตาม √8). หารเพิ่มด้วย √prediction_length
-             → ไม่ saturate, distribution กระจาย.
+        v7.2 (2026-05-06): un-flip alignment — revert v7.0.2 sign flip after live audit.
+          v7.0.2 design assumed SMC = contrarian/reversal strategy. Live audit of
+          ftmo_trades.xlsx 2026-05-05 (524 signals, 100% SELL on a strong DOWN-trend day)
+          showed alignment = -1 stuck on every signal because Chronos forecast also
+          predicted DOWN → counted as "agree on trend = SMC late = weak setup". This
+          inverted the semantics for the actual SMC strategy, which uses HTF bias filter
+          (Tier 1 hard veto Counter-D1) — i.e. trend-following, NOT contrarian. The
+          -0.30 reward penalty on alignment<0 then trained the agent to skip-default
+          across all signals in trending markets.
+
+          Fix: forecast_dir = sign(median - last_close) → alignment +1 when SMC and
+          Chronos agree on direction (correct for trend-following strategy).
+
+        v7.1 (2026-05-04): log1p uncertainty scaling kept — still avoids saturation.
 
         Args:
             forecast_dict: ผลจาก forecast() (อาจเป็น neutral dict ถ้า fail)
@@ -228,8 +236,8 @@ class ChronosForecaster:
         Returns:
             (chronos_alignment, chronos_uncertainty_norm)
             ทั้งคู่ clip ตาม obs spec แล้ว
-            alignment +1 = SMC + Chronos contrarian (good reversal setup)
-            alignment -1 = SMC + Chronos agree on trend (SMC late, weak setup)
+            alignment +1 = SMC + Chronos agree on direction (good — strategy ตามเทรนด์ + Chronos ยืนยัน)
+            alignment -1 = SMC สวน Chronos forecast (warning — counter-trend setup)
         """
         try:
             median_h = float(forecast_dict.get("median_h8", float("nan")))
@@ -240,9 +248,10 @@ class ChronosForecaster:
             if not np.isfinite(median_h) or not np.isfinite(last_close):
                 return 0.0, 0.0
 
-            # v7.0.2 Change A: flip sign — last_close > median = Chronos predicts down
-            # → +1 ถ้า SMC BUY ขณะ Chronos ทำนายลง = reversal setup
-            delta = last_close - median_h
+            # v7.2 (2026-05-06) — un-flip vs v7.0.2: median > last_close = Chronos predicts up
+            # → +1 ถ้า SMC BUY ขณะ Chronos ทำนายขึ้น = same direction = good agreement
+            # SMC strategy ใช้ HTF bias filter = trend-following → agreement = correct setup
+            delta = median_h - last_close
             forecast_dir = 1.0 if delta > 0 else (-1.0 if delta < 0 else 0.0)
             alignment = float(np.clip(signal_direction * forecast_dir, -1.0, 1.0))
 

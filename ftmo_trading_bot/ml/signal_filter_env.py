@@ -549,29 +549,17 @@ class FTMOSignalFilterEnv(gym.Env):
                 op for op in self._open_positions if op['opened_at_idx'] >= cutoff
             ]
 
-        # v7.1 — update floating PnL (sum unrealized of open positions, normalized)
-        # Approximation: ใช้ outcome ของ signal ที่เปิด position นั้น (pre-resolved) × decay
-        # เพราะ env เห็น final outcome ตั้งแต่เปิด แต่ live ไม่เห็น → simulate "in-flight" feeling
-        if self._open_positions:
-            floating_sum = 0.0
-            losing_count = 0
-            for op in self._open_positions:
-                # Linear decay: outcome ที่ "เห็น" ตอนนี้ = outcome × (signal_idx - opened) / hold
-                opened_idx = op.get('opened_at_idx', self._signal_idx)
-                hold_progress = max(1, self._signal_idx - opened_idx)
-                # ใช้ pre-resolved outcome จาก signal ที่ open
-                op_outcome = op.get('outcome_partial', 0.0) * min(hold_progress / 4.0, 1.0)
-                floating_sum += op_outcome
-                if op_outcome < 0:
-                    losing_count += 1
-            # Normalize ตาม INITIAL_BALANCE (เทียบเคียง risk_per_trade)
-            self._floating_pnl_norm = float(np.clip(
-                floating_sum * self.risk_per_trade, -3.0, 1.0
-            ))
-            self._open_losing_count_norm = min(losing_count, 3) / 3.0
-        else:
-            self._floating_pnl_norm = 0.0
-            self._open_losing_count_norm = 0.0
+        # v7.2.1 (2026-05-06) — LEAK FIX: zero-out floating PnL state in training env.
+        # v7.1 used `op['outcome_partial']` (pre-resolved final outcome × decay) which
+        # leaked future direction (kept sign constant from open → close). Live env
+        # uses true unrealized PnL from RiskManager that oscillates with price path.
+        # Mismatch → agent learned fake "concurrent risk" pattern. v7.2 eval Pass 6.3%
+        # (vs baseline 9.7%) confirmed leak hurt rather than helped.
+        # Train obs[29/30] = 0 → live obs[29/30] = real values, but agent ignores them
+        # (effectively no-info dims). Concurrent risk awareness comes from reward
+        # penalty + Chronos disagreement, not from these obs dims.
+        self._floating_pnl_norm = 0.0
+        self._open_losing_count_norm = 0.0
 
         # v7.0.2: correlation block — forced SKIP ถ้า live executor จะ reject
         # นี่ทำให้ training distribution ตรงกับ live (live block 96.3% ของ TAKE จาก correlation)
@@ -618,12 +606,11 @@ class FTMOSignalFilterEnv(gym.Env):
             # v7.0.2: register open position สำหรับ correlation simulator
             # ใช้ตอน step ถัดไปเป็น "exposure" ที่ block correlated entries
             # (live: position ค้างอยู่จน hit SL/TP/timeout. ตรงนี้ approximate hold ≈ HOLD_SIGNALS_APPROX)
-            # v7.1 — เพิ่ม outcome_partial เพื่อให้ floating PnL simulator ทำงานได้
+            # v7.2.1: ลบ outcome_partial — เคย feed obs[29/30] เป็น future leak (ดู _floating_pnl_norm block)
             self._open_positions.append({
                 'symbol': sig.get('symbol', ''),
                 'direction': 1 if sig.get('direction', 0) > 0 else -1,
                 'opened_at_idx': self._signal_idx,
-                'outcome_partial': float(outcome_perturbed),
             })
 
             if pnl > 0:

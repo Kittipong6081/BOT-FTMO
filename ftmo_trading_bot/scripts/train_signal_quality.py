@@ -10,7 +10,7 @@ Train Signal Quality Model (GBM) + Re-score Pool
 
 Usage:
     python scripts/train_signal_quality.py
-    python scripts/train_signal_quality.py --pool data/signal_pool_3000.pkl
+    python scripts/train_signal_quality.py --pool data/signal_pool_10000.pkl
     python scripts/train_signal_quality.py --no_rescore   # train อย่างเดียว ไม่ touch pool
 
 หลัง run เสร็จ: พร้อมใช้ train_signal_filter.py (RL) ต่อได้ทันที
@@ -179,7 +179,7 @@ def rescore_pool(sigs, oof_probs):
 def main():
     parser = argparse.ArgumentParser(description="Train Signal Quality Model")
     parser.add_argument("--pool", default=None,
-                        help="Pool file (default: data/signal_pool_3000.pkl)")
+                        help="Pool file (default: data/signal_pool_10000.pkl)")
     parser.add_argument("--save", default=None,
                         help="Save path (default: data/signal_quality_model.pkl)")
     parser.add_argument("--no_rescore", action="store_true",
@@ -188,13 +188,13 @@ def main():
     args = parser.parse_args()
 
     if args.pool is None:
-        args.pool = os.path.join(ROOT, "data", "signal_pool_3000.pkl")
+        args.pool = os.path.join(ROOT, "data", "signal_pool_10000.pkl")
     if args.save is None:
         args.save = os.path.join(ROOT, "data", "signal_quality_model.pkl")
 
     if not os.path.exists(args.pool):
         print(f"❌ Pool ไม่พบ: {args.pool}")
-        print(f"   รัน: python scripts/build_signal_pool.py --pool_size 3000")
+        print(f"   รัน: python scripts/build_signal_pool.py --pool_size 10000")
         sys.exit(1)
 
     print("=" * 72)
@@ -249,7 +249,7 @@ def main():
     print("\n🎯 พร้อม train RL agent แล้ว:")
     print("   python scripts/train_signal_filter.py --fresh \\")
     print("       --timesteps_p1 10000000 --timesteps_p2 5000000 \\")
-    print("       --n_envs 8 --pool_size 3000 --outcome_noise 0.02")
+    print("       --n_envs 8 --pool_size 10000 --outcome_noise 0.05 --ml_threshold 0.36 --risk_per_trade 0.0099")
 
 
 if __name__ == "__main__":
