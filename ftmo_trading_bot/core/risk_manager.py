@@ -517,7 +517,11 @@ class RiskManager:
             return (False, f"❌ เปิด Position ครบ {self._config.MAX_OPEN_POSITIONS} ตำแหน่งแล้ว (ปัจจุบัน: {current_positions})")
 
         # === ตรวจสอบที่ 3: Risk:Reward Ratio ===
-        if rr_ratio < self._config.MIN_RISK_REWARD_RATIO:
+        # v8.0.11 fix: epsilon tolerance for FP precision. MR strategy stores
+        # sl_distance directly but derives tp_distance from rounded prices, so
+        # rr_ratio can be 0.99999... when designed as 1.0 → was rejecting every
+        # MR signal with RR=1:1 exactly.
+        if rr_ratio < self._config.MIN_RISK_REWARD_RATIO - 1e-4:
             return (False, f"❌ Risk:Reward ({rr_ratio:.2f}) ต่ำกว่าขั้นต่ำ ({self._config.MIN_RISK_REWARD_RATIO})")
 
         # === ตรวจสอบที่ 4: ความเสี่ยงต่อเทรด ===

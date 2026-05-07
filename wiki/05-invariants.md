@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.9** — `MIN_RISK_REWARD_RATIO` 1.5 → 1.0 to allow MR signals)
+> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.12** — TradeManager BE/Partial/Trail tuned for MR RR=1:1)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,99 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-07 — v8.0.12 TradeManager BE/Partial/Trail tuned for MR RR=1:1
+
+**Problem** — `TradeManager` constants left over from SMC-era RR=1:2.5:
+
+| Trigger | v8.0.11 | Issue under MR RR=1:1 |
+|---|---:|---|
+| `BE_TRIGGER_RR` | 1.0 | Race condition — broker closes at TP=1.0R before BE fires |
+| `PARTIAL_TRIGGER_RR` | 1.0 | Same race — TP closes position first |
+| `TRAIL_ACTIVATION_RR` | 1.5 | **Impossible** — TP closes at 1.0R, trail at 1.5R never reachable |
+
+→ Trade Management was effectively dead code under MR. Real live consequence (caught from VPS GBPUSD trade): MFE ≈ 0.95R then revert to SL = full loss, but BE at 0.5R would have locked entry.
+
+**Fix** — `TradeManager` constants tuned to fire BEFORE TP=1.0R:
+
+| Constant | v8.0.11 | **v8.0.12** | Effect |
+|---|---:|---:|---|
+| `BE_TRIGGER_RR` | 1.0 | **0.5** | Lock SL → entry at half-way to TP |
+| `PARTIAL_TRIGGER_RR` | 1.0 | **0.7** | Take 50% profit at 70% to TP |
+| `TRAIL_ACTIVATION_RR` | 1.5 | **99.0** (disabled) | Trailing impossible under RR=1:1 (cannot exceed TP) |
+
+**No retrain required** — `TradeManager` is live-only execution logic, not part of the RL env or training pool. v8.0.10 retrain in flight remains valid.
+
+**Invariant** — when changing strategy's RR target, `TradeManager` BE/Partial/Trail thresholds MUST be tuned to fire BEFORE TP. If `BE_TRIGGER_RR ≥ rr_target`, BE is dead code; if `TRAIL_ACTIVATION_RR ≥ rr_target`, trailing is impossible.
+
+### 2026-05-07 — v8.0.11 RR FP-precision fix (RiskManager + PositionSizer)
+
+**Problem** — VPS log showed:
+
+```text
+📡 [Agent] TAKE SELL AUDUSD Conf=75 RR=1:1.0 (confidence=1.00)
+🚫 [Executor] Risk Manager ปฏิเสธ: ❌ Risk:Reward (1.00) ต่ำกว่าขั้นต่ำ (1.0)
+```
+
+Display says `1.00` but underlying value was `0.99999...` due to floating-point error → strict `<` comparison rejected the signal.
+
+**Root cause** — `MRSignal.rr_ratio` (@property) computes:
+
+```python
+tp_dist = abs(self.tp_price - self.entry_price)
+return tp_dist / self.sl_distance
+```
+
+`self.sl_distance` is stored exact (e.g. `0.0012` from ATR floor), but `tp_price` is rounded to broker digits (`round(entry - sl_distance, 5)`). FP subtraction `entry - tp_price` reconstructs the distance with tiny FP drift:
+
+```python
+>>> 0.58923 - 0.58803
+0.0011999999999999927   # not 0.0012
+```
+
+→ rr_ratio = `0.001199.../0.0012 = 0.999999...` < `1.0` → **every MR signal with RR=1:1 rejected**.
+
+**Fix** — added `1e-4` epsilon tolerance to two `<` checks:
+
+- `RiskManager.can_open_trade` line 520
+- `PositionSizer.calculate_sl_tp_prices` line 338
+
+```python
+if rr_ratio < self._config.MIN_RISK_REWARD_RATIO - 1e-4:
+```
+
+`1e-4` is well below any meaningful RR precision (rr=0.9999 vs 1.0 is indistinguishable in practice) and absorbs FP error from price-rounding.
+
+**Why v8.0.9 didn't catch this** — v8.0.9 changed `MIN_RISK_REWARD_RATIO` 1.5 → 1.0 to ALLOW RR=1.0 in principle, but the strict `<` operator combined with FP drift kept blocking signals at the 1.0 boundary. The earlier ad-hoc tests on Mac may have hit an entry/sl/tp combo that aligned cleanly; AUDUSD/NZDUSD on the VPS at different prices triggered the FP edge.
+
+**Audit added** — none new; existing parity audit's RR cross-check (`bot_config.ftmo.MIN_RISK_REWARD_RATIO ≤ bot_config.mr.rr_ratio`) still holds.
+
+**Invariant** — when comparing derived FP ratios to a config threshold, always use an epsilon tolerance; otherwise rounding/precision can silently flip a "should-pass" signal to "rejected." Especially load-bearing on equality-boundary thresholds (RR=1.0 exactly).
+
+### 2026-05-07 — v8.0.10 Anti-overfit retrain pipeline + holdout eval gate
+
+**Why** — v8.0.5 model (Pass Rate 59.30 % on the 3000 pool it trained on) had no independent generalization test. The pool was the training set, and the eval used the same pool, so a high pass rate could reflect memorization of those specific 3000 episode-seeds rather than a real edge.
+
+**Anti-overfit retrain settings** (orchestrated by `auto_train_pipeline.py`):
+
+| Knob | v8.0.5 | v8.0.10 | Rationale |
+| --- | ---: | ---: | --- |
+| `pool_size` | 3000 | **5000** | More episode diversity → fewer revisits per epoch |
+| `outcome_noise` | 0.05 | **0.08** | Stronger label-noise regularization on pool outcomes |
+| `timesteps_p1` (Alpha) | 5M | 5M | unchanged |
+| `timesteps_p2` (Risk) | 2M | **5M** | Let value function fully converge under DD penalty |
+
+**Holdout pool** — built once via `build_mr_signal_pool.py --seed 999 --save_path data/mr_signal_pool_holdout.pkl` (783 valid episodes from 800 attempted, 82.4 MB). Different episode-seed grid from the training pool (seed=42) → independent samples by construction.
+
+**Holdout eval verdict** — `scripts/holdout_eval.py` runs the saved best model on (train pool, holdout pool) and reports Δ Pass Rate:
+
+- ≤ 5 pp → ✅ HEALTHY (model generalizes)
+- 5-10 pp → 🟡 MILD OVERFIT (acceptable, watch)
+- > 10 pp → ❌ OVERFIT (exit 1 — model memorized training pool)
+
+**Backup** — pre-retrain best snapshotted to `models/mr/best_v8.0.5_pass59pct/` for rollback if v8.0.10 regresses.
+
+**Invariant added** — anti-overfit gate: holdout_eval Δ Pass Rate ≤ 10 pp must hold before promoting any model to live. The training-pool eval (`train_mr_signal_filter.py --eval_only`) is no longer sufficient on its own.
 
 ### 2026-05-07 — v8.0.9 RR floor 1.5 → 1.0 (RiskManager rejecting every MR signal)
 

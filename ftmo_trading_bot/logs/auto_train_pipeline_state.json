@@ -2,15 +2,15 @@
   "history": [
     {
       "iteration": 0,
-      "timestamp": "2026-05-06T17:19:07+00:00",
-      "duration_sec": 718.9737918376923,
+      "timestamp": "2026-05-07T08:06:14+00:00",
+      "duration_sec": 4792.321270942688,
       "hyperparams": {
         "timesteps_p1": 5000000,
-        "timesteps_p2": 2000000,
+        "timesteps_p2": 5000000,
         "n_envs": 8,
-        "pool_size": 3000,
+        "pool_size": 5000,
         "pool_workers": 8,
-        "outcome_noise": 0.05,
+        "outcome_noise": 0.08,
         "ml_threshold": 0.4,
         "risk_per_trade": 0.0099,
         "lr_p1": 0.0003,
@@ -20,18 +20,18 @@
         "prolonged_loss_penalty": 0.4,
         "base_loss_penalty": 0.1,
         "duration_fine_coef": 0.02,
-        "rebuild_pool": false,
-        "rebuild_gbm": false
+        "rebuild_pool": true,
+        "rebuild_gbm": true
       },
       "metrics": {
-        "pass_rate": 0.593,
+        "pass_rate": 0.587,
         "breach_rate": 0.0,
-        "profitable_rate": 0.891,
-        "win_rate": 0.615542270395547,
-        "take_rate": 0.4634813105035154,
+        "profitable_rate": 0.8818,
+        "win_rate": 0.6153718110596923,
+        "take_rate": 0.4603290519980277,
         "total_dd_max": 0.058,
         "daily_dd_max": 0.0300000000000001,
-        "profit_avg": 7229.5886250352505
+        "profit_avg": 7088.233648663249
       },
       "decision": "pass",
       "notes": "all_gates_passed",
@@ -40,16 +40,16 @@
     }
   ],
   "best_metrics": {
-    "pass_rate": 0.593,
+    "pass_rate": 0.587,
     "breach_rate": 0.0,
-    "profitable_rate": 0.891,
-    "win_rate": 0.615542270395547,
-    "take_rate": 0.4634813105035154,
+    "profitable_rate": 0.8818,
+    "win_rate": 0.6153718110596923,
+    "take_rate": 0.4603290519980277,
     "total_dd_max": 0.058,
     "daily_dd_max": 0.0300000000000001,
-    "profit_avg": 7229.5886250352505
+    "profit_avg": 7088.233648663249
   },
   "best_iteration": 0,
-  "elapsed_hours": 0.199715919163492,
+  "elapsed_hours": 1.3312016191747453,
   "finished": true
 }

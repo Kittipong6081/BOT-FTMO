@@ -473,6 +473,9 @@ def main():
     parser.add_argument("--n_envs", type=int, default=8)
     parser.add_argument("--ml_threshold", type=float, default=0.40)
     parser.add_argument("--risk_per_trade", type=float, default=0.0099)
+    parser.add_argument("--outcome_noise", type=float, default=0.05,
+                        help="Outcome PnL noise std (regularization, anti-overfit). "
+                             "Default 0.05; v8.0.10 retrain uses 0.08")
     # Gates
     parser.add_argument("--target_pass_rate", type=float, default=0.08)
     parser.add_argument("--target_dd_max", type=float, default=0.06)
@@ -501,6 +504,7 @@ def main():
         pool_size=args.pool_size,
         ml_threshold=args.ml_threshold,
         risk_per_trade=args.risk_per_trade,
+        outcome_noise=args.outcome_noise,
         # v8.0.4: rebuild only if files don't already exist. Preserves pool/GBM
         # across pipeline restarts (e.g. when env constants change but pool
         # generation logic is unchanged).

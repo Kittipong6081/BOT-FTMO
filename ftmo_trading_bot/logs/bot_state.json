@@ -1,11 +1,11 @@
 {
   "state": "ACTIVE",
   "initial_balance": 10000.0,
-  "highest_balance": 10251.87,
-  "daily_start_equity": 10098.62,
-  "daily_start_balance": 10098.62,
-  "peak_daily_equity": 10098.62,
-  "current_day": "2026-04-28",
+  "highest_balance": 100000.0,
+  "daily_start_equity": 100000.0,
+  "daily_start_balance": 100000.0,
+  "peak_daily_equity": 100000.0,
+  "current_day": "2026-05-07",
   "daily_closed_pnl": 0.0,
   "daily_trades_count": 0,
   "last_loss_time_per_symbol": {
@@ -44,5 +44,5 @@
     }
   },
   "schema_version": 6,
-  "last_updated": "2026-04-28T04:00:01.179255"
+  "last_updated": "2026-05-07T12:41:39.399177"
 }

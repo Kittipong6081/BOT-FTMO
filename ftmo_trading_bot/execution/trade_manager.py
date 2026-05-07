@@ -54,19 +54,23 @@ class TradeManager:
 
     ลำดับการจัดการ (ทุก Tick):
     1. ซิงค์กับ MT5 (ตรวจ SL/TP Hit)
-    2. ตรวจสอบ Break-Even Move (กำไร >= 1:1 → SL → Entry)
-    3. ตรวจสอบ Partial Close (กำไร >= 1:1 → ปิด 50%)
-    4. ตรวจสอบ Trailing Stop (ราคาใหม่ดีกว่าเดิม → เลื่อน SL)
+    2. ตรวจสอบ Break-Even Move (best_rr >= 0.5 → SL → Entry)
+    3. ตรวจสอบ Partial Close (best_rr >= 0.7 → ปิด 50%)
+    4. Trailing — DISABLED ภายใต้ MR RR=1:1 (TP ปิดก่อน trail ทำงาน)
     5. ตรวจสอบ Force Close (Friday 20:45 EET / Daily Overnight 23:30 EET / Friday Warning UTC)
+
+    v8.0.12 (MR RR=1:1 alignment): triggers ปรับให้ทำงานก่อน TP จะปิด position
+    เดิมตั้ง 1.0 / 1.0 / 1.5 จากยุค SMC RR=1:2.5 — ภายใต้ MR RR=1:1 = dead code
+    ทุกตัว (TP ปิด @ 1.0R ก่อน BE/Partial ทำงาน, Trail 1.5R เป็นไปไม่ได้เลย).
     """
 
-    # === ค่าคงที่สำหรับการจัดการ ===
-    BE_TRIGGER_RR: float = 1.0          # เลื่อน SL มา Entry เมื่อกำไรถึง RR 1:1
+    # === ค่าคงที่สำหรับการจัดการ (v8.0.12 MR RR=1:1 tuned) ===
+    BE_TRIGGER_RR: float = 0.5          # เลื่อน SL มา Entry เมื่อ best_rr ≥ 0.5R (ครึ่งทาง TP)
     BE_OFFSET_PIPS: float = 0.0         # เลื่อน SL มา Entry พอดี (ไม่มี offset)
-    PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ TP1 Hit
-    PARTIAL_TRIGGER_RR: float = 1.0     # ปิดบางส่วนเมื่อกำไรถึง RR 1:1
-    TRAIL_ACTIVATION_RR: float = 1.5    # เริ่ม Trail เมื่อกำไรถึง RR 1.5:1
-    TRAIL_ATR_MULTIPLIER: float = 1.0   # Trail SL ห่างจาก Best Price = ATR × 1.0
+    PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ Partial Trigger Hit
+    PARTIAL_TRIGGER_RR: float = 0.7     # ปิดบางส่วนเมื่อ best_rr ≥ 0.7R (70% to TP)
+    TRAIL_ACTIVATION_RR: float = 99.0   # DISABLED — MR RR=1:1 ปิดที่ 1.0R ก่อน trail ทำงาน
+    TRAIL_ATR_MULTIPLIER: float = 1.0   # Trail SL ห่างจาก Best Price = ATR × 1.0 (unused)
 
     def __init__(
         self,

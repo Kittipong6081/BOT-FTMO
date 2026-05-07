@@ -1,8 +1,11 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-07 (v8.0.5 — MR live default, ALL GATES PASSED) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-07 (v8.0.12 — TradeManager BE/Partial/Trail tuned for MR RR=1:1) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
+- **v8.0.12 (2026-05-07) — 🔧 TradeManager BE/Partial/Trail tuned for MR RR=1:1**: Constants ค้างจากยุค SMC RR=1:2.5 → ภายใต้ MR RR=1:1 = dead code ทุกตัว (TP ปิดที่ 1.0R ก่อน BE/Partial ทำงาน, Trail 1.5R เป็นไปไม่ได้เลย). Live ผลกระทบ: GBPUSD trade MFE ≈ 0.95R revert มา full SL — ถ้า BE ทำงานที่ 0.5R จะปิดที่ entry ไม่เสีย. Tune ใหม่: BE 1.0R → **0.5R**, Partial 1.0R → **0.7R**, Trail 1.5R → **99.0** (disabled). ไม่ต้อง retrain (TradeManager เป็น live-only). ดู [`wiki/05-invariants.md` v8.0.12 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
+- **v8.0.11 (2026-05-07) — 🔧 RR FP-precision fix (RiskManager + PositionSizer)**: VPS log แสดง `Risk:Reward (1.00) ต่ำกว่าขั้นต่ำ (1.0)` — display พูด 1.00 แต่ค่าจริงเป็น 0.99999... จาก floating-point drift หลัง `round(entry - sl_distance, 5)`. `MRSignal.rr_ratio` คำนวณจาก rounded price → strict `<` comparison reject ทุก MR signal ที่ RR=1:1 พอดี. Fix: เพิ่ม `1e-4` epsilon tolerance ที่ 2 จุด (`RiskManager.can_open_trade` + `PositionSizer.calculate_sl_tp_prices`). ดู [`wiki/05-invariants.md` v8.0.11 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
+- **v8.0.10 (2026-05-07) — 🔬 Anti-overfit retrain pipeline + holdout eval gate**: v8.0.5 model showed Pass Rate 59.30 % on the same 3000-pool it trained on — no independent generalization test. Built holdout pool (`data/mr_signal_pool_holdout.pkl`, seed=999, 783 valid eps) and `scripts/holdout_eval.py` to measure Δ Pass Rate (train pool vs holdout). Retrain settings: pool 3000 → **5000**, outcome_noise 0.05 → **0.08**, P2 timesteps 2M → **5M**. Backup of v8.0.5 best at `models/mr/best_v8.0.5_pass59pct/`. New invariant: holdout Δ Pass Rate ≤ 10 pp gate before promoting any model to live. ดู [`wiki/05-invariants.md` v8.0.10 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
 - **v8.0.5 (2026-05-07) — 🎉 MR pipeline ALL GATES PASSED in iter 1, live wired**: After 4 sub-iterations of fixes (leakage audit, parity audit, daily/total DD guards), the autonomous pipeline converged in a single training iter. Final eval (5000 eps): **Pass Rate 59.30%**, Profitable Rate 89.10%, Total DD max 5.80% (≤ 6% gate), Daily DD max 3.00% (≤ 3.5% gate), Breach Rate 0%, Profit avg +$7,229.59 (+7.23%). Best model snapshotted at `models/mr/best/`. Live `main.py` already refactored to use `LiveMRScanner` (drop-in for SMCStrategy) and `bot_config.mr.strategy_mode = "mean_reversion"`. Run `python main.py` to deploy. SMC code preserved as deprecated reference (`strategy/smc_strategy.py` still exists, no longer imported by live). Two new invariants enforced: **NO LEAKAGE** (`scripts/leakage_audit.py`) + **TRAIN/LIVE PARITY** (`scripts/parity_audit.py`) — both must pass before any commit touching `ml/`, `strategy/`, or `main._build_signal_observation`. ดู [`wiki/05-invariants.md` v8.0.5 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).
 - **v8.0 (2026-05-06) — Mean Reversion strategy pivot (initial spec)**: Parallel pivot to a high-win-rate Mean Reversion + Trend Filter strategy. New modules: `MeanReversionStrategy` (BB %B extreme + RSI confirm + ADX H1 trend block + ATR-based tight SL + RR 1:1), `MeanReversionBacktester` (pool builder), `MeanReversionFilterEnv` (RL env with quick-TP bonus + prolonged-loss penalty + duration fine), and `auto_train_pipeline.py` (autonomous Build pool → GBM → RL → Eval → Self-correct loop). Pool path: `data/mr_signal_pool_<N>.pkl`, model path: `models/mr/ppo_mr_filter.zip`. Reward shaping focuses on capital preservation: quick-TP (≤5 bars) bonus +0.5R, slow win bonus +0.2R, base loss −0.1R, duration fine 0.02R/bar (capped 0.3R), prolonged-loss (≥12 bars red) penalty −0.4R, ADX > 25 violation penalty −0.3R.
 - **v7.2.1 (2026-05-06) — obs[29/30] leak fix (audit-driven)**: Audit หา data leakage หลัง v7.2 retrain Pass Rate **6.3%** (ต่ำกว่า baseline v6.13 = 9.7%). พบ leak ใน `FTMOSignalFilterEnv` — `_open_positions` เก็บ `outcome_partial` (final outcome × decay) → `_floating_pnl_norm` (obs[29]) + `_open_losing_count_norm` (obs[30]) **เห็น sign ของ outcome ตั้งแต่ position เปิด**. Live ใช้ true unrealized PnL จาก `RiskManager` ที่ oscillate กับ price path → distribution mismatch + future leak. Fix: zero-out obs[29/30] ใน training env (ลบ block calculation + `outcome_partial` field). 5 surface อื่น (GBM features/HTF align/training OOF/Chronos/Aux) ผ่าน clean. Pool/GBM ไม่ต้อง rebuild — leak อยู่ที่ env เท่านั้น. Retrain RL อย่างเดียว.
@@ -188,7 +191,7 @@ ftmo_trading_bot/
 ├── core/                    ← RiskManager, MT5Connector, TimeManager, PositionSizer, NewsCalendarScheduler, DiscordNotifier
 ├── execution/               ← TradeExecutor, TradeManager
 ├── analytics/               ← PerformanceAnalyzer + TradeLogger (Excel: Trades 58 cols / Signals 20 cols / Daily / Stats, v8.0.6)
-├── scripts/                 ← build_mr_signal_pool, train_mr_signal_quality, train_mr_signal_filter, auto_train_pipeline, leakage_audit, parity_audit, pipeline_status.sh
+├── scripts/                 ← build_mr_signal_pool, train_mr_signal_quality, train_mr_signal_filter, auto_train_pipeline, leakage_audit, parity_audit, holdout_eval (v8.0.10), pipeline_status.sh
 ├── data/                    ← OHLCV CSVs + mr_signal_pool_3000.pkl (gitignored) + mr_signal_quality_model.pkl
 ├── models/mr/               ← ppo_mr_filter.zip + vec_normalize_mr.pkl + best/ snapshot (v8.0+)
 └── logs/                    ← bot_state.json + ftmo_trades.xlsx + tensorboard + auto_train_pipeline.log
@@ -228,6 +231,16 @@ Trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5).
 ```bash
 .venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py --eval_only \
     --pool_size 3000 --ml_threshold 0.30 --risk_per_trade 0.0099
+```
+
+**Anti-overfit holdout eval (v8.0.10, mandatory before promoting to live)**:
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/holdout_eval.py \
+    --train_pool ftmo_trading_bot/data/mr_signal_pool_5000.pkl \
+    --holdout_pool ftmo_trading_bot/data/mr_signal_pool_holdout.pkl \
+    --n_episodes 2000
+# Verdict: Δ Pass Rate ≤ 5 pp = HEALTHY, > 10 pp = OVERFIT (exit 1)
 ```
 
 **Audits** (mandatory before commit):

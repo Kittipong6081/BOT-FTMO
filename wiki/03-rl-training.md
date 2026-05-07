@@ -1,5 +1,5 @@
 # 03 — RL Training (Obs 32 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-07 (v8.0.8) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-05-07 (v8.0.10 — anti-overfit retrain in progress) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
 
 ## TL;DR (30-second scan)
 
@@ -244,6 +244,7 @@ Sum if pass  : +7.0 max
 ### Outcome Perturbation
 
 - `outcome_noise_std=0.05` (v6.13 default — เพิ่มจาก 0.02) — 5 % Gaussian noise on pool outcomes during env step.
+- **v8.0.10 anti-overfit retrain**: bumped to **0.08** alongside larger pool (5000) + longer P2 (5M) — fights episode-memorization shown by holdout_eval gap.
 - Purpose: regularization (prevent overfit to fixed pool outcomes; simulate live slippage + spread variability).
 
 ---
@@ -288,6 +289,28 @@ Sum if pass  : +7.0 max
     --target_pass_rate 0.08 --target_dd_max 0.06 \
     --target_daily_dd_max 0.035 --target_profitable 0.55
 ```
+
+**v8.0.10 anti-overfit retrain** — larger pool + more noise + longer P2:
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/auto_train_pipeline.py \
+    --max_iterations 3 --max_hours 12 \
+    --pool_size 5000 --timesteps_p1 5000000 --timesteps_p2 5000000 \
+    --outcome_noise 0.08 \
+    --target_pass_rate 0.08 --target_dd_max 0.06 \
+    --target_daily_dd_max 0.035 --target_profitable 0.55
+```
+
+**Anti-overfit verification** (run after pipeline finishes):
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/holdout_eval.py \
+    --train_pool data/mr_signal_pool_5000.pkl \
+    --holdout_pool data/mr_signal_pool_holdout.pkl \
+    --n_episodes 2000
+```
+
+Verdict: Δ Pass Rate ≤ 5 pp = HEALTHY, 5-10 pp = MILD, > 10 pp = OVERFIT (exits 1).
 
 **Manual path** (3 steps):
 
