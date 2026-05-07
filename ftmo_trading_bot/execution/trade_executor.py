@@ -17,7 +17,7 @@ FTMO Trading Bot — Trade Executor (ระบบส่งคำสั่งซ�
 """
 
 import time as time_module
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field
 
@@ -351,6 +351,67 @@ class TradeExecutor:
         self._notifier = DiscordNotifier()
 
         print("⚡ [Trade Executor] เริ่มต้นระบบส่งคำสั่งเทรด")
+
+    # =========================================================================
+    # ♻️ Orphan Recovery (v8.0.13)
+    # =========================================================================
+
+    def _rebuild_executed_trade_from_mt5(self, pos: Dict) -> ExecutedTrade:
+        """
+        สร้าง ExecutedTrade จาก MT5 position dict — ใช้ตอน orphan recovery
+        (bot restart แล้ว position ยังค้างที่ broker)
+
+        ค่าที่ recover ไม่ได้จาก MT5 (ATR, ML score, signal reasons) จะ:
+        - ATR: ใช้ค่าปัจจุบัน (acceptable approximation — ใช้ใน trail distance เท่านั้น)
+        - ML/agent fields: ใส่ default 0.0 / "" (ไม่ส่งผลต่อ trade management)
+
+        Args:
+            pos: dict จาก connector.get_open_positions() — มี ticket, symbol, type,
+                 volume, price_open, sl, tp, time, magic, ...
+
+        Returns:
+            ExecutedTrade ที่ถือว่า is_open=True, พร้อมให้ TradeManager จัดการต่อ
+        """
+        # ประมาณ ATR ปัจจุบันสำหรับ trail (ของเดิมไม่มีใน MT5)
+        # ATR ใช้แค่กับ trail distance — recover ค่าปัจจุบันก็เพียงพอ
+        atr_value = 0.0
+        try:
+            from strategy.indicators import TechnicalIndicators
+            rates = self._connector.get_ohlcv(pos["symbol"], "M15", 100)
+            if rates is not None and len(rates) >= 50:
+                atr_df = TechnicalIndicators().calculate_atr(rates, period=14)
+                atr_value = float(atr_df["atr"].iloc[-1])
+        except Exception:
+            pass
+
+        # คำนวณ SL distance สำหรับ rr_ratio
+        entry = float(pos["price_open"])
+        sl = float(pos["sl"]) if pos.get("sl") else 0.0
+        tp = float(pos["tp"]) if pos.get("tp") else 0.0
+        sl_dist = abs(entry - sl) if sl > 0 else 0.0
+        tp_dist = abs(tp - entry) if tp > 0 else 0.0
+        rr = (tp_dist / sl_dist) if sl_dist > 0 else 1.0
+
+        return ExecutedTrade(
+            ticket=int(pos["ticket"]),
+            symbol=str(pos["symbol"]),
+            trade_type=str(pos["type"]),
+            entry_price=entry,
+            sl_price=sl,
+            tp_price=tp,
+            lot_size=float(pos["volume"]),
+            risk_amount=0.0,            # unknown — would need historical balance
+            risk_pct=0.0,
+            rr_ratio=rr,
+            confluence_score=0.0,
+            atr_value=atr_value,
+            open_time=pos.get("time", datetime.now(timezone.utc)),
+            signal_reasons=["recovered from MT5 (orphan)"],
+            magic_number=int(pos.get("magic", 123456)),
+            is_open=True,
+            original_lot_size=float(pos["volume"]),
+            agent_decision="RECOVERED",
+        )
 
     # =========================================================================
     # 🚀 ส่งคำสั่งเทรดจากสัญญาณ
@@ -1033,6 +1094,25 @@ class TradeExecutor:
 
         mt5_positions = self._connector.get_open_positions()
         mt5_tickets = {pos["ticket"] for pos in mt5_positions}
+
+        # === v8.0.13: Orphan Recovery (MT5 → Active Trades) ===
+        # หา position ที่อยู่ใน MT5 แต่ไม่อยู่ใน _active_trades — เกิดได้เมื่อ:
+        # 1. Bot restart กลางทาง (active_trades ใน RAM หาย แต่ broker ยังถือ position)
+        # 2. Manual order ที่เปิดผ่าน MT5 client (magic ไม่ตรง — บอทไม่จัดการ ข้าม)
+        # ก่อน v8.0.13 บอทมองไม่เห็น orphan → เปิดซ้ำ + ไม่จัดการของเก่า (เห็นจริงในรูป NZDUSD)
+        for pos in mt5_positions:
+            ticket = pos["ticket"]
+            if ticket in self._active_trades:
+                continue  # already tracked
+            # ข้าม manual orders (magic ไม่ตรง bot magic)
+            if pos.get("magic", 0) != 123456:
+                continue
+            try:
+                self._active_trades[ticket] = self._rebuild_executed_trade_from_mt5(pos)
+                print(f"♻️ [Executor] Orphan recovery: re-attached ticket {ticket} "
+                      f"({pos['symbol']} {pos['type']} {pos['volume']} lot @ {pos['price_open']:.5f})")
+            except Exception as e:
+                print(f"⚠️ [Executor] ไม่สามารถ recover orphan ticket {ticket}: {e}")
 
         # ตรวจหาเทรดที่ปิดไปแล้ว (อยู่ใน Active แต่ไม่อยู่ใน MT5)
         closed_tickets = []

@@ -264,7 +264,7 @@ class FTMOTradingBot:
             print("❌ [Bot] เริ่มต้น Risk Manager ล้มเหลว")
             return False
 
-        # ขั้นตอนที่ 3: ตรวจสอบ Position ที่เปิดค้าง
+        # ขั้นตอนที่ 3: ตรวจสอบ Position ที่เปิดค้าง + Orphan Recovery (v8.0.13)
         print("\n" + "━" * 40)
         print("📋 ขั้นตอนที่ 3: ตรวจสอบ Position ค้าง")
         print("━" * 40)
@@ -273,6 +273,11 @@ class FTMOTradingBot:
             print(f"⚠️ มี {len(open_positions)} Position เปิดค้างอยู่:")
             for pos in open_positions:
                 print(f"   📌 {pos['symbol']} {pos['type']} Vol={pos['volume']} P/L=${pos['profit']:,.2f}")
+            # v8.0.13: Re-attach orphan positions to executor._active_trades
+            # กัน duplicate-open + ให้ TradeManager จัดการต่อ (BE/Partial/Trail/News)
+            print("♻️ [Bot] Orphan recovery — re-attaching positions to active_trades…")
+            self._executor.sync_with_mt5()
+            print(f"✅ [Bot] Active trades หลัง sync: {len(self._executor.active_trades)} ticket")
         else:
             print("✅ ไม่มี Position ค้าง")
 

@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-07 (v8.0.10 — anti-overfit retrain + holdout eval) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-07 (v8.0.13 — Orphan recovery + trail_states persistence) | Scope: every module + key class / method / variable
 >
 > **v8.0 new modules (MR pivot, code staged — not wired to live)**:
 >
@@ -238,7 +238,9 @@ Always floor-round the lot size (never ceil) — safety margin against broker st
 |--------|------|
 | `TradeExecutor.execute_signal(sig, live_context=None)` | Final gate: re-check risk → calc lot → send order → log. Accepts `live_context` dict from `main.py` and applies fields to `ExecutedTrade`. v6.10: ตั้ง `self._last_reject_reason` ที่ทุก rejection point (correlation/lot/risk/spread/validation/order). |
 | `TradeExecutor._last_reject_reason` (v6.10) | String key ของ rejection point ล่าสุด. Reset ต้น `execute_signal`. main.py อ่านหลัง None return → log ลง Signals sheet "Executor Reject" col. |
-| `TradeExecutor.sync_with_mt5` | Cumulative profit accumulator: pulls **all deals** of a position via `MT5Connector.get_deals_by_position(ticket)`, sums `profit + swap + commission`. Partial-close + BE-SL = WIN if cumulative > 0 (see [05-invariants.md FAQ](05-invariants.md)). |
+| `TradeExecutor.sync_with_mt5` | Two-way sync (v8.0.13): (1) **MT5 → active**: orphan recovery — re-attach positions in MT5 not yet in `_active_trades` via `_rebuild_executed_trade_from_mt5` (skip non-bot magic). (2) **active → MT5**: detect closed trades, pull all deals via `get_deals_by_position(ticket)`, sum `profit + swap + commission` for cumulative P/L (Partial-close + BE-SL = WIN if cumulative > 0). |
+| `TradeExecutor._rebuild_executed_trade_from_mt5(pos)` (v8.0.13) | Rebuilds `ExecutedTrade` from MT5 position dict on orphan recovery. Recovers ticket/symbol/type/lot/entry/SL/TP/magic; approximates ATR from current M15; ML/agent fields default to 0.0; tags `agent_decision="RECOVERED"` for downstream visibility. |
+| `TradeManager._save_trail_states` / `_load_trail_states` (v8.0.13) | Persist `_trail_states` to `logs/trail_states.json` (best_price, breakeven_moved, partial_closed, current_sl, trail_distance) every management cycle. Loaded on `__init__`. Without this, restart resets BE/Partial flags → potential re-fire on same position. |
 | `ExecutedTrade` (dataclass v3 — v6.10 enhanced, 60+ fields) | Schema carries everything for live analysis: ML features (cal/raw scores, agent decision), confluence breakdown (HTF/MTF/OB/FVG/Sweep pts), trade-mgmt state (`be_moved`, `partial_closed_flag`, `partial_close_skipped` v6.10, `trailing_active`, `final_sl_at_close`), bid/ask @entry/exit, market context (ADX H1/H4, MTF/D1 bias), account state, overtrading metrics, **`obs_27_json`** (full 27-dim obs at decision time → unlock retrain). |
 | `TradeExecutor._check_correlation` | Groups: USD_WEAK / USD_STRONG / JPY_CROSS / EUR_PAIRS / GBP_PAIRS — `MAX_CORRELATED_POSITIONS` per group per direction |
 

@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.12** — TradeManager BE/Partial/Trail tuned for MR RR=1:1)
+> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.13** — Orphan position recovery + trail_states persistence)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,62 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-07 — v8.0.13 Orphan position recovery + trail_states persistence
+
+**Problem** — Bot restart caused **duplicate position opening** (real incident: NZDUSD SELL 2x in user's MT5):
+
+| Step | Effect |
+|---|---|
+| 1. Bot opens NZDUSD SELL | `_active_trades[ticket]` populated (RAM only) |
+| 2. Bot stops (crash / restart) | RAM cleared — `_active_trades = {}` |
+| 3. MT5 still holds the position (broker SL/TP active) | Orphan position |
+| 4. Bot restarts → strategy re-generates SELL signal | |
+| 5. Duplicate check: `_active_trades.values()` → empty → no duplicate | **Opens 2nd SELL** ❌ |
+| 6. TradeManager only manages new ticket | **orphan abandoned** ❌ |
+
+`sync_with_mt5` had a comment claiming it would handle "MT5 → Active" direction, but the code only did "Active → MT5" (find closed trades) — never imported orphans.
+
+**Fix #1 — Orphan recovery** (`TradeExecutor.sync_with_mt5`):
+
+```python
+# v8.0.13: import orphan positions from MT5 → _active_trades
+for pos in mt5_positions:
+    if pos["ticket"] in self._active_trades:
+        continue
+    if pos.get("magic", 0) != 123456:  # skip manual orders
+        continue
+    self._active_trades[pos["ticket"]] = self._rebuild_executed_trade_from_mt5(pos)
+```
+
+New helper `_rebuild_executed_trade_from_mt5` reconstructs `ExecutedTrade` from MT5 position dict. Recovers what MT5 has (entry/SL/TP/lot/symbol/type/magic) and approximates ATR from current M15 (acceptable — used only for trail distance). Agent decision tagged `"RECOVERED"`.
+
+**Fix #2 — Startup sync** (`main.FTMOTradingBot.connect`):
+
+```python
+# Step 3 — orphan recovery before any signal scan
+self._executor.sync_with_mt5()
+print(f"✅ Active trades after sync: {len(self._executor.active_trades)}")
+```
+
+**Fix #3 — Trail state persistence** (`TradeManager._save_trail_states` / `_load_trail_states`):
+
+Persists `_trail_states` (best_price, breakeven_moved, partial_closed, current_sl, trail_distance) to `logs/trail_states.json`. Saved every management cycle (5s, cheap JSON). Loaded on init. Without this, restart would reset BE/Partial flags → BE could re-fire on the same position, Partial could close another 50% (over-close).
+
+**Trade-offs / known gaps**:
+
+- ML/agent fields (ml_score, agent_action_value, htf_score, ฯลฯ) **NOT** persisted — they're decision-time metadata, not needed for managing existing position. Recovered trades log with default 0.0 + `agent_decision="RECOVERED"`.
+- ATR_value approximation: re-computed from current M15 instead of original signal-time ATR. Trail uses current ATR anyway (already adaptive), so impact is negligible.
+- Manual orders (magic ≠ 123456) **excluded** from recovery — bot won't manage trades opened via MT5 client directly.
+
+**Invariant** — bot restart MUST be transparent to live positions. Required mechanisms:
+
+1. `sync_with_mt5` imports orphan positions (`_active_trades` rehydrated from MT5).
+2. Startup hook calls `sync_with_mt5` before signal scan.
+3. `_trail_states` persists across restart (BE/Partial flags survive).
+4. FTMO anchors persist via existing `bot_state.json`.
+
+If any of (1)-(4) breaks, bot opens duplicate positions OR re-fires BE/Partial — both are real bugs.
 
 ### 2026-05-07 — v8.0.12 TradeManager BE/Partial/Trail tuned for MR RR=1:1
 

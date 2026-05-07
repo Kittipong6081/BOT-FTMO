@@ -12,10 +12,12 @@ FTMO Trading Bot — Trade Manager (ระบบจัดการเทรด�
 ===============================================================================
 """
 
+import json
+import os
 import time as time_module
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 import pytz
 
@@ -93,7 +95,57 @@ class TradeManager:
         # สถานะ Trailing ของแต่ละ Position
         self._trail_states: Dict[int, TrailingState] = {}
 
+        # v8.0.13: persist trail states ข้าม restart — กัน BE/Partial trigger ซ้ำ
+        # path เดียวกันกับ bot_state.json directory
+        self._state_file = os.path.join(
+            os.path.dirname(bot_config.paths.state_file),
+            "trail_states.json",
+        )
+        self._load_trail_states()
+
         print("📋 [Trade Manager] เริ่มต้นระบบจัดการเทรด")
+
+    # =========================================================================
+    # 💾 Trail State Persistence (v8.0.13)
+    # =========================================================================
+
+    def _save_trail_states(self):
+        """
+        เซฟ _trail_states ลงไฟล์ JSON — เรียกทุกครั้งที่ state เปลี่ยน
+        (BE moved / Partial closed / SL trailed) เพื่อกันหายตอน restart
+        """
+        try:
+            data = {
+                str(ticket): asdict(state)
+                for ticket, state in self._trail_states.items()
+            }
+            os.makedirs(os.path.dirname(self._state_file), exist_ok=True)
+            tmp = self._state_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, self._state_file)
+        except Exception as e:
+            print(f"⚠️ [Trade Manager] save trail_states ล้มเหลว: {e}")
+
+    def _load_trail_states(self):
+        """
+        โหลด _trail_states จากไฟล์ตอน startup — บอทจำได้ว่าทำ BE/Partial ไปแล้ว
+        ถ้าไฟล์ไม่มี (เริ่มสด) → dict ว่าง, lazy-create per ticket ตอน manage
+        """
+        if not os.path.exists(self._state_file):
+            return
+        try:
+            with open(self._state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for ticket_str, fields in data.items():
+                try:
+                    self._trail_states[int(ticket_str)] = TrailingState(**fields)
+                except Exception as e:
+                    print(f"⚠️ [Trade Manager] skip trail_state {ticket_str}: {e}")
+            if self._trail_states:
+                print(f"♻️ [Trade Manager] โหลด trail_states {len(self._trail_states)} ticket จากไฟล์")
+        except Exception as e:
+            print(f"⚠️ [Trade Manager] load trail_states ล้มเหลว: {e}")
 
     # =========================================================================
     # 🔄 Main Management Loop (เรียกทุก Tick)
@@ -124,6 +176,10 @@ class TradeManager:
         closed_tickets = [t for t in self._trail_states if t not in active_trades]
         for ticket in closed_tickets:
             del self._trail_states[ticket]
+
+        # v8.0.13: persist หลังทุก management cycle (cheap — small JSON, ทุก 5s)
+        if closed_tickets or active_trades:
+            self._save_trail_states()
 
     def _manage_single_position(self, trade: ExecutedTrade):
         """
