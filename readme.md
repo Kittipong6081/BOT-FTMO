@@ -2,9 +2,13 @@
 
 > ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **Mean Reversion + Trend Filter** + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
 >
-> **Last Updated:** 2026-05-07 (v8.0.5 — 🎉 ALL GATES PASSED, MR live ready) | Pass Rate **59.30%** (5000-eps eval, exceeded 8% gate by 51 pp)
+> **Last Updated:** 2026-05-07 (v8.0.8) | Pass Rate **59.30%** (verified 5000-eps eval, exceeded 8% gate by 51 pp)
 >
-> **🎉 v8.0.5 status — Production ready**: pipeline autonomous + self-correct ทำงานสำเร็จ. ตัวเลขสุดท้าย: Pass Rate 59.30%, Profitable 89.10%, Total DD max 5.80%, Daily DD max 3.00%, Breach 0%, Profit avg +7.23%. Best model อยู่ที่ [`models/mr/best/`](ftmo_trading_bot/models/mr/best/). รัน `python main.py` ได้เลย — ระบบโหลด MR model อัตโนมัติ. SMC code ยังเก็บไว้เป็น deprecated reference (ไม่ถูก import ใน live แล้ว).
+> **🎉 v8.0.8 status — Production ready**: pipeline autonomous + self-correct ทำงานสำเร็จในรอบเดียว. ตัวเลขสุดท้าย: Pass Rate 59.30%, Profitable 89.10%, Total DD max 5.80%, Daily DD max 3.00%, Breach 0%, Profit avg +7.23%. Best model อยู่ที่ [`models/mr/best/`](ftmo_trading_bot/models/mr/best/). รัน `python main.py` ได้เลย — ระบบโหลด MR model อัตโนมัติ.
+>
+> **v8.0.6 cleanup**: SMC code ลบทั้งหมด (8 ไฟล์ ~214 KB), Excel schema ปรับ (Trades 66→58 cols, Signals 23→20 cols, name-based `_COL` lookup, auto-archive legacy file), env DD guards เข้ม (DAILY 3.0% / TOTAL 5.8%).
+>
+> **v8.0.7-8 fixes**: Windows VPS UTF-8 audit fix + MRSignal backward-compat properties (`rr_ratio`/`tp_distance`/`timestamp`).
 
 ---
 

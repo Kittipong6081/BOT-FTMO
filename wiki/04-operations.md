@@ -1,20 +1,17 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-06 (v7.1.10 — pre-news close fix) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
->
-> **v7.1.10 (2026-05-06)** — `TradeManager.check_news_close()` ปิด position ก่อนชนข่าว sync กับ scan-signal block (window 30 นาที ก่อน event) + `XAUUSD` รวมใน USD news map
->
-> **v7.1 changes** — `RiskManager.check_unrealized_circuit_breaker` (เรียกใน `can_open_trade` หลัง global pause) + cross-group `MAX_USD_THEME_POSITIONS` ใน `TradeExecutor._check_correlation_risk` + GBM drift monitor (`_check_gbm_drift`) ทุก 720 loops
+> Last Updated: 2026-05-07 (v8.0.8) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
-- Entry: `python main.py` — builds `FTMOTradingBot` and loops every 5 s.
-- FTMO program = **2-step Standard** → `CONSISTENCY_RULE_THRESHOLD = 1.0` (check disabled because the program has no Consistency Rule).
+- Entry: `python main.py` — builds `FTMOTradingBot` and loops every 5 s. Strategy = **MR (Mean Reversion)** via `LiveMRScanner` (v8.0+).
+- FTMO program = **2-step Standard** → `CONSISTENCY_RULE_THRESHOLD = 1.0` (check disabled).
 - Risk hard stops: **4 % daily DD**, **8 % total DD** (buffer vs FTMO 5 %/10 %), target **10 % profit**.
-- Default risk per trade = **0.99 %** (v7.1.9 — FTMO 1% rule, sync กับ RL training).
+- Default risk per trade = **0.99 %** (sync กับ RL training).
+- **ML threshold = 0.30** (v8.0.3, sync `bot_config.ftmo.ML_FILTER_THRESHOLD` ↔ trainer ↔ HyperParams).
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
-- News block: weekly auto-import every Sunday 23:30 EET from `config/news_inbox/`.
-- **Console quiet mode (v6.9)**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
-- **Live logging**: `TradeLogger` writes `logs/ftmo_trades.xlsx` (4 sheets: Trades 64 cols, Signals 21 cols, Daily, Stats). Schema bumped v6.10 (added `Partial Skipped` + `Executor Reject`). Includes `Obs27 JSON` for offline retrain.
+- **No session block** (v8.0.6 SessionConfig cleanup) — bot trades 24/5 except: rollover (23:55-01:05 EET), daily close (Mon-Thu 23:30-23:55 EET), Friday >= 20:45 EET, weekend, news blackout.
+- **Console quiet mode**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
+- **Live logging (v8.0.6)**: `TradeLogger` writes `logs/ftmo_trades.xlsx` (4 sheets: **Trades 58 cols**, **Signals 20 cols**, Daily, Stats). Auto-archives legacy schema (66/23 cols) on first launch. Uses `_COL`/`_SCOL` name-based column lookup. Includes `Obs JSON` (32 dims) for offline retrain.
 
 ## Quick Reference
 
@@ -27,7 +24,7 @@
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
 | Default risk / trade | 0.99 % | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
-| Min confluence | 70 | `FTMOConfig.MIN_CONFLUENCE_SCORE` |
+| ML threshold | 0.30 | `FTMOConfig.ML_FILTER_THRESHOLD` |
 | Cooldown after loss | 60 min | `FTMOConfig.COOLDOWN_AFTER_LOSS_MIN` |
 | Pause / Halt counts (v6.13) | 3 / 4 consec losses | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT/HALT_COUNT` |
 | Post-TP lock TTL | 60 min | `FTMOConfig.POST_TP_LOCK_TTL_MIN` |
@@ -42,16 +39,19 @@
 | # | Action | Symbol | Skip condition |
 |---|--------|--------|----------------|
 | 1 | Risk check | `RiskManager.check_state` | state ≠ ACTIVE → skip tick |
-| 2 | Session check | `TimeManager.is_trading_session` | outside London/NY or after Friday cutoff → skip |
+| 2a | Friday close | `TimeManager.is_friday_close_time` | Friday >= 20:45 EET → close all + skip |
+| 2b | Weekend | `TimeManager.is_weekend` | Sat/Sun → announce-once + sleep until Monday |
+| 2c | Daily close | `TimeManager.is_daily_close_time` | Mon-Thu 23:30-23:55 EET → close all + skip (FTMO zero-overnight) |
+| 2d | Rollover | `TimeManager.is_rollover_period` | 23:55-01:05 EET → skip (spread spike protection) |
 | 3 | News scheduler | `NewsCalendarScheduler.check_and_run` | Sunday 23:30 EET → auto-import CSV (non-blocking) |
-| 4 | News filter | `news_events` / `news_calendar.json` | within ±30 / 15 min of a high-impact event → skip |
-| 5 | Strategy scan | `SMCStrategy.scan_all_symbols` | every 12 loops (~1 min); confluence < `MIN_CONFLUENCE_SCORE` → drop |
-| 6 | ML quality | `SignalQualityModel.score` | populates `live_context["ml_score"]` (calibrated) |
-| 6b | **ML gate (v6.12)** | `FTMOTradingBot.run` checks `ml_score < bot_config.ftmo.ML_FILTER_THRESHOLD` | logged as `ML_FILTERED` in `Signals` sheet — **must equal `--ml_threshold` ตอน train (0.36)** |
-| 7 | RL decision | `SelfLearningAgent.should_take_signal` | SKIP → drop signal (logged to `Signals` sheet as AGENT_SKIP) |
-| 8 | Build live context | `FTMOTradingBot._build_live_context(sig)` | computes ml_score, ADX, biases, balance, overtrading metrics, **`obs_27_json`** |
-| 9 | Execute | `TradeExecutor.execute_signal(sig, live_context)` | final risk / correlation / cooldown check; logs to Trades sheet |
-| 10 | Manage open | `TradeManager.manage_all_positions` → `check_news_close` → `check_session_close` | trailing/BE/partial → **pre-news close (v7.1.10, T-30 min ก่อนข่าวแรง)** → Friday Force Close / Daily Overnight Close / Friday warning |
+| 4 | News filter | `news_events` / `news_calendar.json` | within ±30 / 15 min of high-impact event → skip + close vulnerable positions |
+| 5 | **Strategy scan (v8.0)** | `LiveMRScanner.scan_all_symbols()` → `MeanReversionStrategy.analyze_with_data` | every 12 loops (~1 min); MR rules: BB %B extreme + RSI confirm + reversal-wick + ADX H1 ≤ 30 + ATR floor |
+| 6 | ML quality | `SignalQualityModel.score` (loads `data/mr_signal_quality_model.pkl`) | populates `live_context["ml_score"]` (calibrated) |
+| 6b | **ML gate (v8.0.3)** | `FTMOTradingBot.run` checks `ml_score < bot_config.ftmo.ML_FILTER_THRESHOLD` | logged as `ML_FILTERED` — **must equal `--ml_threshold` ตอน train (0.30)** |
+| 7 | RL decision | `SelfLearningAgent.should_take_signal` (loads `models/mr/best/ppo_mr_filter.zip`) | SKIP → drop signal (logged as AGENT_SKIP) |
+| 8 | Build live context | `FTMOTradingBot._build_live_context(sig)` | computes ml_score, ADX H1/H4, balance, overtrading metrics, **`obs_27_json` (32 dims, key kept for back-compat)** |
+| 9 | Execute | `TradeExecutor.execute_signal(sig, live_context)` | final risk / correlation / cooldown check; logs to Trades sheet (58 cols) |
+| 10 | Manage open | `TradeManager.manage_all_positions` → `check_news_close` → `check_session_close` | trailing/BE/partial → pre-news close (T-30 min ก่อนข่าวแรง) → Friday Force Close / Daily Overnight Close |
 
 ---
 

@@ -114,46 +114,52 @@
 
 | Metric | Value | Source (symbol) |
 |--------|-------|-----------------|
+| Strategy (v8.0+) | **Mean Reversion** + ADX trend filter (SMC removed v8.0.6) | `LiveMRScanner`, `MeanReversionStrategy` |
 | Symbols | **10** (EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, XAUUSD) | `SymbolConfig.symbols` |
-| Timeframes | M15 (entry) / H1 (structure) / H4 (HTF bias) | `SymbolConfig.primary/structure/higher_timeframe` |
+| Timeframes | M15 (entry) / H1 (ADX trend filter) | only M15 + H1 used in v8.0 (H4 ignored by MR) |
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
-| Daily DD stop | 4 % | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
-| Total DD stop | 8 % | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
-| Default risk per trade | **0.99 %** (v7.1.9 — FTMO 1% rule, sync กับ RL training) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
-| Risk floor / cap | 0.5 % / 0.99 % | `FTMOConfig.MIN/MAX_RISK_PER_TRADE_PCT` |
-| Min confluence | 70 | `FTMOConfig.MIN_CONFLUENCE_SCORE` |
+| FTMO Daily DD limit | 5 % (we cap at 4%) | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
+| FTMO Total DD limit | 10 % (we cap at 8%) | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
+| Default risk per trade | **0.99 %** | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
+| ML threshold (v8.0.3) | **0.30** (was 0.36 SMC era) | `FTMOConfig.ML_FILTER_THRESHOLD` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
-| ATR floor (signal gate, per-symbol) | 3-8 pips FX, 500 ticks XAUUSD | `SymbolConfig.symbol_overrides[X].atr_floor_pips` |
-| MIN_SL guard (per-symbol, v6.2 / v6.14 XAU raise) | 10-20 pips FX, **1000 ticks XAUUSD** ($10) | `SymbolConfig.symbol_overrides[X].min_sl_pips` |
-| SL base multiplier (per-symbol, v6.14 wired) | FX 1.5×, **XAUUSD 1.8×** | `SymbolConfig.symbol_overrides[X].sl_atr_multiplier` (fallback `bot_config.indicators.atr_sl_multiplier`) |
-| OB SL clamp lower bound (v6.14) | 0.5 × ATR | hard-coded in `SMCStrategy.scan_signal` |
-| Obs dims | **32** (v7.1) — staged, retrain pending | `SelfLearningAgent.OBS_DIM` |
-| GBM features | **24** (v7.1, 17→24 +temporal/regime) | `SignalQualityModel.FEATURES` |
-| Unrealized DD breaker | −1.5% × open ≥ 2 | `FTMOConfig.UNREALIZED_PAUSE_PCT` |
-| USD theme cap | 2 positions / theme | `FTMOConfig.MAX_USD_THEME_POSITIONS` |
-| Spread/ATR limit | 0.20 (thin liquidity block) | `FTMOConfig.SPREAD_ATR_RATIO_LIMIT` |
-| Chronos model (v7) | `amazon/chronos-bolt-small` | `bot_config.ml.CHRONOS_MODEL_NAME` |
-| Chronos horizon (v7) | 8 M15 bars (~2 h) | `bot_config.ml.CHRONOS_PREDICTION_LENGTH` |
-| RL model | `models/ppo_signal_filter.zip` + `models/vec_normalize_sf.pkl` | `SelfLearningAgent` |
-| ML model | `data/signal_quality_model.pkl` | `SignalQualityModel` |
-| Pool | `data/signal_pool_10000.pkl` (~88MB) | `StrategyBacktester` |
+| **Env DAILY_DD_GUARD (v8.0.4)** | **3.0 %** (was 4.0 %) | `FTMOSignalFilterEnv.DAILY_DD_GUARD` |
+| **Env TOTAL_DD_GUARD (v8.0.5)** | **5.8 %** (was 8.5 %) | `FTMOSignalFilterEnv.TOTAL_DD_GUARD` |
+| **MR BB oversold/overbought** | 0.30 / 0.70 | `bot_config.mr.bb_oversold/overbought` |
+| **MR RSI oversold/overbought** | 40 / 60 | `bot_config.mr.rsi_oversold/overbought` |
+| **MR ADX H1 trend block** | > 30 → no entry | `bot_config.mr.adx_trend_block` |
+| **MR SL / RR** | 1.0 × ATR / 1:1 (quick TP) | `bot_config.mr.sl_atr_mult/rr_ratio` |
+| **MR scan cadence** | every 30 min (48/day) + dedup 4 bars | `MeanReversionBacktester.MR_SCAN_POINTS_PER_DAY` |
+| **Obs dims (v8)** | **32** (production model trained at 32 dims) | `SelfLearningAgent.OBS_DIM` |
+| GBM features | **28** (v8.0.6 — added MR-specific: bb_extreme, bb_band_width, mr_setup_score, reversal_wick_ratio) | `train_mr_signal_quality.FEATURE_KEYS` |
+| Chronos model (v7+) | `amazon/chronos-bolt-small` (disable via env `BOT_DISABLE_CHRONOS=1`) | `bot_config.ml.CHRONOS_MODEL_NAME` |
+| **RL model (v8)** | `models/mr/best/ppo_mr_filter.zip` + `vec_normalize_mr.pkl` (auto fallback to `models/mr/`) | `SelfLearningAgent` (v8.0 path-aware) |
+| **ML model (v8)** | `data/mr_signal_quality_model.pkl` (auto fallback to legacy SMC) | `SignalQualityModel` |
+| **Pool (v8, training only)** | `data/mr_signal_pool_3000.pkl` (~309 MB, gitignored) | `MeanReversionBacktester` |
 | FTMO program | 2-step Standard (no Consistency Rule → threshold = 1.0) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
+| **Excel schema (v8.0.6)** | Trades 58 cols / Signals 20 cols (was 66/23) | `TradeLogger.TRADE_HEADERS/SIGNAL_HEADERS` |
 
-## Verified Performance (v6.13 — Combined patch + obs no-leak audit, risk 0.7 %, 5000 eps, 2026-04-29)
+## Verified Performance (v8.0.5 — MR pipeline, all gates passed, 5000 eps eval, 2026-05-07)
 
-| Metric | v6.11.3 baseline | **v6.13** | Δ |
-|--------|------------------|-----------|---|
-| Pass Rate | 3.4 % | **9.7 %** ⭐⭐⭐ | **+185 %** |
-| Win Rate | 68.8 % | 64.8 % | -4 pp |
-| Orders/ep | 6.1 | **7.7** | +26 % |
-| Total DD max | 3.23 % | 4.40 % | +37 % (ห่าง 8 % limit) |
-| Daily DD max | 2.12 % | 2.15 % | similar |
-| Breach Rate | 0 % | **0 %** | same |
-| Profit avg (5000 eps) | — | **+3.89 %** | — |
+| Metric | v6.13 SMC baseline | **v8.0.5 MR** | Δ | Gate |
+|--------|------------------:|--------------:|----|----:|
+| **Pass Rate** | 9.7 % | **59.30 %** | **+49.6 pp** ⭐ | ≥ 8 % |
+| Profitable Rate | n/a | **89.10 %** | — | ≥ 55 % |
+| Breach Rate | 0 % | **0.00 %** | same | ≤ 5 % |
+| Win Rate | 64.8 % | 61.55 % | -3 pp | (info) |
+| Take Rate | n/a | 46.35 % | — | (info) |
+| Total DD max | 4.40 % | **5.80 %** | + (under env 5.8% guard) | ≤ 6 % |
+| Daily DD max | 2.15 % | **3.00 %** | + (under env 3.0% guard) | ≤ 3.5 % |
+| Profit avg | +3.89 % | **+7.23 %** (+$7,229) | +3.34 pp | (info) |
 
-**Phase progression** (each = 5000-eps eval): leaky baseline 12.5 % → honest baseline 3.5 % → Phase C 1.5 % → Phase D 0.2 % → Phase E1 (calibration) 3.0 % → Phase E2 (aux task) 10.0 % → v6.11 SMC overhaul 0.0 % → v6.11.2 (rollback) 2.7 % → v6.11.3 (mild relax) 3.4 % → **v6.13 (combined patch) 9.7 %**. Details in [wiki/05-invariants.md § Version Log](wiki/05-invariants.md).
+**v8 progression** (5 sub-iterations from v8.0 → v8.0.5): pilot yield 4 sig/ep → relaxed BB/RSI to 14 sig/ep → ml_threshold 0.40→0.30 → DAILY_DD_GUARD 0.04→0.03 → TOTAL_DD_GUARD 0.085→0.058 → **all gates passed iter 1, 12 min**. Details in [wiki/05-invariants.md § Version Log](wiki/05-invariants.md).
 
-**Note**: the old "Option B 12.5 %" baseline was leaky (eval seeded with same pool used for GBM training). Honest baseline = 3.5 %. E2 is verified leak-free via runtime hook + obs feature audit.
+**Audit certification (mandatory)**:
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/leakage_audit.py   # ✅ all clean
+.venv/bin/python ftmo_trading_bot/scripts/parity_audit.py    # ✅ all aligned
+```
 
 ---
 

@@ -1,52 +1,54 @@
-# 03 — RL Training (Obs 32 dims v7.1 staged, Reward, PPO + Auxiliary Task)
-> Last Updated: 2026-05-06 (v7.2.1 — obs[29/30] leak fix, RL retrain pending) | Scope: RL env, obs space v7.1 (+ portfolio realtime + session timing), reward shaping, PPO hyperparams, curriculum, aux task (E2).
->
-> **v7.1.2 reward re-balance (after v7.1.1 eval Pass 1.4%)**:
-> - missed-winner P2: −0.65 → **−0.85** (push TAKE back, ใกล้ v7.0.x แต่ไม่ถึง −0.90 wipeout level)
-> - missed-winner P2 + ml ≥ 0.40: −0.40 → **−0.50**
-> - Chronos disagreement (ml<0.55): −0.40 → **−0.30**
-> - Chronos disagreement (ml≥0.55): −0.15 → **−0.10**
-> - Concurrent loss penalty: −0.25 → **−0.20**
->
-> **v7.1 changes (kept in v7.1.2)**:
-> - **Obs 29 → 32**: `[29] floating_pnl_norm`, `[30] open_losing_count_norm`, `[31] mins_since_session_norm` (training simulator + live ผ่าน `RiskManager.get_unrealized_drawdown_pct`)
-> - **GBM features 17 → 24**: เพิ่ม `hour_of_day_sin/cos`, `day_of_week`, `minutes_since_session_start`, `is_post_weekend_first_hour`, `volatility_regime_score`, `atr_zscore_30bars` (`compute_temporal_features` helper)
-> - **Chronos formula**: `clip((q90-q10)/(atr×√8), 0, 3)` → `clip(log1p(...)/2, 0, 3)` (กัน saturation ที่ 3.0)
+# 03 — RL Training (Obs 32 dims, MR Reward Shaping, PPO + Auxiliary Task)
+> Last Updated: 2026-05-07 (v8.0.8) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
 
 ## TL;DR (30-second scan)
 
-- Obs = **29 dims** (v7, 2026-05-01) — adds `chronos_alignment`, `chronos_uncertainty_norm` on top of v6 27 (Amazon Chronos 2 zero-shot M15 forecast).
+- Obs = **32 dims** (v7.1+, production model trained at 32 dims).
 - Action continuous [−1, 1] — `>0 = TAKE`, `≤0 = SKIP`.
-- **2-phase curriculum**: Phase 1 (Alpha, no DD penalty, oracle SKIP) → Phase 2 (Risk, DD penalty active).
-- **Phase E2 — Auxiliary Task** (verified Pass Rate **9.7 %** at v6.13, 2026-04-29; Phase E2 architecture intact since 2026-04-25): policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
-- ML threshold = **0.36** (calibrated probability). Signals below this are rejected before RL.
-- Live inference must normalize obs with the `vec_normalize_sf.pkl` stats captured during training.
+- **2-phase curriculum**: Phase 1 (Alpha, no DD penalty, oracle SKIP) → Phase 2 (Risk, DD penalty active + MR-specific shaping).
+- **Phase E2 — Auxiliary Task**: policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
+- **v8.0.5 verified**: Pass Rate **59.30 %** (5000-eps eval), Profitable 89.10 %, Breach 0 %, Total DD max 5.80 %, Daily DD max 3.00 %.
+- ML threshold = **0.30** (calibrated probability, v8.0.3). Signals below this are rejected before RL.
+- Live inference must normalize obs with the `vec_normalize_mr.pkl` stats captured during training.
 - VecNormalize: `norm_obs=True`, `norm_reward=True`, `clip_obs=10.0`, `clip_reward=20.0`.
 
 ## Quick Reference
 
 | Item | Value | Source (symbol) |
 |------|-------|-----------------|
-| Obs dims | **29** (v7) | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
-| Chronos forecaster | `ChronosForecaster` (`amazon/chronos-bolt-small`) | `ml/chronos_forecaster.py` |
+| Obs dims | **32** | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
+| Chronos forecaster | `ChronosForecaster` (`amazon/chronos-bolt-small`, optional) | `ml/chronos_forecaster.py` |
 | Action space | Box(−1, 1, shape=(1,)) | `FTMOSignalFilterEnv.action_space` |
-| VecNormalize stats | `models/vec_normalize_sf.pkl` | loaded by `SelfLearningAgent._load_normalize_stats` |
-| RL model | `models/ppo_signal_filter.zip` (aux-aware policy) | loaded by `SelfLearningAgent.initialize_model` |
+| **VecNormalize stats** | `models/mr/best/vec_normalize_mr.pkl` | loaded by `SelfLearningAgent._load_normalize_stats` |
+| **RL model** | `models/mr/best/ppo_mr_filter.zip` (aux-aware policy) | loaded by `SelfLearningAgent.initialize_model` |
 | RL training PPO | `AuxAwarePPO` (aux loss weight = 0.5) | `ml/aux_aware_ppo.py` |
 | RL policy | `AuxAwareACPolicy` (actor + value + `aux_head`) | `ml/aux_aware_policy.py` |
 | Aux target | `info['aux_target']` = `outcome_pnl_ratio` | `FTMOSignalFilterEnv.step()` |
-| Pool | `data/signal_pool_10000.pkl` | loaded by `FTMOSignalFilterEnv` |
-| ML threshold | **0.36** (live = `FTMOConfig.ML_FILTER_THRESHOLD` — train must match) | CLI `--ml_threshold 0.36` |
+| **MR env** | `MeanReversionFilterEnv(FTMOSignalFilterEnv)` | `ml/mean_reversion_env.py` |
+| **Pool** | `data/mr_signal_pool_3000.pkl` (~309 MB, gitignored) | `MeanReversionBacktester` |
+| **ML threshold** | **0.30** (live = `FTMOConfig.ML_FILTER_THRESHOLD` — train must match) | CLI `--ml_threshold 0.30` |
+| **DAILY_DD_GUARD (env)** | 0.030 (3.0%) | `FTMOSignalFilterEnv.DAILY_DD_GUARD` |
+| **TOTAL_DD_GUARD (env)** | 0.058 (5.8%) | `FTMOSignalFilterEnv.TOTAL_DD_GUARD` |
 
 ---
 
-## Observation Space Layout (29 dims)
+## Observation Space Layout (32 dims)
 
 **Must be kept in sync in three places**:
 
 1. `FTMOSignalFilterEnv._get_obs` in `ftmo_trading_bot/ml/signal_filter_env.py`
-2. `FTMOTradingBot._build_signal_observation` in `ftmo_trading_bot/main.py`
-3. `SelfLearningAgent.OBS_DIM` in `ftmo_trading_bot/ml/rl_agent.py`
+2. `MeanReversionFilterEnv._get_obs` in `ftmo_trading_bot/ml/mean_reversion_env.py` (overrides obs[4], obs[10], obs[26])
+3. `FTMOTradingBot._build_signal_observation` in `ftmo_trading_bot/main.py`
+4. `SelfLearningAgent.OBS_DIM` in `ftmo_trading_bot/ml/rl_agent.py`
+
+**MR-specific obs slot reinterpretation (v8.0)**:
+
+| Slot | Original (SMC) | MR semantic |
+|------|----------------|-------------|
+| obs[4] | `ob_norm` (Order Block score) | `bb_extreme` (BB band penetration depth, 0..1) |
+| obs[10] | `ob_size_atr` (OB body / ATR) | `bb_band_width_atr / 3` (BB band width / ATR, clip 0..1) |
+| obs[26] | `htf_trend_alignment` | `adx_inverse_norm` (1.0 when ADX low = ranging = MR-friendly) |
+| obs[27,28] | Chronos forecast features | (same — disabled in MR pipeline by default, set to 0) |
 
 ### Signal Core [0–11]
 
@@ -155,35 +157,58 @@
 
 ---
 
-## Reward Structure
+## Reward Structure (v8.0 — MR-specific)
 
-Located in `FTMOSignalFilterEnv.step`. See the block comments labelled `Phase 1` / `Phase 2`:
+Located in `MeanReversionFilterEnv.step` (overrides `FTMOSignalFilterEnv.step`). MR shaping replaces SMC's confluence-bonus logic with capital-preservation focused signals.
 
-### Phase 1 (Alpha) — learn chart reading + profit taking
+### TAKE branch (MR-specific shaping)
 
+```text
+Base PnL (always):
+    pnl_norm = pnl / risk_amount
+    pnl_norm -= spread_cost_R × 0.5   (clip 0..1)
+    reward = clip(pnl_norm, -1.0, 3.0)
+
+Win shaping (pnl_norm > 0):
+    + QUICK_TP_BONUS = 0.50  if bars_to_resolution ≤ 5 (quick TP win)
+    + SLOW_WIN_BONUS = 0.20  otherwise (slow win)
+    + 0.15  if ml_score ≥ 0.40 (quality alignment)
+
+Loss shaping (pnl_norm ≤ 0):
+    - BASE_LOSS_PENALTY = 0.10  baseline
+    - DURATION_FINE_COEF × (bars_to_resolution - 1)  per-bar fine
+                                                    (cap at DURATION_FINE_CAP = 0.30)
+    - PROLONGED_LOSS_PENALTY = 0.40  if bars_to_resolution ≥ 12
+
+Trend filter discipline:
+    - ADX_VIOLATION_PENALTY = 0.30  if signal.adx > 25 (defense in depth)
+
+Phase 1: + 0.02 activity nudge
+Phase 2: + 0.04 nudge + DD penalty + clamp penalty (-0.25 if guard fired)
 ```
-TAKE (v6.13 — equalize @ ml ≥ 0.36):
-    clip(pnl_norm, -1.0, 3.0) - spread_cost*0.5
-    + 0.30 if win AND ml_score >= 0.36   ⭐ uniform (เดิม 0.35 vs 0.15 split)
-    - 0.35 if big-loss AND ml_score < 0.35   (rare — gate ที่ 0.36)
-    + 0.02 action nudge (P1 only) / 0.04 + dd_penalty (P2)
 
-SKIP (Oracle reward — POLICY ไม่เห็น outcome ใน obs, reward ใช้ตอน train เท่านั้น):
-    outcome >=  0.5 : -0.30 (P1) / **-0.90** (P2, v6.13: -0.70 → -0.90)
-        AND ml >= 0.40: extra -0.25 (P1) / **-0.55** (P2, v6.13: -0.40 → -0.55)
-    outcome >=  0.1 : -0.10 (P1) / -0.20 (P2)
-    outcome <= -0.5 : +0.30 (P1) / **+0.35** (P2, v6.13: +0.20 → +0.35)
-    outcome <= -0.1 : +0.10 (P1) / **+0.10** (P2, v6.13: +0.06 → +0.10)
-    + passive cost -0.010/step
+### SKIP branch (Oracle reward, agent doesn't see outcome in obs)
+
+```text
+outcome ≥  0.5 (would-win big):
+    -0.20 (P1) / -0.55 (P2)
+    +ml ≥ 0.40 extra: -0.15 (P1) / -0.30 (P2)
+outcome ≥  0.1 :  -0.05 (P1) / -0.10 (P2)
+outcome ≤ -0.5 (smart skip — capital preservation reward, MR-tuned):
+    +0.30 (P1) / +0.45 (P2)
+    +ml < 0.36 extra: +0.15
+outcome ≤ -0.1 :  +0.10 (P2 only)
+
+Passive SKIP cost: -0.012 / step (MR slightly higher than SMC's -0.010 to push more TAKE)
 ```
 
 ### Phase 2 (Risk) — add DD management
 
-```
+```text
 TAKE: Phase 1 reward
     + dd_penalty(total) = -0.5 · (exp(3·ratio) - 1)  when total DD > 4%
     + dd_penalty(daily) = -0.3 · (exp(3·ratio) - 1)  when daily DD > 2.5%
-    + -0.5 if risk guard clamped PnL
+    + -0.25 if risk guard clamped PnL
 
 Activity floor (Phase 2 only, v6.3 B1v2):
     take_rate < 5%                              : -1.0
@@ -223,23 +248,25 @@ Sum if pass  : +7.0 max
 
 ---
 
-## PPO Hyperparameters (`scripts/train_signal_filter.py`)
+## PPO Hyperparameters (`scripts/train_mr_signal_filter.py`, v8.0)
 
 | Phase | Phase 1 (Alpha) | Phase 2 (Risk) |
 |-------|-----------------|----------------|
 | `enable_risk_penalty` | False | True |
-| Steps (default) | 10M | 5M |
-| `learning_rate` | 3e-4 | **5e-5** (v7.0.5 — proper fix via `FloatSchedule`) |
-| `ent_coef` schedule | 0.05 → 0.005 | 0.01 → 0.002 |
-| `EarlyStopOnValueLoss` | threshold=10, patience=5, **warmup=0** | threshold=**20** (v7.0.7 revert จาก 30 หลัง v7.0.6 ตก), patience=5, **warmup=50,000** (v7.0.4) |
-| Output | `ppo_signal_filter_p1.zip` | `ppo_signal_filter.zip` |
+| Steps (default) | **5M** (v8.0 reduced) | **2M** (v8.0 reduced) |
+| `learning_rate` | 3e-4 | **5e-5** (proper fix via `FloatSchedule`) |
+| `ent_coef` schedule | 0.05 → 0.015 | 0.02 → 0.010 |
+| `EarlyStopOnValueLoss` | threshold=10, patience=5, **warmup=0** | threshold=20, patience=5, **warmup=50,000** |
+| Output | `models/mr/ppo_mr_filter_p1.zip` (gitignored) | `models/mr/ppo_mr_filter.zip` |
 
-**Shared**:
+**Shared (v8.0)**:
 
 - `gamma=0.99` (long-horizon credit)
-- `n_steps=4096`, `batch_size=256`, `n_epochs=5`
+- `n_steps=8192` (v7.1.7+, larger batch), `batch_size=512`, `n_epochs=5`
 - `clip_range=0.2`, `gae_lambda=0.95`
 - `policy_kwargs.net_arch = dict(pi=[256,128], vf=[256,128])`
+- `policy_kwargs.optimizer_kwargs = dict(weight_decay=1e-5)`
+- Aux loss weight = 0.5
 
 **VecNormalize**:
 
@@ -250,71 +277,84 @@ Sum if pass  : +7.0 max
 
 ---
 
-## Training Pipeline (run order)
+## Training Pipeline (v8.0 — autonomous orchestrator)
+
+**Recommended path** — autonomous loop (build → GBM → RL → eval → self-correct):
 
 ```bash
-# Step 1: Pool (~8 min, 8 workers)
-.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py --pool_size 10000 --workers 8
-
-# Step 2: ML GBM + Isotonic Calibrator (~5 min, re-scores pool in place)
-.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
-
-# Step 3: RL PPO + Auxiliary Task (~30–40 hr CPU @ n_envs=8, 2 phases)
-.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
-    --timesteps_p1 10000000 --timesteps_p2 5000000 \
-    --n_envs 8 --pool_size 10000 --outcome_noise 0.05 \
-    --ml_threshold 0.36 --risk_per_trade 0.0099
+.venv/bin/python ftmo_trading_bot/scripts/auto_train_pipeline.py \
+    --max_iterations 10 --max_hours 60 \
+    --pool_size 3000 --timesteps_p1 5000000 --timesteps_p2 2000000 \
+    --target_pass_rate 0.08 --target_dd_max 0.06 \
+    --target_daily_dd_max 0.035 --target_profitable 0.55
 ```
 
-The trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5). P2 stability tuning: LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20.
+**Manual path** (3 steps):
+
+```bash
+# Step 1: Pool (~11 min, 8 workers)
+.venv/bin/python ftmo_trading_bot/scripts/build_mr_signal_pool.py \
+    --pool_size 3000 --workers 8
+
+# Step 2: GBM + Isotonic Calibrator (~2 min, re-scores pool in place)
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_quality.py
+
+# Step 3: RL PPO + Auxiliary Task (~10-12 min CPU @ n_envs=8, 2 phases)
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py --fresh \
+    --timesteps_p1 5000000 --timesteps_p2 2000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.05 \
+    --ml_threshold 0.30 --risk_per_trade 0.0099
+```
 
 **Evaluation** (default 5000 episodes):
 
 ```bash
-.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --eval_only \
-    --pool_size 10000 --ml_threshold 0.36 --risk_per_trade 0.0099
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py --eval_only \
+    --pool_size 3000 --ml_threshold 0.30 --risk_per_trade 0.0099
 ```
 
 ⚠️ Always invoke via `.venv/bin/python` (or activate venv) — system `python` may resolve to a different interpreter with non-pinned package versions, shifting Pass Rate by 1–3 pp due to RNG init / BLAS differences.
 
-**Targets** (5000-eps evaluation):
+**Eval gates (autonomous loop stops when all pass)**:
 
-- Pass rate ≥ 5 % (excellent > 8 %)
-- Breach rate < 2 %
-- Win rate > 45 %
-- Take rate 50–60 % (ML filter active)
+- Pass rate ≥ 8 %
+- Total DD max ≤ 6 % (env guard 5.8 %)
+- Daily DD max ≤ 3.5 % (env guard 3.0 %)
+- Profitable rate ≥ 55 %
+- Breach rate ≤ 5 %
 
-**Verified v6.13 (Phase E2 + Combined Patch)** — risk 0.7 %, ml_threshold 0.36, outcome_noise 0.05, 5000 eps, 2026-04-29: **Pass Rate 9.7 %** ⭐⭐⭐ (vs v6.11.3 baseline 3.4 % = +185 %). Leak-free verified via 5-point audit (obs/GBM/aux head/SKIP-oracle/eval sampling).
+**Verified v8.0.5** — pool_size 3000, ml_threshold 0.30, risk 0.0099, env guards 3.0/5.8, 5000 eps, 2026-05-07: **Pass Rate 59.30 %** ⭐⭐⭐, Profitable 89.10 %, Breach 0.00 %, Total DD max 5.80 %, Daily DD max 3.00 %, Profit avg +7.23 %.
 
-**Phase progression history**:
+**Phase progression history (v8.0 path)**:
 
-| Phase | Pass Rate | Note |
+| Version | Pass Rate | Note |
 |-------|----------:|------|
-| Old "Option B" | 12.5 % | Leaky baseline (eval seeded with same pool used for GBM training) |
-| Honest baseline (B1v2) | 3.5–3.7 % | Leak removed |
-| Phase C (SMC 4 principles) | 1.5 % | Reverted — over-filtered pool |
-| Phase D (BE+partial+trail in train) | 0.2 % | Reverted — capped winner tail |
-| Phase E1 (calibration) | 3.0 % | Calibrator stable, but no Pass Rate boost |
-| Phase E2 (auxiliary task, 2026-04-25) | 10.0 % | Pre-v6.11 SMC overhaul |
-| v6.11 SMC overhaul (hard gates) | 0.0 % | Pool collapsed -99 % — partial rollback |
-| v6.11.2 (rollback) | 2.7 % | Soft bonuses instead of hard gates |
-| v6.11.3 (mild relax IDM/ADX) | 3.4 % | Baseline before v6.13 |
-| **v6.13 (combined patch, 2026-04-29)** | **9.7 %** | Current verified ⭐ |
+| **v8.0.5 (locked-in 2026-05-07)** | **59.30 %** | All 5 gates passed iter 1, 12 min training ⭐ |
+| v8.0.4 (DAILY_DD_GUARD 4%→3%) | 58.32 % | Daily DD freed from 4% pin |
+| v8.0.3 (ml_threshold 0.40→0.30) | 61.70 % | Smart auto-tune kicked in |
+| v8.0.2 (relax BB/RSI + scan 48/day) | 2.52 % | Bot under-trading at ml=0.40 |
+| v8.0 (initial) | n/a | pool yield too low, never converged |
+
+(For pre-v8.0 SMC progression see `git log -- wiki/05-invariants.md` — Phase C/D/E1/E2/v6.11/v6.13.)
 
 ---
 
-## Live Inference Flow
+## Live Inference Flow (v8.0+)
 
-```
-TradeSignal (from SMCStrategy)
+```text
+MRSignal (from LiveMRScanner.scan_all_symbols → MeanReversionStrategy.analyze_with_data)
     ↓
-SignalQualityModel.score(sig) → ml_score
+SignalQualityModel.score(sig) → ml_score    (loads data/mr_signal_quality_model.pkl)
     ↓
-FTMOTradingBot._build_signal_observation(sig) → obs (27 dims)
+ML gate: if ml_score < bot_config.ftmo.ML_FILTER_THRESHOLD (0.30) → log "ML_FILTERED" + skip
+    ↓
+FTMOTradingBot._build_signal_observation(sig) → obs (32 dims)
+    obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=adx_inverse_norm
     ↓
 SelfLearningAgent.should_take_signal(obs)
-    ├─→ _prepare_obs: validates size == OBS_DIM
+    ├─→ _prepare_obs: validates size == OBS_DIM (32)
     ├─→ _normalize_obs: (obs - _obs_mean) / sqrt(_obs_var + 1e-8)
+        (uses models/mr/best/vec_normalize_mr.pkl stats)
     ├─→ clip [-clip_obs, +clip_obs]
     └─→ model.predict(deterministic=True)
         └─→ return action[0] > 0.0  (TAKE / SKIP)
