@@ -96,6 +96,17 @@ def audit_strategy_params() -> int:
             fails += 1
         else:
             print(f"  ✓ {class_attr} = {v_class}")
+
+    # v8.0.9: cross-check FTMO RR floor — must be ≤ MR's RR (else live RM rejects)
+    mr_rr = float(getattr(cfg, "rr_ratio", 1.0))
+    ftmo_rr_min = float(bot_config.ftmo.MIN_RISK_REWARD_RATIO)
+    if ftmo_rr_min > mr_rr:
+        print(f"  ❌ FTMO MIN_RISK_REWARD_RATIO={ftmo_rr_min} > MR rr_ratio={mr_rr} "
+              f"→ RiskManager will reject every MR signal")
+        fails += 1
+    else:
+        print(f"  ✓ FTMO MIN_RISK_REWARD_RATIO={ftmo_rr_min} ≤ MR rr_ratio={mr_rr}")
+
     return fails
 
 

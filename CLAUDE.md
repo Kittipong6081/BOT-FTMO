@@ -41,7 +41,7 @@ Claude Code loads this file automatically in every conversation for this project
 
 ## 📚 Project Overview
 
-- **FTMO Trading Bot** — 3-brain system (SMC rules + ML GBM + RL PPO) for passing the FTMO 2-step Standard Challenge.
+- **FTMO Trading Bot** — 3-brain system (**MR rules** + ML GBM + RL PPO) for passing the FTMO 2-step Standard Challenge. (SMC removed in v8.0.6 — see `wiki/05-invariants.md`.)
 - **MANDATORY at conversation start**: Read `context.md` directly with the Read tool before answering the first project-related question (see § Conversation Start Protocol above). Drill into `wiki/*.md` for topic-specific detail using the same Read-direct rule.
 - Live entry: `python main.py` → `FTMOTradingBot.run` loop every 5 s.
 
@@ -162,7 +162,8 @@ for p in pathlib.Path('ftmo_trading_bot').rglob('*.py'):
 ## Entry Points
 
 - Live: `python main.py` (runs `FTMOTradingBot.run`)
-- Training pipeline (in order): `build_signal_pool.py` → `train_signal_quality.py` → `train_signal_filter.py`
-- Evaluation: `train_signal_filter.py --eval_only`
+- Training pipeline (in order, v8.0+): `build_mr_signal_pool.py` → `train_mr_signal_quality.py` → `train_mr_signal_filter.py` (or `auto_train_pipeline.py` autonomous orchestrator)
+- Evaluation: `train_mr_signal_filter.py --eval_only`
+- Mandatory audits before commit: `scripts/leakage_audit.py` + `scripts/parity_audit.py` (both must exit 0)
 
 Full reference: `context.md` + `wiki/`.

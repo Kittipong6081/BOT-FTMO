@@ -39,71 +39,86 @@
 - ห้าม Daily DD เกิน **5%** | ห้าม Total DD เกิน **10%**
 - 90%+ ของผู้สอบไม่ผ่านเพราะความโลภ + เสียวินัย
 
-**Bot ทำหน้าที่:**
+**Bot ทำหน้าที่ (v8.0+):**
 
-- ใช้ **Smart Money Concepts (SMC)** หา setup เทรด (BOS/CHoCH, Order Blocks, FVG, Liquidity Sweeps)
-- ใช้ **ML (GBM + Isotonic Calibration)** กรอง signal ที่มีโอกาสชนะสูง
-- ใช้ **PPO RL Agent** + Auxiliary Task ตัดสินใจ TAKE/SKIP โดยมองทั้งคุณภาพ signal และสถานะบัญชี (DD, progress, trades today)
-- ทำงาน **24/5** อัตโนมัติ + buffer ป้องกัน FTMO breach (4%/8% แทน 5%/10%)
+- ใช้ **Mean Reversion + Trend Filter** หา setup (BB %B extreme + RSI confirm + ADX H1 ≤ 30 + reversal-wick)
+- ใช้ **ML (GBM + Isotonic Calibration)** กรอง signal ที่มีโอกาสชนะสูง (ml threshold 0.30)
+- ใช้ **PPO RL Agent** + Auxiliary Task ตัดสินใจ TAKE/SKIP มองคุณภาพ signal + สถานะบัญชี (DD, progress, trades today)
+- ทำงาน **24/5** อัตโนมัติ + buffer ป้องกัน FTMO breach (env DD guards: Daily 3.0% / Total 5.8%, ห่างกฎ FTMO 5%/10%)
+- SMC strategy ลบไปทั้งหมดในการ cleanup v8.0.6 (~214 KB)
 
 ---
 
-## 🧠 สถาปัตยกรรม 3 สมอง
+## 🧠 สถาปัตยกรรม 3 สมอง (v8.0+)
 
-### 1. 🎯 SMC Strategy (Brain 1) — หา setup
+### 1. 🎯 Mean Reversion Strategy (Brain 1) — หา setup
 
-ใน [`ftmo_trading_bot/strategy/`](ftmo_trading_bot/strategy/) มี:
+ใน [`ftmo_trading_bot/strategy/`](ftmo_trading_bot/strategy/) เหลือแค่ 2 ไฟล์:
 
-- `smc_strategy.py` — main engine, scan 9 symbols ทุกนาที
-- `market_structure.py` — BOS / CHoCH detection (D1 → H4 → H1 → M15)
-- `order_blocks.py` — Order Block detection
-- `fair_value_gaps.py` — FVG detection
-- `liquidity_sweeps.py` — Liquidity Sweep detection
-- `indicators.py` — RSI, MACD, ADX, ATR, Bollinger, Stochastic
+- `mean_reversion_strategy.py` — `MeanReversionStrategy` + `LiveMRScanner` (drop-in replacement สำหรับ SMCStrategy เดิม) + `MRSignal` dataclass + `TradeSignal`/`SignalType` aliases
+- `indicators.py` — RSI, MACD, ADX, ATR, Bollinger %B, Stochastic, ATR z-score, volatility regime
 
-**Output:** `Signal` (symbol, BUY/SELL, entry, SL, TP, confluence_score, RR)
+**กฎเข้าออเดอร์ (M15):**
+
+1. ATR pips ≥ floor (per-symbol) — กันตลาดเงียบ
+2. ADX H1 ≤ 30 — ห้ามเทรดสวน trend แรง
+3. BB %B ≤ 0.30 (BUY) หรือ ≥ 0.70 (SELL) — ราคาแตะขอบ band
+4. RSI ≤ 40 (BUY) หรือ ≥ 60 (SELL) — ยืนยัน momentum
+5. Reversal wick ratio ≥ 0.4 — มีแท่งกลับตัว
+6. Confluence score ≥ 30 — รวมทุก factor
+
+**SL / TP:** SL = 1.0×ATR (tight), TP = 1.0×SL (RR 1:1, quick TP)
+
+**Output:** `MRSignal` (symbol, BUY/SELL, entry, sl_price, tp_price, confluence_score, atr_value, mr_setup_score, bb_extreme, bb_band_width_atr, reversal_wick_ratio)
 
 ### 2. 🔬 ML Quality Filter (Brain 2) — กลั่นกรอง
 
 ใน [`ftmo_trading_bot/ml/signal_quality.py`](ftmo_trading_bot/ml/signal_quality.py):
 
 - **GBM Classifier** (sklearn `GradientBoostingClassifier`) เรียนทำนาย P(win) ของแต่ละ signal
-- **Isotonic Calibration** บนผล OOF (`GroupKFold cross_val_predict`) → ป้องกัน overconfident probabilities
-- ใช้ feature 30+ ตัว: confluence, ATR, RR, ADX, RSI, MACD, BB %B, MTF/HTF bias, session, day-of-week, ฯลฯ
-- **Threshold เริ่มต้น: 0.36** (`bot_config.ftmo.ML_FILTER_THRESHOLD`) — signal ที่ score < 0.36 ถูก reject ทันที (ก่อนถึง RL agent) ทั้งใน live และตอน train. **v6.12**: live ก็บังคับ threshold เดียวกันแล้ว (เดิม live ไม่ได้บังคับ — เป็น bug ที่ทำให้ distribution ต่างจากตอน train); reject log เป็น `Result = "ML_FILTERED"` ใน `Signals` sheet
+- **Isotonic Calibration** บน OOF (`GroupKFold cross_val_predict`) → กัน overconfident probabilities
+- ใช้ **28 features** (v8.0.6) — 17 SMC-compat + 7 temporal/regime + 4 MR extras (`bb_extreme`, `bb_band_width_atr`, `mr_setup_score`, `reversal_wick_ratio`)
+- **Threshold = 0.30** (`bot_config.ftmo.ML_FILTER_THRESHOLD`, v8.0.3) — signal ที่ score < 0.30 ถูก reject ทันที (ก่อนถึง RL agent) ทั้งใน live + train. Reject log เป็น `Result = "ML_FILTERED"` ใน Signals sheet
+- **Model file:** `data/mr_signal_quality_model.pkl` (1.2 MB)
 
 **Output:** `ml_score ∈ [0, 1]` (calibrated)
 
 ### 3. 🎓 RL Agent — PPO + Auxiliary Task (Brain 3)
 
-ใน [`ftmo_trading_bot/ml/`](ftmo_trading_bot/ml/) มี:
+ใน [`ftmo_trading_bot/ml/`](ftmo_trading_bot/ml/):
 
 - `aux_aware_policy.py` — PPO policy พร้อม `aux_head: nn.Linear(latent_dim_pi, 1)` ทำนาย `outcome_pnl_ratio`
-- `aux_aware_ppo.py` — PPO subclass เพิ่ม MSE aux_loss (weight=0.5)
+- `aux_aware_ppo.py` — PPO subclass เพิ่ม MSE aux_loss (weight = 0.5)
 - `aux_rollout_buffer.py` — RolloutBuffer พร้อม `aux_targets`
-- `signal_filter_env.py` — Gymnasium env (state = **29-dim obs** v7, action = TAKE/SKIP)
-- `rl_agent.py` — wrapper สำหรับ inference (`should_take_signal`, `get_action_confidence`)
-- `chronos_forecaster.py` (v7) — Amazon Chronos 2 zero-shot forecaster ที่ป้อน obs[27,28]
+- `signal_filter_env.py` — Gymnasium env (32-dim obs, action = TAKE/SKIP, env guards Daily 3.0% / Total 5.8%)
+- `mean_reversion_env.py` — `MeanReversionFilterEnv` (subclass ของ FTMOSignalFilterEnv) reward shaping ใหม่: quick-TP +0.50R, slow-win +0.20R, base-loss -0.10R, duration-fine 0.02/แท่ง (cap -0.30R), prolonged-loss -0.40R, ADX violation -0.30R
+- `mean_reversion_backtester.py` — pool generator (subclass ของ StrategyBacktester) — scan 48 ครั้ง/วัน + dedup 4 bar
+- `rl_agent.py` — `SelfLearningAgent` — inference wrapper, path-aware (โหลด `models/mr/best/` ก่อน fallback `models/`)
+- `chronos_forecaster.py` — Amazon Chronos 2 zero-shot forecaster (optional, ใส่ obs[27,28])
 
-**Obs 29 dims** (v7, 2026-05-01 — ต้อง sync 3 จุด — ดู [`wiki/05-invariants.md`](wiki/05-invariants.md)):
+**Obs 32 dims** (v8.0+ — ต้อง sync 3 จุด — ดู [`wiki/05-invariants.md`](wiki/05-invariants.md)):
 
+```text
+[0]  confluence_norm       [12] stoch_norm        [24] spread_pct_of_atr
+[1]  rr_norm               [13] bb_pctb           [25] has_opposite_recently_closed
+[2]  direction             [14] atr_chg           [26] adx_inverse_norm   ⭐ MR
+[3]  atr_norm              [15] price_roc         [27] chronos_alignment
+[4]  bb_extreme    ⭐ MR    [16] ml_score_norm     [28] chronos_uncertainty_norm
+[5]  bias_align            [17] total_dd_n        [29] floating_pnl_norm (zeroed v7.2.1)
+[6]  sl_atr                [18] daily_dd_n        [30] open_losing_count_norm (zeroed)
+[7]  rsi_norm              [19] progress_n        [31] mins_since_session_norm
+[8]  macd_norm             [20] day_progress
+[9]  trend_str             [21] trades_today_n
+[10] bb_band_width_atr/3   ⭐ MR (was ob_size_atr)
+[11] adx_norm              [22] recent_wr_norm
+                           [23] consec_norm
 ```
-[0]  ml_score              [9]  bb_pctb           [18] consec_norm
-[1]  atr_pips              [10] atr_chg           [19] spread_pct_of_atr
-[2]  sl_atr                [11] price_roc         [20] has_opposite_recently_closed
-[3]  rsi_norm              [12] total_dd_n        [21] htf_trend_alignment
-[4]  macd_norm             [13] daily_dd_n        [22] bias_align
-[5]  trend_str             [14] progress_n        [23] direction
-[6]  ob_size_atr           [15] day_progress      [24] rr_norm
-[7]  adx_norm              [16] trades_today_n    [25] confluence_norm
-[8]  stoch_norm            [17] recent_wr_norm    [26] (reserved)
-                                                  [27] chronos_alignment       ⭐ v7
-                                                  [28] chronos_uncertainty_norm ⭐ v7
-```
 
-**Reward:** ratio (P/L ÷ risk) + DD penalty + activity floor + auxiliary signal (Phase E2)
+**MR-specific obs slot reinterpretation:** obs[4]=`bb_extreme`, obs[10]=`bb_band_width_atr/3`, obs[26]=`adx_inverse_norm`
 
-**Verified Pass Rate:** **10.0%** (5000-eps eval, 3× baseline 3.5%)
+**Reward (MR):** PnL ratio + capital-preservation shaping + DD penalty + activity floor + auxiliary signal
+
+**Verified Pass Rate (v8.0.5):** **59.30%** (5000-eps eval, ทะลุ gate 8% ไป 51 pp), Profitable 89.10%, Breach 0.00%, Total DD max 5.80%, Daily DD max 3.00%, Profit avg +7.23%
 
 ---
 
@@ -129,23 +144,22 @@ BOT-FTMO/
     │   ├── news_calendar.json         # Imported news events
     │   └── news_inbox/                # Drop ForexFactory CSV here
     │
-    ├── strategy/                      # 🎯 Brain 1: SMC
-    │   ├── smc_strategy.py
-    │   ├── market_structure.py
-    │   ├── order_blocks.py
-    │   ├── fair_value_gaps.py
-    │   ├── liquidity_sweeps.py
-    │   └── indicators.py
+    ├── strategy/                      # 🎯 Brain 1: Mean Reversion (v8.0+)
+    │   ├── mean_reversion_strategy.py # MeanReversionStrategy + LiveMRScanner + MRSignal/TradeSignal aliases
+    │   └── indicators.py              # RSI, MACD, ADX, ATR, Bollinger, Stochastic
+    │   # SMC files (smc_strategy.py + 5 detectors) ลบใน v8.0.6
     │
-    ├── ml/                            # 🔬🎓 Brain 2 + 3 + Forecaster (v7)
-    │   ├── signal_quality.py          # GBM wrapper (with calibrator)
-    │   ├── rl_agent.py                # PPO inference wrapper
-    │   ├── signal_filter_env.py       # Gymnasium env (29 dims, v7)
-    │   ├── chronos_forecaster.py      # Amazon Chronos 2 zero-shot forecaster (v7)
+    ├── ml/                            # 🔬🎓 Brain 2 + 3 + Forecaster
+    │   ├── signal_quality.py          # GBM wrapper (with calibrator) — 28 features (v8.0.6)
+    │   ├── rl_agent.py                # PPO inference wrapper (path-aware: models/mr/ first)
+    │   ├── signal_filter_env.py       # Gymnasium env base (32 dims, env guards 3.0/5.8)
+    │   ├── mean_reversion_env.py      # MR env subclass — quick-TP/loss-duration shaping
+    │   ├── mean_reversion_backtester.py # MR pool generator (subclass of StrategyBacktester)
+    │   ├── strategy_backtester.py     # Data infra base class (post-v8.0.6 cleanup, ~327 lines)
+    │   ├── chronos_forecaster.py      # Amazon Chronos 2 zero-shot forecaster (optional)
     │   ├── aux_aware_policy.py        # PPO + aux head
     │   ├── aux_aware_ppo.py           # PPO subclass + aux loss
-    │   ├── aux_rollout_buffer.py      # RolloutBuffer + aux_targets
-    │   └── strategy_backtester.py     # Pool generator (run SMC on history)
+    │   └── aux_rollout_buffer.py      # RolloutBuffer + aux_targets
     │
     ├── execution/                     # 💱 Trade execution + management
     │   ├── trade_executor.py          # Open/close orders + sync MT5 deals
@@ -165,22 +179,29 @@ BOT-FTMO/
     │
     ├── scripts/                       # 🛠️ Training + utilities
     │   ├── fetch_mt5_data.py          # Step 0: ดึง OHLCV CSV
-    │   ├── build_signal_pool.py       # Step 1: Generate pool
-    │   ├── train_signal_quality.py    # Step 2: Train GBM
-    │   ├── train_signal_filter.py     # Step 3: Train PPO + Eval
+    │   ├── build_mr_signal_pool.py    # Step 1: Generate MR pool
+    │   ├── train_mr_signal_quality.py # Step 2: Train GBM (28 features, MR-specific)
+    │   ├── train_mr_signal_filter.py  # Step 3: Train PPO + Eval (MR env)
+    │   ├── auto_train_pipeline.py     # ⭐ Autonomous orchestrator (Build→GBM→RL→Eval→Self-correct)
+    │   ├── leakage_audit.py           # Mandatory: no future fields in obs/x
+    │   ├── parity_audit.py            # Mandatory: train↔live aligned
+    │   ├── pipeline_status.sh         # Quick status check during pipeline run
     │   └── import_forexfactory_csv.py # News calendar manual import
     │
-    ├── models/                        # 🧠 Trained AI checkpoints
-    │   ├── ppo_signal_filter.zip      # Final PPO agent
-    │   ├── ppo_signal_filter_p1.zip   # Phase 1 only
-    │   ├── vec_normalize_sf.pkl       # ⚠️ CRITICAL: obs scale (ห้ามลืม commit)
-    │   ├── vec_normalize_sf_p1.pkl
-    │   └── checkpoints_sf/            # Mid-train backups
+    ├── models/
+    │   └── mr/                        # 🧠 v8.0+ MR model artifacts
+    │       ├── best/
+    │       │   ├── ppo_mr_filter.zip      # ⭐ Production RL agent (~1 MB)
+    │       │   ├── vec_normalize_mr.pkl   # ⚠️ CRITICAL: obs scale stats
+    │       │   └── best_meta.json         # Best snapshot metadata
+    │       ├── ppo_mr_filter.zip          # Top-level mirror
+    │       └── vec_normalize_mr.pkl       # Top-level mirror
+    │   # checkpoints_mr/ + Phase 1 intermediates + .bak_* files = gitignored
     │
     ├── data/
-    │   ├── ohlcv/                     # 27 CSV files (9 symbols × 3 TF)
-    │   ├── signal_pool_10000.pkl.gz   # Pre-generated signal pool (compressed ~34MB ใน git, ungz เป็น .pkl 110MB ก่อนใช้)
-    │   └── signal_quality_model.pkl   # GBM (with calibrator inside)
+    │   ├── ohlcv/                     # 30 CSV files (10 symbols × 3 TF) — gitignored
+    │   ├── mr_signal_pool_3000.pkl    # MR pool (~309 MB, gitignored — rebuild ได้)
+    │   └── mr_signal_quality_model.pkl # GBM (with calibrator inside, ~1.2 MB)
     │
     ├── logs/
     │   ├── ftmo_trades.xlsx           # Live trade + signal log (auto-create)
@@ -337,26 +358,28 @@ pip freeze > vps_versions.txt
 
 | ไฟล์ | ทำไมต้องมี |
 |------|-----------|
-| `ftmo_trading_bot/models/ppo_signal_filter.zip` | RL agent weights |
-| `ftmo_trading_bot/models/vec_normalize_sf.pkl` | Obs normalization stats — **ขาดไม่ได้** ไม่งั้น obs scale ผิด → agent พัง |
-| `ftmo_trading_bot/data/signal_quality_model.pkl` | GBM + calibrator |
-| `ftmo_trading_bot/data/signal_pool_10000.pkl.gz` | Signal pool (compressed) — **ใช้สำหรับ retrain ใน VPS** ถ้าต้องการ. Live trading ไม่ต้องใช้ pool โดยตรงแต่เก็บไว้สำหรับ retrain |
+| `ftmo_trading_bot/models/mr/best/ppo_mr_filter.zip` | **RL agent weights** (~1 MB) — โหลดอัตโนมัติโดย `SelfLearningAgent` |
+| `ftmo_trading_bot/models/mr/best/vec_normalize_mr.pkl` | Obs normalization stats — **ขาดไม่ได้** ไม่งั้น obs scale ผิด → agent พัง |
+| `ftmo_trading_bot/models/mr/best/best_meta.json` | Metadata ของ best snapshot |
+| `ftmo_trading_bot/models/mr/ppo_mr_filter.zip` | Top-level mirror (auto-load fallback) |
+| `ftmo_trading_bot/models/mr/vec_normalize_mr.pkl` | Top-level mirror |
+| `ftmo_trading_bot/data/mr_signal_quality_model.pkl` | GBM + calibrator (~1.2 MB) |
 | `ftmo_trading_bot/config/settings.py` | Risk/symbols config |
 
-ถ้าใน `.gitignore` มี `*.zip` หรือ `*.pkl` → ต้องลบออก หรือใช้ `git lfs` แทน. **Pool .pkl ใหญ่เกิน GitHub limit (110MB) — เก็บเป็น .pkl.gz (~34MB) แทน.**
+> **Pool ไม่ต้องอัพ VPS** — `data/mr_signal_pool_3000.pkl` (309 MB) ใช้แค่ตอน retrain เท่านั้น. Live ดึง OHLCV จาก MT5 real-time. Pool ถูก gitignored แล้ว.
+>
+> รวมที่ live VPS ใช้: **~2.2 MB** ของ artifacts
 
 ### รัน live bot บน VPS
 
-```powershell
-# 1) คลายไฟล์ pool ครั้งเดียวหลัง git pull (ถ้าจะ retrain)
-#    Windows ไม่มี gunzip — ใช้ Python (จาก .venv) แทน
-.venv\Scripts\python -c "import gzip, shutil; shutil.copyfileobj(gzip.open('ftmo_trading_bot/data/signal_pool_10000.pkl.gz','rb'), open('ftmo_trading_bot/data/signal_pool_10000.pkl','wb'))"
-
-# 2) รัน bot
+```cmd
+git pull
+.venv\Scripts\python ftmo_trading_bot\scripts\leakage_audit.py
+.venv\Scripts\python ftmo_trading_bot\scripts\parity_audit.py
 .venv\Scripts\python ftmo_trading_bot\main.py
 ```
 
-(macOS/Linux: ใช้ `gunzip -k ftmo_trading_bot/data/signal_pool_10000.pkl.gz` ตามปกติ)
+ครั้งแรกที่รัน v8.0.6 บน VPS — ถ้ามี `ftmo_trades.xlsx` legacy schema (66/23 cols) จะถูก auto-archive เป็น `ftmo_trades.bak_pre_v8_<ts>.xlsx` + สร้างไฟล์ใหม่ 58/20 cols ให้อัตโนมัติ
 
 จะรัน loop ทุก 5 วินาที + scan signals ทุก 1 นาที + log ทุก trade ลง Excel
 
@@ -388,120 +411,104 @@ pip freeze > vps_versions.txt
 
 ---
 
-## 🏋️ Training Pipeline
+## 🏋️ Training Pipeline (v8.0+ MR pipeline)
 
-3 ขั้นตอน — **ห้ามข้าม ห้ามสลับลำดับ**
+**แนะนำ — Autonomous loop** (Build → GBM → RL → Eval → Self-correct):
 
-### Step 1 — Build Signal Pool
-
-**macOS / Linux:**
 ```bash
-.venv/bin/python ftmo_trading_bot/scripts/build_signal_pool.py \
-    --pool_size 10000 --workers 8 --max_days 45
+.venv/bin/python ftmo_trading_bot/scripts/auto_train_pipeline.py \
+    --max_iterations 10 --max_hours 60 \
+    --pool_size 3000 --timesteps_p1 5000000 --timesteps_p2 2000000 \
+    --target_pass_rate 0.08 --target_dd_max 0.06 \
+    --target_daily_dd_max 0.035 --target_profitable 0.55
 ```
 
-**Windows:**
-```cmd
-.venv\Scripts\python ftmo_trading_bot\scripts\build_signal_pool.py ^
-    --pool_size 10000 --workers 8 --max_days 45
-```
+orchestrator จะรัน 3 step ด้านล่างให้เอง + ปรับ hyperparams เองเมื่อ gates ไม่ผ่าน
 
-**ทำอะไร:** simulate SMC strategy run บน historical data → save 10000 episodes (แต่ละ ep = 45 วัน, มี 0–N signals พร้อม outcome) ลง `data/signal_pool_10000.pkl`
+**Manual — 3 ขั้นตอน** (ถ้าอยาก control เอง):
 
-**เวลา:** ~60–70 นาทีบน CPU 8 cores
+### Step 1 — Build MR Signal Pool
 
-**บีบอัดเพื่อ commit ขึ้น git:**
 ```bash
-gzip -k -6 ftmo_trading_bot/data/signal_pool_10000.pkl
-# ได้ signal_pool_10000.pkl.gz (~34MB) — ส่ง git ได้
+.venv/bin/python ftmo_trading_bot/scripts/build_mr_signal_pool.py \
+    --pool_size 3000 --workers 8 --max_days 45
 ```
 
-### Step 2 — Train ML Quality Model (GBM + Calibrator)
+**ทำอะไร:** simulate `MeanReversionStrategy` บน historical data → save 3000 episodes (45 วัน/ep, scan 48 ครั้ง/วัน, dedup 4 bars) ลง `data/mr_signal_pool_3000.pkl` (~309 MB, gitignored)
 
-**macOS / Linux:**
+**เวลา:** ~11 min บน CPU 8 cores
+
+### Step 2 — Train MR ML Quality Model (GBM + Calibrator)
+
 ```bash
-.venv/bin/python ftmo_trading_bot/scripts/train_signal_quality.py
-```
-
-**Windows:**
-```cmd
-.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_quality.py
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_quality.py
 ```
 
 **ทำอะไร:**
-1. Load `signal_pool_10000.pkl`
+1. Load `mr_signal_pool_3000.pkl`
 2. Train GBM ด้วย `GroupKFold cross_val_predict` (group = episode_id) → OOF predictions
 3. Fit `IsotonicRegression` calibrator บน OOF
-4. Save `data/signal_quality_model.pkl` (มี GBM + calibrator)
+4. Save `data/mr_signal_quality_model.pkl` (GBM + calibrator + drift baseline)
 5. Re-score pool → update `ml_score` ของทุก signal
 
-**เวลา:** ~5 นาที
+**เวลา:** ~2 min
 
-### Step 3 — Train PPO Agent (with Auxiliary Task)
+**Features (28):** core (confluence, atr, rsi, adx, macd, stoch, bb, ...) + temporal/regime (hour, dow, atr_zscore, vol_regime) + MR extras (`mr_setup_score`, `bb_extreme`, `bb_band_width_atr`, `reversal_wick_ratio`)
 
-**macOS / Linux:**
+### Step 3 — Train MR PPO Agent (with Auxiliary Task)
+
 ```bash
-.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py --fresh \
-    --pool_size 10000 \
-    --ml_threshold 0.36 \
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py --fresh \
+    --pool_size 3000 \
+    --ml_threshold 0.30 \
     --risk_per_trade 0.0099 \
     --n_envs 8 \
     --outcome_noise 0.05 \
-    --timesteps_p1 10000000 \
-    --timesteps_p2 5000000
-```
-
-**Windows:**
-```cmd
-.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py --fresh ^
-    --pool_size 10000 ^
-    --ml_threshold 0.36 ^
-    --risk_per_trade 0.0099 ^
-    --n_envs 8 ^
-    --outcome_noise 0.05 ^
-    --timesteps_p1 10000000 ^
-    --timesteps_p2 5000000
+    --timesteps_p1 5000000 \
+    --timesteps_p2 2000000
 ```
 
 **Curriculum 2-phase:**
 
-- **P1 (10M steps):** Quality-first reward — เน้น win rate/profit, no DD penalty
-- **P2 (5M steps):** Risk-aware — เพิ่ม DD penalty + activity floor + early-stop on value loss
+- **P1 (5M steps):** Alpha — เรียนเลือก signal คุณภาพ, no DD penalty
+- **P2 (2M steps):** Risk — เพิ่ม DD penalty + activity floor + early-stop on value loss
 
-**Auxiliary Task:** policy ทำนาย `outcome_pnl_ratio` (`aux_head`) เพิ่ม MSE loss weight=0.5 — บังคับให้ representation รู้จัก signal quality (จาก paper "Auxiliary task helps PPO converge")
+**MR-specific reward shaping:** quick-TP +0.50R (≤5 bars), slow-win +0.20R, base-loss -0.10R, duration-fine 0.02R/bar (cap -0.30R), prolonged-loss -0.40R, ADX violation -0.30R
 
-**เวลา:** ~30–40 ชม. บน CPU @ n_envs=8 (รัน background ได้, GPU เร็วขึ้น ~3–5×)
+**Auxiliary Task:** policy ทำนาย `outcome_pnl_ratio` (`aux_head`) + MSE loss weight=0.5 — บังคับ representation ให้เรียนรู้คุณภาพ signal
+
+**เวลา:** ~10-12 min บน CPU @ n_envs=8 (รวมทั้ง pipeline ~15-30 min/iteration)
 
 **Output:**
-- `models/ppo_signal_filter.zip` — final agent
-- `models/vec_normalize_sf.pkl` — obs/reward normalization stats
-- `models/checkpoints_sf/` — backup ทุก 50K steps
+- `models/mr/ppo_mr_filter.zip` — final RL agent
+- `models/mr/vec_normalize_mr.pkl` — obs/reward normalization stats
+- `models/mr/best/` — best snapshot (auto-copied โดย `auto_train_pipeline.py` เมื่อมี Pass Rate สูงกว่าเก่า)
+- `models/mr/checkpoints_mr/` — backup ทุก 50K steps (gitignored)
 
 ---
 
 ## 🧪 Evaluation
 
-**macOS / Linux:**
 ```bash
-.venv/bin/python ftmo_trading_bot/scripts/train_signal_filter.py \
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py \
     --eval_only \
-    --pool_size 10000 \
-    --ml_threshold 0.36 \
+    --pool_size 3000 \
+    --ml_threshold 0.30 \
     --risk_per_trade 0.0099
 ```
 
 ---
 
-## 🚀 v8.0 Mean Reversion Pipeline
+## 🚀 v8.0 Mean Reversion Pipeline (Active)
 
-กลยุทธ์ใหม่ที่ **เน้น win rate สูง + DD ต่ำ** สำหรับผู้ที่อยากลองทางอื่นนอกจาก SMC. ทำงานคู่ขนานกับ SMC ใน codebase เดียวกัน.
+กลยุทธ์ปัจจุบัน — เน้น win rate สูง + DD ต่ำ. SMC ลบทั้งหมดแล้วใน v8.0.6
 
-### หลักการเทรด
+### หลักการเทรด (v8.0.5 production)
 
-- **เข้าเมื่อราคาผิดปกติ:** Bollinger %B แตะขอบล่าง (≤ 0.10) + RSI < 30 = ซื้อ / Bollinger %B แตะขอบบน (≥ 0.90) + RSI > 70 = ขาย
-- **ต้องมี wick rejection:** ไส้เทียนกลับตัวยาวกว่าตัวเทียน 1.2 เท่าขึ้นไป (ยืนยัน reversal)
-- **กรอง trend แรง:** ถ้า ADX H1 > 25 = ตลาด trend แรง ห้าม MR ทันที (mean reversion จะแพ้ trend แรง)
-- **SL แน่น TP เร็ว:** SL = 1.0×ATR, TP = 1.0×ATR (RR 1:1) — เน้น win rate มากกว่า reward ต่อไม้
+- **เข้าเมื่อราคาผิดปกติ:** Bollinger %B แตะขอบล่าง (≤ 0.30) + RSI < 40 = ซื้อ / Bollinger %B แตะขอบบน (≥ 0.70) + RSI > 60 = ขาย
+- **ต้องมี wick rejection:** ไส้เทียนกลับตัว ≥ 0.4 เท่าของตัวเทียน
+- **กรอง trend แรง:** ถ้า ADX H1 > 30 = ตลาด trend แรง ห้าม MR
+- **SL แน่น TP เร็ว:** SL = 1.0×ATR, TP = 1.0×ATR (RR 1:1)
 
 ### Reward Shaping (สอนบอท preserve capital)
 
@@ -536,7 +543,7 @@ gzip -k -6 ftmo_trading_bot/data/signal_pool_10000.pkl
 
 | เกณฑ์ | ค่าเริ่มต้น | หมายเหตุ |
 |-------|-----------|---------|
-| Pass Rate | ≥ 8 % | ต่ำกว่า v6.13 SMC (9.7%) เล็กน้อย — buffer ให้ MR strategy แตกต่าง |
+| Pass Rate | ≥ 8 % | conservative buffer (verified MR pass rate = 59.30%) |
 | Total DD max | ≤ 6 % | ห่างจาก FTMO 8% limit |
 | Daily DD max | ≤ 3.5 % | ห่างจาก FTMO 4% limit |
 | Profitable Rate | ≥ 55 % | กว่าครึ่งของ episodes ปิดบวก |
@@ -559,25 +566,22 @@ gzip -k -6 ftmo_trading_bot/data/signal_pool_10000.pkl
 | `models/mr/best/` | best model + meta (iteration ที่ดีที่สุด) |
 | `logs/tb_mr_filter/` | TensorBoard ดู training curve |
 
-### ขั้นตอนเปิดใช้ MR ในโหมด live (ทำหลังจาก auto pipeline ผ่าน gate)
+### Live deploy (ทำงานออโต้แล้วใน v8.0+)
 
-1. เปิด `ftmo_trading_bot/config/settings.py` → เปลี่ยน `bot_config.mr.strategy_mode` จาก `"smc"` → `"mean_reversion"`
-2. ก๊อปปี้ `models/mr/best/ppo_mr_filter.zip` + `vec_normalize_mr.pkl` ไปทับ slot ของ live (TBD: ต้องเขียน switch ใน `main.py` ในอนาคต — ปัจจุบัน live ยังใช้ SMC)
-3. รัน `python main.py` ปกติ
+`main.py` รันแล้วโหลด MR model + LiveMRScanner อัตโนมัติ — ไม่ต้องตั้งค่าเพิ่มเติม:
 
-> ⚠️ ปัจจุบัน live `main.py` ยังไม่ wire กับ MR strategy. การ pivot ปัจจุบันคือ "code staged" — โครงสร้างพร้อม retrain แล้ว แต่ยังไม่กระทบบอทที่รัน production. เมื่อ user รัน auto pipeline จนผ่าน gate แล้ว ให้แจ้งกลับมาเพื่อ wire live path เป็น step ถัดไป.
+```cmd
+.venv\Scripts\python ftmo_trading_bot\main.py
+```
+
+`SelfLearningAgent` หา model ตามลำดับ:
+1. `models/mr/best/ppo_mr_filter.zip` (ผ่าน auto pipeline best snapshot)
+2. `models/mr/ppo_mr_filter.zip` (top-level mirror)
+3. `models/ppo_signal_filter.zip` (legacy fallback)
+
+เลือกอันแรกที่เจอ. ถ้าโหลดสำเร็จ → console prints `✅ RL agent loaded from <path>`
 
 ---
-
-
-**Windows:**
-```cmd
-.venv\Scripts\python ftmo_trading_bot\scripts\train_signal_filter.py ^
-    --eval_only ^
-    --pool_size 10000 ^
-    --ml_threshold 0.36 ^
-    --risk_per_trade 0.0099
-```
 
 รัน 5000 episodes (default) แล้ว report:
 
@@ -612,17 +616,20 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
 
 | Field | Value | คำอธิบาย |
 |-------|-------|---------|
-| `DEFAULT_RISK_PER_TRADE_PCT` | 0.007 | 0.7% (verified optimal) |
-| `ML_FILTER_THRESHOLD` (v6.12) | 0.36 | live ↔ training sync — signals ที่ ML score < 0.36 ถูก reject ก่อน agent |
+| `DEFAULT_RISK_PER_TRADE_PCT` | 0.0099 | 0.99% (FTMO 1% rule) |
+| `ML_FILTER_THRESHOLD` (v8.0.3) | 0.30 | live ↔ training sync — signals ที่ ML score < 0.30 ถูก reject ก่อน agent |
 | `MAX_DRAWDOWN_HARD_STOP_PCT` | 0.08 | 8% (buffer 2% จาก FTMO 10%) |
 | `DAILY_LOSS_HARD_STOP_PCT` | 0.04 | 4% (buffer 1% จาก FTMO 5%) |
 | `PROFIT_TARGET_PCT` | 0.10 | 10% target |
 | `CONSISTENCY_RULE_THRESHOLD` | 1.0 | 2-step Standard ไม่มีกฎนี้ |
 | `MAX_OPEN_POSITIONS` | 3 | สูงสุด 3 positions พร้อมกัน |
-| `CONSECUTIVE_LOSS_PAUSE_COUNT` (v6.13) | 3 | แพ้ติด 3 ครั้ง → pause 60 นาที (เดิม 2 — DD trigger เร็วเกินจริง) |
-| `CONSECUTIVE_LOSS_HALT_COUNT` (v6.13) | 4 | แพ้ติด 4 ครั้ง → halt ทั้งวัน (เดิม 3 — sync กับ pause count) |
-| `XAUUSD.sl_atr_multiplier` (v6.13) | 1.8 | XAU SL = 1.8×ATR (เดิม 1.5× global; XAU wick noise สูง) |
-| `XAUUSD.tp_atr_multiplier` (v6.13) | 3.6 | XAU TP = 3.6×ATR (รักษา RR 1:2) |
+| `bot_config.mr.bb_oversold/overbought` | 0.30 / 0.70 | MR entry threshold |
+| `bot_config.mr.rsi_oversold/overbought` | 40 / 60 | MR entry threshold |
+| `bot_config.mr.adx_trend_block` | 30 | ADX H1 > 30 → ห้าม MR |
+| `bot_config.mr.sl_atr_mult` | 1.0 | tight SL |
+| `bot_config.mr.rr_ratio` | 1.0 | RR 1:1 quick TP |
+| **env `DAILY_DD_GUARD`** (v8.0.4) | 0.030 | clamp eval ที่ 3.0% (ใต้ gate 3.5%) |
+| **env `TOTAL_DD_GUARD`** (v8.0.5) | 0.058 | clamp eval ที่ 5.8% (ใต้ gate 6.0%) |
 
 ### Step 3 — รัน bot
 
@@ -657,36 +664,44 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
 
 ทุก trade + signal scan → log ลง [`ftmo_trading_bot/logs/ftmo_trades.xlsx`](ftmo_trading_bot/logs/) (auto-create เมื่อรันครั้งแรก)
 
-### 4 Sheets
+### 4 Sheets (v8.0.6 schema)
 
-#### 1. **Trades** — 63 columns
+#### 1. **Trades** — 58 columns
 
 | Group | Columns |
 |-------|---------|
 | Core (1–19) | Ticket, Symbol, Type, Entry/SL/TP, Lot, Risk%, RR, Confluence, ATR, Times, P/L, Reasons |
-| ML features (20–32) | Session, DoW, Hour, Spread, HTF Bias, Vol Regime, ConsecLoss, DD%, MAE, MFE, TimeInTrade, ExitPath |
-| Decision (33–37) | ML Score (cal/raw), Agent Action, Decision, Threshold |
-| Confluence breakdown (38–42) | HTF/MTF/OB/FVG/Sweep pts |
-| Trade mgmt (43–46) | BE Moved, Partial Closed, Trailing, Final SL |
-| Live exec (47–51) | Bid/Ask @Entry/Exit, Spread (pips) |
-| Market (52–55) | ADX H1/H4, MTF/D1 Bias |
-| Account (56–58) | Balance@Entry/Close, Equity Peak |
-| Overtrading (59–62) | Trades Today, Trades 1h, Sec Since Last Open (any/same-sym) |
-| **Retrain** (63) | **Obs27 JSON** ← full 27-dim obs vector → reconstruct state สำหรับ retrain |
+| Time + spread (20–24) | Session, DoW, Hour, Spread@Entry, Slippage |
+| Risk + outcome (25–31) | Volatility Regime, ConsecLoss, DD%, MAE, MFE, TimeInTrade, ExitPath |
+| Decision (32–36) | ML Score (cal/raw), Agent Action, Decision, Threshold |
+| Trade mgmt (37–40) | BE Moved, Partial Closed, Trailing, Final SL |
+| Live exec (41–45) | Bid/Ask @Entry/Exit, Spread (pips) |
+| Market (46–47) | ADX H1, ADX H4 |
+| Account (48–50) | Balance@Entry/Close, Equity Peak |
+| Overtrading (51–54) | Trades Today, Trades 1h, Sec Since Last Open (any/same-sym) |
+| Skipped flag (55) | Partial Skipped |
+| **Retrain** (56) | **Obs JSON** ← full 32-dim obs vector → reconstruct state สำหรับ retrain |
+| Chronos (57–58) | Chronos Align, Chronos Unc |
+
+> v8.0.6 ลบ 8 SMC cols (HTF Bias, HTF/MTF/OB/FVG/Sweep pts, MTF Bias, D1 Bias) — ใช้ name-based `_COL` lookup ป้องกัน off-by-one
 
 #### 2. **Signals** — 20 columns
-ทุก scan event (รวม `AGENT_SKIP`, `REJECTED`, `NO_SIGNAL`) — ใช้วิเคราะห์ signal frequency + reject distribution
+
+ทุก scan event (`AGENT_TAKE`, `AGENT_SKIP`, `AGENT_TAKE_FAIL`, `ML_FILTERED`) — ใช้วิเคราะห์ signal frequency + reject distribution. **สร้าง lazy** ตอน scan event แรก — ถ้าบอท run แล้วยังไม่มี signal เลย sheet นี้จะยังไม่ถูกสร้าง
+
+> v8.0.6 ลบ 3 SMC cols (HTF Bias, MTF Bias, D1 Bias)
 
 #### 3. **Daily** — สรุปรายวัน
+
 Date, Trades, Wins, Losses, Win Rate, P/L, DD, Balance EOD
 
 #### 4. **Stats** — สถิติรวม
+
 Win Rate, Sharpe, Profit Factor, etc.
 
-### ⚠️ Schema migration
+### ⚠️ Schema migration (v8.0.6 auto-archive)
 
-ถ้าไฟล์ `ftmo_trades.xlsx` เดิมเป็น schema เก่า (62 cols) → bot จะ append ผิดคอลัมน์
-**วิธีแก้:** rename ไฟล์เดิมก่อน start bot — `mv logs/ftmo_trades.xlsx logs/ftmo_trades_old.xlsx`
+ถ้าไฟล์ `ftmo_trades.xlsx` เดิมเป็น schema เก่า (66/23 cols) → bot จะ **auto-archive เป็น `ftmo_trades.bak_pre_v8_<timestamp>.xlsx`** + สร้างไฟล์ใหม่ schema 58/20 cols ให้อัตโนมัติ. ไม่ต้อง rename เอง — ตรวจ console message ตอน start bot ครั้งแรกหลัง update
 
 ---
 
@@ -724,7 +739,7 @@ Optional flags:
 
 บอทกัน 2 ระดับ:
 
-1. **Block สัญญาณใหม่** — ก่อนข่าว 30 นาที + หลังข่าว 15 นาที (ปรับใน `config.no_trade_before_news_minutes` / `no_trade_after_news_minutes`) → SMC strategy ไม่ scan signal ของ symbol ที่กระทบ
+1. **Block สัญญาณใหม่** — ก่อนข่าว 30 นาที + หลังข่าว 15 นาที (ปรับใน `config.no_trade_before_news_minutes` / `no_trade_after_news_minutes`) → MR strategy ไม่ scan signal ของ symbol ที่กระทบ
 2. **ปิด position ที่เปิดอยู่** (v7.1.10) — ก่อนข่าว 30 นาที (sync กับข้อ 1) → `TradeManager.check_news_close()` ปิดทุก position ของ symbol ที่กระทบ ด้วย reason `"Pre-news close"`
 
 **Currency mapping** — USD news (NFP/CPI/FOMC) กระทบ: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, **XAUUSD** (ทอง spike แรงตาม USD strength โดยตรง)
@@ -793,11 +808,11 @@ PROFIT_TARGET_PCT = 0.10             # 10%
 ### Anti-Overtrading
 
 ```python
-MAX_CORRELATED_POSITIONS = 1            # 1 ตำแหน่งต่อกลุ่ม
-MIN_CONFLUENCE_SCORE = 70.0             # ขั้นต่ำ
+MAX_CORRELATED_POSITIONS = 1            # 1 ตำแหน่งต่อกลุ่ม correlation
+ML_FILTER_THRESHOLD = 0.30              # signal ต้อง ML score ≥ 0.30 ก่อน agent (v8.0.3)
 COOLDOWN_AFTER_LOSS_MIN = 60            # 60 นาทีก่อนเปิดคู่เดิมหลัง SL
-CONSECUTIVE_LOSS_PAUSE_COUNT = 2        # หยุด 60 นาทีหลังแพ้ติด 2 ครั้ง
-CONSECUTIVE_LOSS_HALT_COUNT = 3         # halt ทั้งวันหลังแพ้ติด 3 ครั้ง
+CONSECUTIVE_LOSS_PAUSE_COUNT = 3        # หยุด 60 นาทีหลังแพ้ติด 3 ครั้ง (v6.13)
+CONSECUTIVE_LOSS_HALT_COUNT = 4         # halt ทั้งวันหลังแพ้ติด 4 ครั้ง (v6.13)
 ```
 
 ### Post-TP Lock (anti-FOMO)
@@ -859,14 +874,15 @@ w32tm /resync
 ### Q: Model เก่าใช้ต่อได้ไหมหลัง update repo?
 
 A: ขึ้นกับ:
-- ถ้า **obs space (27 dims) ไม่เปลี่ยน** → ใช้ `ppo_signal_filter.zip` ต่อได้
-- ถ้า **เปลี่ยน obs** → ต้อง retrain ทั้งหมด (Brain 1 SMC + Brain 2 GBM + Brain 3 RL) เพื่อให้ wiring ตรงกัน
 
-ดู `wiki/05-invariants.md § Hard Invariants § Observation Space Sync`
+- ถ้า **obs space (32 dims, v8.0+) ไม่เปลี่ยน** → ใช้ `models/mr/best/ppo_mr_filter.zip` ต่อได้ (พร้อม `vec_normalize_mr.pkl` ที่ตรงกัน)
+- ถ้า **เปลี่ยน obs / strategy params / env guards** → ต้อง retrain ทั้งหมด (Brain 1 MR + Brain 2 GBM + Brain 3 RL) เพื่อให้ wiring ตรงกัน
 
-### Q: Console เงียบไป — ทำไมไม่เห็น scan ของ 9 symbols?
+ดู `wiki/05-invariants.md § Hard Invariants § Observation Space Sync` + § Invariant 0a (TRAIN ↔ LIVE PARITY)
 
-A: v6.9 เปลี่ยนเป็น **quiet mode** — per-signal SKIP/scan logs ไปอยู่ใน `Signals` sheet ของ Excel แทน. ดูได้ใน `logs/ftmo_trades.xlsx` sheet "Signals" — มี SCAN/SKIP/TAKE/REJECT records ครบ
+### Q: Console เงียบไป — ทำไมไม่เห็น scan ของ 10 symbols?
+
+A: v6.9 เปลี่ยนเป็น **quiet mode** — per-signal SKIP/scan logs ไปอยู่ใน `Signals` sheet ของ Excel แทน. ดูได้ใน `logs/ftmo_trades.xlsx` sheet "Signals" — มี TAKE/SKIP/ML_FILTERED/AGENT_TAKE_FAIL records ครบ. **Note:** Signals sheet ถูกสร้างแบบ lazy ตอน scan event แรก — ถ้า MR ยังไม่ปล่อย signal เลย sheet นี้จะยังไม่มี (ปกติของ MR strategy ที่ selective)
 
 ---
 

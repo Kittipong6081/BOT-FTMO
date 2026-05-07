@@ -9,7 +9,7 @@
 - **v7.2 (2026-05-06) — Chronos un-flip + Session log fix (audit-driven)**: Live audit ของ `logs/ftmo_trades.xlsx` (524 signals 2026-05-05, strong DOWN-trend day, 100% SELL) พบ `chronos_alignment = -1` ติดทุก signal → reward penalty `-0.30` ลงทุก TAKE ระหว่าง train → agent learned skip-default (TAKE max ML 0.598 vs SKIP max ML 0.693 = discrimination ผิดทาง). Root cause = v7.0.2 flip-sign semantics ออกแบบสำหรับ contrarian/reversal strategy แต่ SMC จริง ๆ เป็น trend-following (ใช้ HTF Tier 1 hard veto Counter-D1) → mismatch. **Patch B**: un-flip formula ใน `ChronosForecaster.compute_features` → `delta = median_h - last_close` (alignment +1 = SMC+Chronos agree on direction). **Patch A**: `FTMOTradingBot._log_signal_scan` Session column ที่ค้าง None ใน Signals sheet → เพิ่ม `_compute_current_session()` helper. **Pipeline**: rebuild pool + retrain GBM + retrain RL (~36 ชม.). Backups `*.bak_v7.1` พร้อม rollback.
 - **v7.1.10 (2026-05-06) — Pre-news close fix**: ก่อนหน้านี้ news filter block สัญญาณใหม่อย่างเดียว แต่ position ที่เปิดอยู่ถูกถือผ่านข่าว = ผิดกฎ FTMO. เพิ่ม `TradeManager.check_news_close()` ปิด position ที่ symbol จะชนข่าวแรงใน 30 นาที (sync กับ `no_trade_before_news_minutes`). เรียกใน main loop ก่อน `check_session_close`. Priority: Friday/Daily Overnight > Pre-News > Trailing/BE/Partial. เพิ่ม `XAUUSD` เข้า `_CURRENCY_TO_SYMBOLS["USD"]` (ทอง spike แรงตอน NFP/CPI/FOMC). ไม่ต้อง retrain — fix อยู่ใน execution path เท่านั้น
 - **Goal**: pass the FTMO 2-step Standard Challenge (10 % profit, 4 % daily DD, 8 % total DD).
-- **3 brains + 1 forecaster**: `SMCStrategy` (rules) → `SignalQualityModel` (GBM + Isotonic calibrator) → **`ChronosForecaster`** (Amazon Chronos 2 zero-shot, v7) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
+- **3 brains + 1 forecaster (v8.0+)**: `LiveMRScanner` (Mean Reversion rules — BB+RSI+ADX) → `SignalQualityModel` (GBM + Isotonic calibrator) → **`ChronosForecaster`** (Amazon Chronos 2 zero-shot, optional) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
 - **Live entry**: `python main.py` → `FTMOTradingBot.run` loops every 5 s. Console runs in **quiet mode** (announce-once for idle states; per-signal SKIP/NO_AGENT logged to Excel `Signals` sheet, not console).
 - **Obs = 29 dims** (v7, 2026-05-01 — adds `chronos_alignment` + `chronos_uncertainty_norm`). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
 - **Runs on**: macOS/Linux (train + backtest), Windows + MT5 (live).
@@ -183,41 +183,58 @@
 ftmo_trading_bot/
 ├── main.py                  ← FTMOTradingBot (live entry)
 ├── config/settings.py       ← MT5Config, FTMOConfig, SymbolConfig, bot_config
-├── strategy/                ← SMCStrategy + 5 detectors (OB, FVG, Sweep, Structure, Indicators)
-├── ml/                      ← SignalQualityModel, SelfLearningAgent, FTMOSignalFilterEnv, StrategyBacktester
+├── strategy/                ← MeanReversionStrategy + LiveMRScanner + Indicators (SMC removed v8.0.6)
+├── ml/                      ← SignalQualityModel, SelfLearningAgent, MeanReversionFilterEnv, MeanReversionBacktester, ChronosForecaster, AuxAware{PPO,Policy,Buffer}
 ├── core/                    ← RiskManager, MT5Connector, TimeManager, PositionSizer, NewsCalendarScheduler, DiscordNotifier
 ├── execution/               ← TradeExecutor, TradeManager
-├── analytics/               ← PerformanceAnalyzer + TradeLogger (Excel: Trades 64 cols / Signals 21 cols / Daily / Stats)
-├── scripts/                 ← build_signal_pool, train_signal_quality, train_signal_filter, fetch_mt5_data
-├── data/                    ← OHLCV CSVs + signal_pool + ml_model pkl (with isotonic calibrator)
-├── models/                  ← ppo_signal_filter.zip + vec_normalize_sf.pkl (aux-aware policy weights)
-└── logs/                    ← bot_state.json + ftmo_trades.xlsx + tensorboard + news_scheduler_state
+├── analytics/               ← PerformanceAnalyzer + TradeLogger (Excel: Trades 58 cols / Signals 20 cols / Daily / Stats, v8.0.6)
+├── scripts/                 ← build_mr_signal_pool, train_mr_signal_quality, train_mr_signal_filter, auto_train_pipeline, leakage_audit, parity_audit, pipeline_status.sh
+├── data/                    ← OHLCV CSVs + mr_signal_pool_3000.pkl (gitignored) + mr_signal_quality_model.pkl
+├── models/mr/               ← ppo_mr_filter.zip + vec_normalize_mr.pkl + best/ snapshot (v8.0+)
+└── logs/                    ← bot_state.json + ftmo_trades.xlsx + tensorboard + auto_train_pipeline.log
 ```
 
 Full module details → [wiki/02-modules.md](wiki/02-modules.md).
 
 ---
 
-## Quick Commands
+## Quick Commands (v8.0+)
 
-**Training (3 steps, in order):**
+**Autonomous training (recommended)** — single command runs Build → GBM → RL → Eval → Self-correct loop:
 
 ```bash
-python scripts/build_signal_pool.py --pool_size 10000 --workers 8
-python scripts/train_signal_quality.py
-python scripts/train_signal_filter.py --fresh \
-    --timesteps_p1 10000000 --timesteps_p2 5000000 \
-    --n_envs 8 --pool_size 10000 --outcome_noise 0.05 \
-    --ml_threshold 0.36 --risk_per_trade 0.0099
+.venv/bin/python ftmo_trading_bot/scripts/auto_train_pipeline.py \
+    --max_iterations 10 --max_hours 60 \
+    --pool_size 3000 --timesteps_p1 5000000 --timesteps_p2 2000000 \
+    --target_pass_rate 0.08 --target_dd_max 0.06 \
+    --target_daily_dd_max 0.035 --target_profitable 0.55
 ```
 
-Phase E2 trainer uses `AuxAwarePPO` + `AuxAwareACPolicy` automatically (aux loss weight = 0.5).
-
-**Evaluation:**
+**Manual training (3 steps, in order)**:
 
 ```bash
-python scripts/train_signal_filter.py --eval_only \
-    --pool_size 10000 --ml_threshold 0.36 --risk_per_trade 0.0099
+.venv/bin/python ftmo_trading_bot/scripts/build_mr_signal_pool.py --pool_size 3000 --workers 8
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_quality.py
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py --fresh \
+    --timesteps_p1 5000000 --timesteps_p2 2000000 \
+    --n_envs 8 --pool_size 3000 --outcome_noise 0.05 \
+    --ml_threshold 0.30 --risk_per_trade 0.0099
+```
+
+Trainer auto-uses `AuxAwarePPO` + `AuxAwareACPolicy` (aux loss weight = 0.5).
+
+**Evaluation**:
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py --eval_only \
+    --pool_size 3000 --ml_threshold 0.30 --risk_per_trade 0.0099
+```
+
+**Audits** (mandatory before commit):
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/leakage_audit.py    # exit 0 = no leakage
+.venv/bin/python ftmo_trading_bot/scripts/parity_audit.py     # exit 0 = train↔live aligned
 ```
 
 Default 5000 episodes. Use `.venv/bin/python` (not bare `python`) — version mismatch can shift Pass Rate.

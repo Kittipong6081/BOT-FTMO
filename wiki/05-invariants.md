@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.8** — MRSignal backward-compat properties)
+> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.9** — `MIN_RISK_REWARD_RATIO` 1.5 → 1.0 to allow MR signals)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,22 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-07 — v8.0.9 RR floor 1.5 → 1.0 (RiskManager rejecting every MR signal)
+
+**Problem** — VPS log:
+
+```text
+🚫 [Executor] Risk Manager ปฏิเสธ: ❌ Risk:Reward (1.00) ต่ำกว่าขั้นต่ำ (1.5)
+```
+
+`RiskManager.can_open_trade` (line 519-521) checks `rr_ratio < FTMOConfig.MIN_RISK_REWARD_RATIO` and rejects. Default was 1.5 (SMC era used RR 1:1.5-2.5). MR strategy fixes RR at 1:1 (quick TP design) → every MR signal rejected at the live Risk Manager gate even after passing strategy/ML/RL.
+
+**Fix** — `FTMOConfig.MIN_RISK_REWARD_RATIO` 1.5 → 1.0 + `PREFERRED_RISK_REWARD_RATIO` 2.0 → 1.0 to match MR's RR. Live Risk Manager now accepts MR signals.
+
+**Audit added** — `parity_audit.py::audit_strategy_params` cross-checks `bot_config.ftmo.MIN_RISK_REWARD_RATIO ≤ bot_config.mr.rr_ratio`. Future RR mismatch fails the audit.
+
+**Invariant added** — when changing strategy's RR ratio, `FTMOConfig.MIN_RISK_REWARD_RATIO` MUST be ≤ that value. RiskManager is the live floor — any signal below it gets rejected regardless of MR/ML/RL approval.
 
 ### 2026-05-07 — v8.0.8 MRSignal backward-compat @property (live AttributeError fix)
 

@@ -77,8 +77,12 @@ class FTMOConfig:
     DEFAULT_RISK_PER_TRADE_PCT: float = 0.0099  # 0.99% — sync กับ RL training v7.1.9
     
     # === อัตราส่วน Risk:Reward ขั้นต่ำ ===
-    MIN_RISK_REWARD_RATIO: float = 1.5      # ต้องได้อย่างน้อย 1:1.5
-    PREFERRED_RISK_REWARD_RATIO: float = 2.0  # เป้าหมาย 1:2
+    # v8.0.9 (2026-05-07): ลด 1.5 → 1.0 เพื่อรองรับ MR strategy ที่ใช้ RR 1:1
+    # (quick TP design — เน้น win rate สูงแทน reward ต่อไม้). ค่า 1.5 เดิมเป็น
+    # SMC-era ที่ใช้ RR 1:1.5-2.5. ทุก MR signal ถูก reject ใน RiskManager
+    # เพราะ check นี้จนกว่าจะแก้
+    MIN_RISK_REWARD_RATIO: float = 1.0      # ต้องได้อย่างน้อย 1:1 (MR uses 1:1)
+    PREFERRED_RISK_REWARD_RATIO: float = 1.0  # MR fix RR 1:1
     
     # === จำนวน Position สูงสุดที่เปิดได้พร้อมกัน ===
     MAX_OPEN_POSITIONS: int = 3

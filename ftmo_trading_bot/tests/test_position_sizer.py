@@ -45,11 +45,13 @@ def test_sl_above_entry_for_sell(mock_mt5_connector):
 
 
 def test_rr_ratio_at_least_minimum(mock_mt5_connector):
+    """v8.0.9: MIN_RISK_REWARD_RATIO 1.5 → 1.0 (MR uses RR 1:1)."""
+    from config.settings import bot_config
     sizer = PositionSizer(mock_mt5_connector)
     result = sizer.calculate_sl_tp_prices(
         symbol="EURUSD", order_type="BUY",
         entry_price=1.10000, atr_value=0.0010,
-        sl_multiplier=2.0, tp_multiplier=2.0,    # RR = 1:1
+        sl_multiplier=1.0, tp_multiplier=1.0,    # MR RR = 1:1
     )
-    # ต้องถูกบังคับขึ้นเป็น MIN_RISK_REWARD_RATIO (default ≥ 1.5)
-    assert result["rr_ratio"] >= 1.5
+    # ต้องเท่ากับ MIN_RISK_REWARD_RATIO (default = 1.0 สำหรับ MR)
+    assert result["rr_ratio"] >= bot_config.ftmo.MIN_RISK_REWARD_RATIO

@@ -115,7 +115,7 @@ Details on PPO config, reward, and curriculum → [03-rl-training.md](03-rl-trai
 ftmo_trading_bot/
 ├── main.py                  ← FTMOTradingBot (live entry)
 ├── config/                  ← settings.py + news_*.py
-├── strategy/                ← SMC brain (smc_strategy + 5 detectors)
+├── strategy/                ← MR brain (mean_reversion_strategy + indicators) — SMC removed v8.0.6
 ├── ml/                      ← ML+RL brain (signal_quality, rl_agent, env, backtester)
 ├── core/                    ← risk_manager, mt5_connector, time_manager, position_sizer, news_scheduler, notifier
 ├── execution/               ← trade_executor, trade_manager
