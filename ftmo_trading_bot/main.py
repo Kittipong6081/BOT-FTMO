@@ -28,7 +28,15 @@ from config.settings import bot_config, get_symbol_config
 from core.mt5_connector import MT5Connector
 from core.risk_manager import RiskManager, BotState
 from core.position_sizer import PositionSizer
-from strategy.smc_strategy import SMCStrategy, SignalType
+# v8.0 (2026-05-06): live path uses Mean Reversion strategy by default.
+# `LiveMRScanner` is a drop-in replacement for `SMCStrategy` (same
+# `scan_all_symbols()` + `_ltf_data`/`_mtf_data` accessors). SMC code is kept
+# in `strategy/smc_strategy.py` as a deprecated reference module — the live
+# entry no longer imports it.
+from strategy.mean_reversion_strategy import (
+    LiveMRScanner as SMCStrategy,   # alias for backward-compat in this file
+    MRSignalType as SignalType,
+)
 from execution.trade_executor import TradeExecutor
 from execution.trade_manager import TradeManager
 from analytics.trade_logger import TradeLogger
@@ -91,25 +99,49 @@ class FTMOTradingBot:
         )
         self._trade_manager = TradeManager(self._connector, self._risk_manager, self._executor)
         
-        # === AI Signal Filter Agent (Phase 5) ===
+        # === AI Signal Filter Agent (Phase 5, v8.0: MR model first, SMC fallback) ===
+        # v8.0 — live now expects MR model under models/mr/. Load order:
+        #   1. models/mr/ppo_mr_filter.zip (rename to ppo_signal_filter.zip
+        #      because SelfLearningAgent.model_path is hardcoded). The
+        #      auto_train_pipeline copies the best MR model to this name.
+        #   2. fallback to legacy models/ppo_signal_filter.zip
         self._rl_agent = None
-        try:
-            self._rl_agent = SelfLearningAgent(
-                model_dir=bot_config.paths.model_dir,
-                verbose=1
-            )
-            self._rl_agent.initialize_model(strict=True)
-        except Exception as e:
-            print(f"⚠️ [Bot] AI Signal Filter ไม่พร้อม: {e} — ใช้ SMC Strategy โดยตรง")
-            self._rl_agent = None
+        _mr_model_dir = os.path.join(bot_config.paths.model_dir, "mr")
+        _candidate_dirs = (
+            [_mr_model_dir] if os.path.isdir(_mr_model_dir) else []
+        ) + [bot_config.paths.model_dir]
+        for _md in _candidate_dirs:
+            try:
+                _agent = SelfLearningAgent(model_dir=_md, verbose=1)
+                # MR pipeline names model `ppo_mr_filter.zip`. SelfLearningAgent
+                # expects `ppo_signal_filter.zip` — accept either via override.
+                _mr_zip = os.path.join(_md, "ppo_mr_filter.zip")
+                _mr_vec = os.path.join(_md, "vec_normalize_mr.pkl")
+                if os.path.exists(_mr_zip):
+                    _agent.model_path = _mr_zip
+                if os.path.exists(_mr_vec):
+                    _agent.vec_normalize_path = _mr_vec
+                _agent.initialize_model(strict=True)
+                self._rl_agent = _agent
+                print(f"   ✅ RL agent loaded from {_md}")
+                break
+            except Exception as e:
+                print(f"   ⚠️ RL agent load from {_md} failed: {e}")
+        if self._rl_agent is None:
+            print(f"⚠️ [Bot] AI Signal Filter ไม่พร้อม — ใช้ MR strategy โดยตรง")
 
         # === ML Signal Quality Model (GBM, AUC ~0.59) ===
         # ให้ probability ว่า signal จะ win → feed เป็น obs feature ให้ RL agent
+        # v8.0: prefer MR-trained GBM (mr_signal_quality_model.pkl) over legacy SMC GBM
         self._quality_model = None
         try:
             import os as _os
             from ml.signal_quality import SignalQualityModel
-            _mpath = _os.path.join(
+            _mr_gbm = _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)),
+                "data", "mr_signal_quality_model.pkl"
+            )
+            _mpath = _mr_gbm if _os.path.exists(_mr_gbm) else _os.path.join(
                 _os.path.dirname(_os.path.abspath(__file__)),
                 "data", "signal_quality_model.pkl"
             )
@@ -491,7 +523,9 @@ class FTMOTradingBot:
         atr_val = max(sig.atr_value, 1e-8)
         atr_pips = atr_val / (0.01 if sig.entry_price > 50 else 0.0001)
         atr_norm = (atr_pips - 15.0) / 10.0
-        ob_norm = sig.ob_score / 100.0
+        # v8.0 — obs[4] reinterprets ob_norm as bb_extreme (MR signal strength)
+        # MR signals carry `bb_extreme` in [0, 1]; SMC fallback uses ob_score/100
+        ob_norm = float(getattr(sig, "bb_extreme", None) or sig.ob_score / 100.0)
         bias_align = direction * sig.market_bias
         sl_atr = sig.sl_distance / atr_val
 
@@ -499,8 +533,18 @@ class FTMOTradingBot:
         rsi_norm = (sig.rsi_value - 50.0) / 50.0
         macd_norm = sig.macd_histogram / atr_val
         trend_str = sig.trend_strength / 100.0
-        ob_range = abs(sig.ob_high - sig.ob_low) if sig.ob_high is not None and sig.ob_low is not None else 0.0
-        ob_size_atr = ob_range / atr_val
+        # v8.0 — obs[10] reinterprets ob_size_atr as bb_band_width_atr/3
+        # MR signals carry `bb_band_width_atr`; SMC fallback uses OB body / ATR
+        bb_bw_atr = float(getattr(sig, "bb_band_width_atr", 0.0) or 0.0)
+        if bb_bw_atr > 0.0:
+            ob_size_atr = min(bb_bw_atr / 3.0, 1.0)
+        else:
+            ob_range = (
+                abs(sig.ob_high - sig.ob_low)
+                if sig.ob_high is not None and sig.ob_low is not None
+                else 0.0
+            )
+            ob_size_atr = ob_range / atr_val
 
         # Signal features — market regime (5 ใหม่)
         adx_norm = sig.adx / 100.0
@@ -593,10 +637,14 @@ class FTMOTradingBot:
             float(np.clip(trades_today_n, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
             float(np.clip(consec_losses / 5.0, 0.0, 1.0)),
-            # v6 Cost/Flip/HTF [24-26] — match FTMOSignalFilterEnv
+            # v6 Cost/Flip/HTF [24-26] — match FTMOSignalFilterEnv (v8.0 MR semantics)
             float(np.clip(self._build_spread_pct_of_atr(sig, atr_pips), 0.0, 3.0)),
             float(self._has_opposite_recently_closed(sig)),
-            float(np.clip(bias_align, -1.0, 1.0)),  # htf_trend_alignment — ใช้ bias_align เป็น proxy
+            # obs[26] — v8.0 MR: adx_inverse_norm (1.0 when ADX low = ranging =
+            # favorable for MR). Falls back to bias_align when ADX missing.
+            float(np.clip(1.0 - sig.adx / 50.0, 0.0, 1.0))
+            if hasattr(sig, "adx") and sig.adx is not None
+            else float(np.clip(bias_align, -1.0, 1.0)),
             # v7 Chronos forecast [27-28]
             float(np.clip(chronos_align, -1.0, 1.0)),
             float(np.clip(chronos_unc, 0.0, 3.0)),
@@ -1415,17 +1463,19 @@ def run_phase1_test():
 
 
 def run_phase2_test():
+    """v8.0.6: removed — SMC strategy + 5 detectors deleted in cleanup.
+    The MR pipeline replaces this. Use the audit scripts instead:
+        python scripts/leakage_audit.py
+        python scripts/parity_audit.py
     """
-    ทดสอบ Phase 2 — SMC Strategy Engine
-    
-    ทดสอบ:
-    7.  Technical Indicators (ATR, EMA, RSI, Trend)
-    8.  Market Structure (Swing Points, BOS, CHoCH)
-    9.  Order Blocks (Detection, Mitigation, Scoring)
-    10. SMC Strategy (Confluence Scoring, Signal Generation)
-    11. Multi-Symbol Scan
-    """
-    from strategy.indicators import TechnicalIndicators
+    print("⚠️ Phase 2 test removed in v8.0.6 SMC cleanup.")
+    print("   MR strategy is exercised by:")
+    print("     • scripts/auto_train_pipeline.py (full RL loop)")
+    print("     • scripts/leakage_audit.py")
+    print("     • scripts/parity_audit.py")
+    print("     • scripts/pipeline_status.sh")
+    return  # short-circuit — code below is unreachable, kept as stub
+    from strategy.indicators import TechnicalIndicators       # noqa: F401  (unreachable, kept as no-op)
     from strategy.market_structure import MarketStructure
     from strategy.order_blocks import OrderBlockDetector
 
@@ -1604,11 +1654,11 @@ def run_phase3_test():
     print("🧪 Test 13: Execute Signal — Full Pipeline")
     print("━" * 50)
 
-    # สร้าง Mock Signal ที่ Valid
-    from strategy.smc_strategy import TradeSignal, SignalType
-    from datetime import datetime
+    # v8.0.6: SMC removed → use MRSignal (TradeSignal alias) for the mock.
+    # MRSignal has the same field names trade_executor reads (signal_type,
+    # entry_price, sl_price, confluence_score, atr_value, sl_distance, ...).
+    from strategy.mean_reversion_strategy import TradeSignal, SignalType
 
-    # คำนวณ SL/TP จากราคาตลาดจริง (หลีกเลี่ยง "Invalid stops" ถ้า EURUSD ไม่ได้ ~1.095)
     px_now = connector.get_current_price("EURUSD")
     mkt_entry = px_now["ask"] if px_now else 1.09500
     sl_dist = 0.00180
@@ -1620,14 +1670,11 @@ def run_phase3_test():
         sl_price=round(mkt_entry - sl_dist, 5),
         tp_price=round(mkt_entry + tp_dist, 5),
         sl_distance=sl_dist,
-        tp_distance=tp_dist,
-        rr_ratio=2.0,
         confluence_score=75.0,
         atr_value=0.00120,
-        timestamp=datetime.now(),
-        reasons=["✅ Test Signal", "✅ Mock Confluence 75"],
         market_bias=1,
         trend=1,
+        reasons=["✅ Test Signal", "✅ Mock Confluence 75"],
     )
 
     executed = executor.execute_signal(mock_signal)
@@ -1696,14 +1743,11 @@ def run_phase3_test():
         sl_price=round(mkt2 + sl_d2, 5),
         tp_price=round(mkt2 - tp_d2, 5),
         sl_distance=sl_d2,
-        tp_distance=tp_d2,
-        rr_ratio=2.0,
         confluence_score=70.0,
         atr_value=0.00150,
-        timestamp=datetime.now(),
-        reasons=["✅ Test SELL Signal"],
         market_bias=-1,
         trend=-1,
+        reasons=["✅ Test SELL Signal"],
     )
 
     executed_2 = executor.execute_signal(mock_signal_2)

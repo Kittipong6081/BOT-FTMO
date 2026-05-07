@@ -1,0 +1,14 @@
+{
+  "iteration": 0,
+  "metrics": {
+    "pass_rate": 0.593,
+    "breach_rate": 0.0,
+    "profitable_rate": 0.891,
+    "win_rate": 0.615542270395547,
+    "take_rate": 0.4634813105035154,
+    "total_dd_max": 0.058,
+    "daily_dd_max": 0.0300000000000001,
+    "profit_avg": 7229.5886250352505
+  },
+  "ts": "2026-05-06T17:19:07+00:00"
+}

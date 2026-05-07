@@ -49,63 +49,62 @@ class TradeLogger:
     # v3 เพิ่ม fields สำหรับวิเคราะห์ live behavior of E1+E2 deployment:
     # ML score (cal/raw), agent decision, confluence breakdown, trade mgmt state,
     # bid/ask, market context (ADX H1/H4, MTF/D1 bias), account state
+    # v8.0.6 (2026-05-07): SMC-specific columns removed
+    # ❌ removed: HTF Bias, HTF/MTF/OB/FVG/Sweep pts, MTF Bias, D1 Bias (8 cols)
+    # 66 → 58 cols. Schema migration auto-archives old xlsx.
     TRADE_HEADERS = [
         # --- core (cols 1-19) ---
         "Ticket", "Symbol", "Type", "Entry", "SL", "TP", "Lot",
         "Risk%", "Risk$", "RR", "Confluence", "ATR",
         "Open Time", "Close Price", "Close Time",
         "P/L ($)", "P/L (%)", "Close Reason", "Signal Reasons",
-        # --- ML features v2 (cols 20-31) ---
+        # --- Time + spread context (cols 20-24) ---
         "Session", "DayOfWeek", "HourOfDay",
         "Spread@Entry", "Slippage",
-        "HTF Bias", "Volatility Regime",
+        # --- Market context — MR-relevant only (col 25) ---
+        "Volatility Regime",
+        # --- Risk + outcome (cols 26-31) ---
         "ConsecLoss Before", "DD@Entry %",
         "MAE", "MFE",
         "Time-in-Trade (s)", "Exit Path",
-        # --- v6.9 enhanced (cols 32-55) ---
-        # ML / Agent decision context
+        # --- ML / Agent decision (cols 32-36) ---
         "ML Score (cal)", "ML Score (raw)",
         "Agent Action", "Agent Decision", "ML Threshold",
-        # Confluence breakdown
-        "HTF pts", "MTF pts", "OB pts", "FVG pts", "Sweep pts",
-        # Trade mgmt state
+        # --- Trade mgmt state (cols 37-40) ---
         "BE Moved", "Partial Closed", "Trailing", "Final SL",
-        # Live execution details
+        # --- Live execution details (cols 41-45) ---
         "Bid@Entry", "Ask@Entry", "Spread (pips)",
         "Bid@Exit", "Ask@Exit",
-        # Market context
-        "ADX H1", "ADX H4", "MTF Bias", "D1 Bias",
-        # Account state
+        # --- Market context (cols 46-47) — ADX is MR's trend filter ---
+        "ADX H1", "ADX H4",
+        # --- Account state (cols 48-50) ---
         "Balance@Entry", "Balance@Close", "Equity Peak",
-        # Overtrading detection (cols 57-60)
+        # --- Overtrading detection (cols 51-54) ---
         "Trades Today @Open", "Trades 1h @Open",
         "Sec Since Last Open", "Sec Since Last Same-Sym",
-        # v6.10: Partial close skipped flag (col 63 — distinguish from "Partial Closed" fired)
+        # --- Trade mgmt skipped (col 55) ---
         "Partial Skipped",
-        # Retrain capability — full obs vector at decision time (col 64, last)
-        "Obs27 JSON",
-        # v7 (2026-05-01): Chronos forecast features @ entry — for post-mortem analysis
+        # --- Retrain capability — full obs vector at decision (col 56) ---
+        "Obs JSON",
+        # --- v7 Chronos forecast @ entry (cols 57-58) ---
         "Chronos Align", "Chronos Unc",
     ]
 
     # === คอลัมน์สำหรับ Sheet "Signals" (per-scan log) ===
     # ทุกการ scan ของ SMC strategy + agent decision = 1 row
     # ใช้ตรวจสอบ signal frequency, reject distribution, agent SKIP behavior ใน live
+    # v8.0.6 (2026-05-07): SMC-specific columns removed
+    # ❌ removed: HTF Bias, MTF Bias, D1 Bias (3 cols). 23 → 20 cols.
     SIGNAL_HEADERS = [
         "Time", "Symbol", "Direction", "Result",
         "Confluence", "ATR", "RR Target",
         "ML Score (cal)", "ML Score (raw)",
         "Agent Action", "Agent Decision", "ML Threshold",
-        "ADX H1", "HTF Bias", "MTF Bias", "D1 Bias",
+        "ADX H1",                                  # MR uses ADX as trend filter
         "Session", "Spread (pips)",
         "Reject/Skip Reasons",
-        # v6.10: Executor reject reason (col 20 — for AGENT_TAKE_FAIL events)
-        # values: signal_invalid / correlation:* / lot_calc_failed / risk_manager:* /
-        #         price_fetch_failed / spread_high:* / final_validation:* / order_send_failed
         "Executor Reject",
-        # Retrain capability — full obs vector at decision time (col 21)
-        "Obs27 JSON",
-        # v7 (2026-05-01): Chronos forecast features @ scan — same as obs[27,28]
+        "Obs JSON",
         "Chronos Align", "Chronos Unc",
     ]
 
@@ -115,6 +114,11 @@ class TradeLogger:
         "Gross Profit", "Gross Loss", "Net P/L",
         "Max DD%", "Daily DD%", "Balance EOD"
     ]
+
+    # v8.0.6: name-based column lookup (1-indexed). Auto-computed from headers.
+    # Replaces hardcoded `column=N` calls — schema changes auto-propagate.
+    _COL = {name: i + 1 for i, name in enumerate(TRADE_HEADERS)}
+    _SCOL = {name: i + 1 for i, name in enumerate(SIGNAL_HEADERS)}
 
     def __init__(self, log_dir: str = None):
         """
@@ -184,7 +188,7 @@ class TradeLogger:
                 trade_data.get("hour_of_day", ""),
                 trade_data.get("spread_at_entry", 0),
                 trade_data.get("slippage", 0),
-                trade_data.get("htf_bias", ""),
+                # v8.0.6: removed htf_bias (SMC-only)
                 trade_data.get("volatility_regime", ""),
                 trade_data.get("consec_loss_before", 0),
                 trade_data.get("dd_at_entry_pct", 0),
@@ -192,17 +196,13 @@ class TradeLogger:
                 "",   # MFE
                 "",   # time_in_trade
                 "",   # exit_path
-                # --- v6.9 enhanced (E1+E2 deploy) ---
+                # --- ML / Agent decision context ---
                 trade_data.get("ml_score", 0.5),
                 trade_data.get("ml_score_raw", 0.5),
                 trade_data.get("agent_action_value", 0),
                 trade_data.get("agent_decision", ""),
                 trade_data.get("ml_threshold_used", 0),
-                trade_data.get("htf_score", 0),
-                trade_data.get("mtf_score", 0),
-                trade_data.get("ob_pts", 0),
-                trade_data.get("fvg_pts", 0),
-                trade_data.get("sweep_pts", 0),
+                # v8.0.6: removed htf_score, mtf_score, ob_pts, fvg_pts, sweep_pts (SMC-only)
                 "",   # be_moved (อัพเดตตอนปิด)
                 "",   # partial_closed_flag
                 "",   # trailing_active
@@ -214,8 +214,7 @@ class TradeLogger:
                 "",   # ask_at_exit
                 trade_data.get("adx_h1", 0),
                 trade_data.get("adx_h4", 0),
-                trade_data.get("mtf_bias", 0),
-                trade_data.get("d1_bias", 0),
+                # v8.0.6: removed mtf_bias, d1_bias (SMC-only)
                 trade_data.get("balance_at_entry", 0),
                 "",   # balance_at_close
                 "",   # equity_peak_during_trade
@@ -284,45 +283,39 @@ class TradeLogger:
                     break
 
             if target_row:
-                # อัพเดทคอลัมน์ที่ยังว่าง
-                ws.cell(row=target_row, column=14, value=trade_data.get("close_price", 0))
-                ws.cell(row=target_row, column=15, value=trade_data.get("close_time", ""))
-                ws.cell(row=target_row, column=16, value=profit)
+                # v8.0.6: name-based column lookup via self._COL — schema changes
+                # auto-propagate, no more hardcoded column numbers + off-by-one bugs.
+                C = self._COL
+                ws.cell(row=target_row, column=C["Close Price"], value=trade_data.get("close_price", 0))
+                ws.cell(row=target_row, column=C["Close Time"], value=trade_data.get("close_time", ""))
+                ws.cell(row=target_row, column=C["P/L ($)"], value=profit)
 
                 # คำนวณ P/L %
                 risk_amount = trade_data.get("risk_amount", 1)
                 pnl_pct = (profit / risk_amount * 100) if risk_amount > 0 else 0
-                ws.cell(row=target_row, column=17, value=round(pnl_pct, 2))
-
-                ws.cell(row=target_row, column=18, value=trade_data.get("close_reason", ""))
+                ws.cell(row=target_row, column=C["P/L (%)"], value=round(pnl_pct, 2))
+                ws.cell(row=target_row, column=C["Close Reason"], value=trade_data.get("close_reason", ""))
 
                 # ใส่สี P/L
                 pnl_fill = PatternFill("solid", fgColor="C6EFCE") if profit >= 0 else PatternFill("solid", fgColor="FFC7CE")
-                ws.cell(row=target_row, column=16).fill = pnl_fill
+                ws.cell(row=target_row, column=C["P/L ($)"]).fill = pnl_fill
 
-                # --- ML features v2: MAE, MFE, time_in_trade, exit_path ---
-                # v6.14: fix off-by-one (เดิม 28-31 ทับ DD@Entry % / MAE / MFE / Time-in-Trade)
-                # คอลัมน์จริงตาม TRADE_HEADERS: 29=MAE, 30=MFE, 31=Time-in-Trade, 32=Exit Path
-                ws.cell(row=target_row, column=29, value=trade_data.get("mae", 0))
-                ws.cell(row=target_row, column=30, value=trade_data.get("mfe", 0))
-                ws.cell(row=target_row, column=31, value=trade_data.get("time_in_trade", 0))
-                ws.cell(row=target_row, column=32, value=trade_data.get("exit_path", trade_data.get("close_reason", "")))
+                # --- ML features: MAE, MFE, time_in_trade, exit_path ---
+                ws.cell(row=target_row, column=C["MAE"], value=trade_data.get("mae", 0))
+                ws.cell(row=target_row, column=C["MFE"], value=trade_data.get("mfe", 0))
+                ws.cell(row=target_row, column=C["Time-in-Trade (s)"], value=trade_data.get("time_in_trade", 0))
+                ws.cell(row=target_row, column=C["Exit Path"],
+                        value=trade_data.get("exit_path", trade_data.get("close_reason", "")))
 
-                # --- v6.9 enhanced fields (close-time updates) ---
-                # cols 42=BE_Moved, 43=Partial, 44=Trailing, 45=Final SL,
-                # 46=Bid@Exit, 47=Ask@Exit (no — these are at close, cols differ)
-                # Actually columns: 32=ml_score, 33=ml_score_raw, ..., 42=be_moved,
-                # 43=partial, 44=trailing, 45=final_sl, 46=bid@entry,..., 49=bid@exit, 50=ask@exit
-                # 54=balance_at_entry, 55=balance_at_close, 56=equity_peak
-                # Use 1-based column indexing matching TRADE_HEADERS list
-                ws.cell(row=target_row, column=42, value=bool(trade_data.get("be_moved", False)))
-                ws.cell(row=target_row, column=43, value=bool(trade_data.get("partial_closed_flag", False)))
-                ws.cell(row=target_row, column=44, value=bool(trade_data.get("trailing_active", False)))
-                ws.cell(row=target_row, column=45, value=trade_data.get("final_sl_at_close", 0))
-                ws.cell(row=target_row, column=49, value=trade_data.get("bid_at_exit", 0))
-                ws.cell(row=target_row, column=50, value=trade_data.get("ask_at_exit", 0))
-                ws.cell(row=target_row, column=55, value=trade_data.get("balance_at_close", 0))
-                ws.cell(row=target_row, column=56, value=trade_data.get("equity_peak_during_trade", 0))
+                # --- Trade mgmt + close-time fields ---
+                ws.cell(row=target_row, column=C["BE Moved"], value=bool(trade_data.get("be_moved", False)))
+                ws.cell(row=target_row, column=C["Partial Closed"], value=bool(trade_data.get("partial_closed_flag", False)))
+                ws.cell(row=target_row, column=C["Trailing"], value=bool(trade_data.get("trailing_active", False)))
+                ws.cell(row=target_row, column=C["Final SL"], value=trade_data.get("final_sl_at_close", 0))
+                ws.cell(row=target_row, column=C["Bid@Exit"], value=trade_data.get("bid_at_exit", 0))
+                ws.cell(row=target_row, column=C["Ask@Exit"], value=trade_data.get("ask_at_exit", 0))
+                ws.cell(row=target_row, column=C["Balance@Close"], value=trade_data.get("balance_at_close", 0))
+                ws.cell(row=target_row, column=C["Equity Peak"], value=trade_data.get("equity_peak_during_trade", 0))
             else:
                 # ไม่เจอ Ticket — เพิ่มแถวใหม่พร้อมข้อมูลครบ
                 row = [
@@ -402,15 +395,12 @@ class TradeLogger:
                 scan_data.get("agent_decision", ""),
                 scan_data.get("ml_threshold", 0),
                 scan_data.get("adx_h1", 0),
-                scan_data.get("htf_bias", 0),
-                scan_data.get("mtf_bias", 0),
-                scan_data.get("d1_bias", 0),
+                # v8.0.6: removed htf_bias, mtf_bias, d1_bias (SMC-only)
                 scan_data.get("session", ""),
                 scan_data.get("spread_pips", 0),
-                reasons[:500],  # truncate to avoid Excel cell overflow
+                reasons[:500],
                 str(scan_data.get("executor_reject_reason", ""))[:80],
                 str(scan_data.get("obs_27_json", ""))[:600],
-                # v7: Chronos forecast features (mirrors obs[27,28])
                 round(float(scan_data.get("chronos_align", 0.0) or 0.0), 4),
                 round(float(scan_data.get("chronos_unc", 0.0) or 0.0), 4),
             ]
@@ -555,6 +545,30 @@ class TradeLogger:
         """
         filename = "ftmo_trades.xlsx"
         filepath = os.path.join(self._log_dir, filename)
+
+        if os.path.exists(filepath):
+            # v8.0.6: schema migration — if existing xlsx has wrong col count
+            # (legacy v7 had 66 trades cols / 23 signals cols, v8 has 58/20),
+            # auto-archive to *.bak_pre_v8 and create fresh. Prevents off-by-one
+            # writes when SMC cols were removed.
+            try:
+                _wb_check = openpyxl.load_workbook(filepath, read_only=True)
+                _ok = True
+                if "Trades" in _wb_check.sheetnames:
+                    if _wb_check["Trades"].max_column not in (0, len(self.TRADE_HEADERS)):
+                        _ok = False
+                if "Signals" in _wb_check.sheetnames:
+                    if _wb_check["Signals"].max_column not in (0, len(self.SIGNAL_HEADERS)):
+                        _ok = False
+                _wb_check.close()
+                if not _ok:
+                    import time as _t
+                    bak_path = filepath.replace(".xlsx", f".bak_pre_v8_{int(_t.time())}.xlsx")
+                    os.rename(filepath, bak_path)
+                    print(f"📦 [Logger] Schema mismatch — archived old xlsx → {os.path.basename(bak_path)}")
+                    print(f"   (v8.0.6 removed SMC cols: 66→58 Trades / 23→20 Signals)")
+            except Exception as _e:
+                print(f"⚠️ [Logger] schema check failed ({_e}) — proceeding")
 
         if os.path.exists(filepath):
             wb = openpyxl.load_workbook(filepath)

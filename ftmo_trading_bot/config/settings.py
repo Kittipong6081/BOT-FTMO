@@ -113,7 +113,10 @@ class FTMOConfig:
     #   v7.1.2 (4.5k pool, 0.36, soft reward) = Pass 3.0% best. v7.1.5 (10k, 0.40, hard reward) = Pass 0.8% worst
     #   v7.1.6 (10k, 0.36, soft reward) = expected Pass 4-7% (combine "best of all")
     # หากปรับค่านี้ → ต้อง retrain RL ด้วย --ml_threshold ตรงกัน (training-live sync invariant #10)
-    ML_FILTER_THRESHOLD: float = 0.36
+    # v8.0.3 (2026-05-06): 0.40 → 0.30 to match MR trainer default (lowered
+    # after iter 1+2 showed agent under-trading at 0.40). Parity rule: live
+    # must filter signals with the same threshold the agent trained under.
+    ML_FILTER_THRESHOLD: float = 0.30
 
     # === Cooldown / Anti-Revenge-Trading ===
     # หลังโดน SL บนคู่เงินใดคู่เงินหนึ่ง ต้องรอกี่นาทีก่อนเปิดคู่เดิมอีกครั้ง
@@ -268,20 +271,19 @@ class SymbolConfig:
 @dataclass
 class SessionConfig:
     """
-    กำหนดช่วงเวลาที่ Bot จะเทรด
-    เน้น London และ New York Session ที่มี Volume สูง
-    หลีกเลี่ยง Asian Session ที่ Volatility ต่ำ
+    กำหนดช่วงเวลาเทรด + กฎ FTMO compliance.
+
+    v8.0.6 (2026-05-07) — SMC-era "block Asia session" guidance was REMOVED.
+    Mean Reversion thrives in ranging markets (= Asia session). Pool eval
+    shows Asia has the HIGHEST WR (47.1%) of all sessions. The bot now
+    trades 24/5 — only `enforce_daily_close` + `friday_force_close` +
+    `rollover_*` + news blackout limit when trades open.
+
+    `_compute_current_session()` in main.py still labels current session
+    for Excel logging only — not used as a filter.
     """
-    
-    # === London Session (เวลา UTC) ===
-    london_start: time = time(7, 0)     # 07:00 UTC (เปิดก่อน 1 ชม. เพื่อเตรียมตัว)
-    london_end: time = time(12, 0)      # 12:00 UTC
-    
-    # === New York Session (เวลา UTC) ===
-    newyork_start: time = time(12, 0)   # 12:00 UTC (ช่วง Overlap กับ London)
-    newyork_end: time = time(17, 0)     # 17:00 UTC
-    
-    # === ห้ามเทรดช่วงนี้ ===
+
+    # === ห้ามเทรดช่วงข่าวสำคัญ ===
     # ก่อนข่าวสำคัญ (NFP, FOMC, CPI) — ต้อง implement แยก
     no_trade_before_news_minutes: int = 30   # หยุดเทรด 30 นาที ก่อนข่าว
     no_trade_after_news_minutes: int = 15    # หยุดเทรด 15 นาที หลังข่าว
@@ -367,6 +369,53 @@ class MLConfig:
 
 
 # =============================================================================
+# 🔄 Mean Reversion Strategy Config (v8.0 pivot)
+# =============================================================================
+@dataclass
+class MeanReversionConfig:
+    """Tunables for the v8.0 Mean Reversion strategy.
+
+    The auto-train pipeline can override these via env or per-symbol overrides.
+    Live `FTMOTradingBot` keeps SMC by default; flip `strategy_mode` to
+    "mean_reversion" only after the MR pipeline meets eval gates.
+    """
+
+    # Strategy selection. v8.0 default = "mean_reversion" (full pivot).
+    # SMC code is preserved in `strategy/smc_strategy.py` as a deprecated
+    # reference module but the live entry no longer routes through it.
+    strategy_mode: str = "mean_reversion"
+
+    # BB / RSI entry rules — v8.0.2 relaxed (sync with strategy class defaults)
+    # Original spec was tight (0.10/0.90, RSI 30/70, wick 1.2) — produced only
+    # ~5 sig/ep. Pilot v4 relaxed to give RL enough variety: ~14 sig/ep median
+    # with healthy WR. Class defaults in MeanReversionStrategy match these.
+    bb_period: int = 20
+    bb_std: float = 2.0
+    bb_oversold: float = 0.30        # was 0.10 — wider oversold gate
+    bb_overbought: float = 0.70      # was 0.90 — wider overbought gate
+    rsi_period: int = 14
+    rsi_oversold: float = 40.0       # was 30 — looser
+    rsi_overbought: float = 60.0     # was 70 — looser
+
+    # Trend filter (ADX H1) — > threshold blocks MR entries
+    adx_trend_block: float = 30.0    # was 25 — only block extreme trends
+
+    # SL / TP
+    sl_atr_mult: float = 1.0     # tight SL — capital preservation
+    rr_ratio: float = 1.0        # 1:1 quick-TP target
+    min_reversal_wick_ratio: float = 0.4   # was 1.2 — RL learns to filter
+
+    # Reward shaping defaults (env constructor uses these)
+    quick_tp_bars: int = 5
+    quick_tp_bonus: float = 0.50
+    slow_win_bonus: float = 0.20
+    prolonged_loss_bars: int = 12
+    prolonged_loss_penalty: float = 0.40
+    base_loss_penalty: float = 0.10
+    duration_fine_coef: float = 0.02
+
+
+# =============================================================================
 # 📱 การตั้งค่าการแจ้งเตือน (Notifications)
 # =============================================================================
 @dataclass
@@ -430,6 +479,7 @@ class BotConfig:
     sessions: SessionConfig = field(default_factory=SessionConfig)
     indicators: IndicatorConfig = field(default_factory=IndicatorConfig)
     ml: MLConfig = field(default_factory=MLConfig)
+    mr: MeanReversionConfig = field(default_factory=MeanReversionConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     

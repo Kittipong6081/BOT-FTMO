@@ -37,6 +37,14 @@ Thumbs.db
 
 # PPO intermediate checkpoints (track เฉพาะ final model)
 ftmo_trading_bot/models/checkpoints_sf/
+ftmo_trading_bot/models/mr/checkpoints_mr/
+
+# v8.0 MR pipeline — Phase 1 intermediates + forensic backups (live ไม่ใช้)
+# Track เฉพาะ: models/mr/best/  +  models/mr/ppo_mr_filter.zip  +  models/mr/vec_normalize_mr.pkl
+ftmo_trading_bot/models/mr/ppo_mr_filter_p1.zip
+ftmo_trading_bot/models/mr/vec_normalize_mr_p1.pkl
+ftmo_trading_bot/models/mr/best_iter*/
+ftmo_trading_bot/models/mr/best_*pass*/
 
 # Backup files auto-generated
 *.bak_*
@@ -64,10 +72,14 @@ ftmo_trading_bot/config/news_inbox/*.json
 # State files (per-machine runtime state)
 ftmo_trading_bot/data/bot_state.json
 
-# Training-only data — pool .pkl ไม่ track (110MB ใหญ่เกิน GitHub limit)
-# track เฉพาะ .pkl.gz (compressed ~34MB) เพื่อให้ VPS pull ได้ (build pool บน VPS ไม่ไหว)
+# Training-only data — pool .pkl ไม่ track (ใหญ่ + rebuild ได้)
+# Live ไม่ต้องการ pool — ต้องการแค่ ML quality model + RL model
+# track เฉพาะ .pkl.gz (compressed) เพื่อ VPS pull ได้ ถ้าจะ retrain
 ftmo_trading_bot/data/signal_pool_*.pkl
 !ftmo_trading_bot/data/signal_pool_*.pkl.gz
+# v8.0 MR pool (~309 MB) — rebuild ได้บน Mac ผ่าน auto_train_pipeline
+ftmo_trading_bot/data/mr_signal_pool_*.pkl
+!ftmo_trading_bot/data/mr_signal_pool_*.pkl.gz
 ftmo_trading_bot/data/ohlcv/*.csv
 
 # Legacy models (v1-v5, ไม่ใช้แล้ว — keep เฉพาะ ppo_signal_filter.zip + vec_normalize_sf.pkl)

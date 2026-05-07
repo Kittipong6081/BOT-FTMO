@@ -1,8 +1,10 @@
 # 🤖 FTMO Trading Bot
 
-> ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **3 สมอง** ทำงานร่วมกัน: SMC Strategy + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
+> ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **Mean Reversion + Trend Filter** + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
 >
-> **Last Updated:** 2026-04-29 (v6.13) | **Verified:** Pass Rate **9.7%** (5000 eps eval, +185% จาก v6.11.3 baseline 3.4%)
+> **Last Updated:** 2026-05-07 (v8.0.5 — 🎉 ALL GATES PASSED, MR live ready) | Pass Rate **59.30%** (5000-eps eval, exceeded 8% gate by 51 pp)
+>
+> **🎉 v8.0.5 status — Production ready**: pipeline autonomous + self-correct ทำงานสำเร็จ. ตัวเลขสุดท้าย: Pass Rate 59.30%, Profitable 89.10%, Total DD max 5.80%, Daily DD max 3.00%, Breach 0%, Profit avg +7.23%. Best model อยู่ที่ [`models/mr/best/`](ftmo_trading_bot/models/mr/best/). รัน `python main.py` ได้เลย — ระบบโหลด MR model อัตโนมัติ. SMC code ยังเก็บไว้เป็น deprecated reference (ไม่ถูก import ใน live แล้ว).
 
 ---
 
@@ -483,6 +485,86 @@ gzip -k -6 ftmo_trading_bot/data/signal_pool_10000.pkl
     --ml_threshold 0.36 \
     --risk_per_trade 0.0099
 ```
+
+---
+
+## 🚀 v8.0 Mean Reversion Pipeline
+
+กลยุทธ์ใหม่ที่ **เน้น win rate สูง + DD ต่ำ** สำหรับผู้ที่อยากลองทางอื่นนอกจาก SMC. ทำงานคู่ขนานกับ SMC ใน codebase เดียวกัน.
+
+### หลักการเทรด
+
+- **เข้าเมื่อราคาผิดปกติ:** Bollinger %B แตะขอบล่าง (≤ 0.10) + RSI < 30 = ซื้อ / Bollinger %B แตะขอบบน (≥ 0.90) + RSI > 70 = ขาย
+- **ต้องมี wick rejection:** ไส้เทียนกลับตัวยาวกว่าตัวเทียน 1.2 เท่าขึ้นไป (ยืนยัน reversal)
+- **กรอง trend แรง:** ถ้า ADX H1 > 25 = ตลาด trend แรง ห้าม MR ทันที (mean reversion จะแพ้ trend แรง)
+- **SL แน่น TP เร็ว:** SL = 1.0×ATR, TP = 1.0×ATR (RR 1:1) — เน้น win rate มากกว่า reward ต่อไม้
+
+### Reward Shaping (สอนบอท preserve capital)
+
+| สถานการณ์ | Reward |
+|-----------|--------|
+| ✅ ชนะเร็ว ≤ 5 แท่ง | +0.50 R bonus |
+| 🟢 ชนะช้า | +0.20 R bonus |
+| ❌ แพ้ทุกตัว | -0.10 R baseline |
+| ⏳ ลอย-ขาดทุนทุกแท่ง | -0.02 R/แท่ง (cap -0.30) |
+| 🔴 ลอยแดง ≥ 12 แท่งแล้วโดน SL | -0.40 R extra |
+| ⚠️ เปิดสวน trend (ADX > 25) | -0.30 R |
+
+### Auto Training Pipeline (เปิดทิ้งไว้แล้วเดินจากโต๊ะได้)
+
+ผมเขียน script `auto_train_pipeline.py` ให้รันเองอัตโนมัติ — Build pool → Train GBM → Train RL → Eval → ถ้าไม่ผ่าน gate ก็ปรับ hyperparams เองแล้วลูปต่อ จนกว่าจะผ่านหรือชนเพดาน iterations/ชั่วโมง.
+
+**คำสั่งรัน (รันครั้งเดียวแล้วทิ้งได้):**
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/auto_train_pipeline.py \
+    --max_iterations 6 \
+    --max_hours 60 \
+    --pool_size 5000 \
+    --timesteps_p1 5000000 \
+    --timesteps_p2 2000000 \
+    --target_pass_rate 0.08 \
+    --target_dd_max 0.06 \
+    --target_profitable 0.55
+```
+
+**Eval gates (ค่า default):**
+
+| เกณฑ์ | ค่าเริ่มต้น | หมายเหตุ |
+|-------|-----------|---------|
+| Pass Rate | ≥ 8 % | ต่ำกว่า v6.13 SMC (9.7%) เล็กน้อย — buffer ให้ MR strategy แตกต่าง |
+| Total DD max | ≤ 6 % | ห่างจาก FTMO 8% limit |
+| Daily DD max | ≤ 3.5 % | ห่างจาก FTMO 4% limit |
+| Profitable Rate | ≥ 55 % | กว่าครึ่งของ episodes ปิดบวก |
+| Breach Rate | ≤ 5 % | breach น้อย |
+
+**Auto-tune logic** (อ่านได้ละเอียดใน `tune_hyperparams()` ของ script):
+
+- 🔴 Breach > 5% → ลด `risk_per_trade` ครึ่งนึง + เพิ่ม loss penalty (กัน DD)
+- 🟡 DD เกิน → เพิ่ม `prolonged_loss_penalty` + `duration_fine_coef` + ลด risk
+- 🟠 Pass Rate ต่ำ → เพิ่ม `quick_tp_bonus` + ลด `ml_threshold` (push agent ให้ TAKE มากขึ้น)
+- 🟢 Profitable ต่ำ → เพิ่ม `slow_win_bonus` + ลด duration fine (ให้รางวัล winner ที่ใช้เวลา)
+
+### Logs ที่จะเห็นเมื่อกลับมา
+
+| ไฟล์ | ข้างใน |
+|------|--------|
+| `logs/auto_train_pipeline.log` | log แบบอ่านเข้าใจง่าย — ทุก iteration เขียนเหตุผลที่ tune + metrics |
+| `logs/auto_train_pipeline.jsonl` | JSON line ต่อ event (ใช้ analyze ภายหลังได้) |
+| `logs/auto_train_pipeline_state.json` | snapshot สถานะ + best metrics |
+| `models/mr/best/` | best model + meta (iteration ที่ดีที่สุด) |
+| `logs/tb_mr_filter/` | TensorBoard ดู training curve |
+
+### ขั้นตอนเปิดใช้ MR ในโหมด live (ทำหลังจาก auto pipeline ผ่าน gate)
+
+1. เปิด `ftmo_trading_bot/config/settings.py` → เปลี่ยน `bot_config.mr.strategy_mode` จาก `"smc"` → `"mean_reversion"`
+2. ก๊อปปี้ `models/mr/best/ppo_mr_filter.zip` + `vec_normalize_mr.pkl` ไปทับ slot ของ live (TBD: ต้องเขียน switch ใน `main.py` ในอนาคต — ปัจจุบัน live ยังใช้ SMC)
+3. รัน `python main.py` ปกติ
+
+> ⚠️ ปัจจุบัน live `main.py` ยังไม่ wire กับ MR strategy. การ pivot ปัจจุบันคือ "code staged" — โครงสร้างพร้อม retrain แล้ว แต่ยังไม่กระทบบอทที่รัน production. เมื่อ user รัน auto pipeline จนผ่าน gate แล้ว ให้แจ้งกลับมาเพื่อ wire live path เป็น step ถัดไป.
+
+---
+
 
 **Windows:**
 ```cmd

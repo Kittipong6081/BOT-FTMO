@@ -26,7 +26,12 @@ from core.mt5_connector import MT5Connector
 from core.risk_manager import RiskManager
 from core.position_sizer import PositionSizer
 from core.time_manager import TimeManager
-from strategy.smc_strategy import TradeSignal, SignalType
+# v8.0.6: TradeSignal/SignalType moved to strategy.mean_reversion_strategy
+# as part of SMC cleanup. MRSignal mimics the old TradeSignal field set
+# (signal_type, entry_price, sl_price, confluence_score, atr_value, ...);
+# SignalType is aliased to MRSignalType. trade_executor uses these as a
+# duck-type interface — no behavior change.
+from strategy.mean_reversion_strategy import TradeSignal
 
 try:
     from analytics.trade_logger import TradeLogger

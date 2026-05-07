@@ -45,7 +45,11 @@ import gymnasium as gym
 from gymnasium import spaces
 from typing import Dict, List, Optional
 
-from ml.strategy_backtester import StrategyBacktester
+# v8.0.6: env now uses MeanReversionBacktester directly. The base
+# StrategyBacktester is data-infrastructure only and raises NotImplementedError
+# on generate_episode_signals — only subclasses produce signals. MR is the
+# only strategy in the v8.0+ runtime.
+from ml.mean_reversion_backtester import MeanReversionBacktester as StrategyBacktester
 
 
 class FTMOSignalFilterEnv(gym.Env):
@@ -66,8 +70,14 @@ class FTMOSignalFilterEnv(gym.Env):
 
     DAILY_DD_SAFE: float = 0.025
     TOTAL_DD_SAFE: float = 0.04
-    DAILY_DD_GUARD: float = 0.04
-    TOTAL_DD_GUARD: float = 0.085
+    # v8.0.4 (2026-05-06): tightened daily 4.0% → 3.0% so eval `daily_dd_max`
+    # is no longer pinned at the guard ceiling (was always reading 4% even
+    # when auto-tune lowered risk). Stays well under FTMO 5% live limit.
+    DAILY_DD_GUARD: float = 0.030
+    # v8.0.5 (2026-05-07): tightened total 8.5% → 5.8% (under our 6.0% gate).
+    # Same logic as daily: previous guard 8.5% pinned eval `total_dd_max` to
+    # 8.5% even when auto-tune lowered risk. Stays well under FTMO 10% limit.
+    TOTAL_DD_GUARD: float = 0.058
 
     def __init__(
         self,

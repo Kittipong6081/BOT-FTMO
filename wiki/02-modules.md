@@ -1,5 +1,14 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-04 (v7.1 staged) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-06 (v8.0 MR pivot staged) | Scope: every module + key class / method / variable
+>
+> **v8.0 new modules (MR pivot, code staged — not wired to live)**:
+>
+> - `strategy/mean_reversion_strategy.py` — `MeanReversionStrategy`, `MRSignal`, `MRSignalType`
+> - `ml/mean_reversion_backtester.py` — `MeanReversionBacktester(StrategyBacktester)`
+> - `ml/mean_reversion_env.py` — `MeanReversionFilterEnv(FTMOSignalFilterEnv)`
+> - `scripts/build_mr_signal_pool.py`, `scripts/train_mr_signal_quality.py`, `scripts/train_mr_signal_filter.py`
+> - `scripts/auto_train_pipeline.py` — autonomous orchestrator (Build pool → GBM → RL → Eval → Self-correct loop)
+> - `config/settings.py::MeanReversionConfig` — `bot_config.mr.strategy_mode` (`"smc"` default; flip to `"mean_reversion"` after MR eval gates pass)
 >
 > **v7.1 new methods/symbols (awaiting retrain)**:
 > - `RiskManager.get_unrealized_drawdown_pct`, `RiskManager.check_unrealized_circuit_breaker`
@@ -21,19 +30,14 @@
 
 ---
 
-## 🎯 strategy/ — SMC Brain (rule-based)
+## 🎯 strategy/ — MR Brain (v8.0.6 cleaned)
 
 | File | Key symbols | Role |
 |------|-------------|------|
-| `smc_strategy.py` | `SMCStrategy.scan_all_symbols`, `SMCStrategy.scan_signal`, `SignalType.BUY/SELL`, `TradeSignal` (dataclass) | Main engine: chains HTF → MTF → LTF, confluence scoring, signal building |
 | `indicators.py` | `TechnicalIndicators.atr`, `.ema`, `.rsi`, `.macd`, `.adx`, `.stoch`, `.bb` | Indicator calculation on numpy arrays |
-| `order_blocks.py` | `OrderBlockDetector.find_order_blocks`, `OrderBlockDetector.score_ob` | Fractal-based OB detection + impulse scoring [0–100] |
-| `fair_value_gaps.py` | `FairValueGap.analyze`, `FVG` (dataclass) | 3-candle imbalance + fill tracking |
-| `liquidity_sweeps.py` | `LiquiditySweepDetector.find_sweeps`, `.get_recent_bullish_sweep(max_bars_ago)`, `.get_recent_bearish_sweep(max_bars_ago)` | Swing high / low sweep detection |
-| `market_structure.py` | `MarketStructure.detect_bos_choch`, `MarketStructure.htf_bias` | BOS / CHoCH (body-based, 5-bar lookback); HTF bias 5-bar window ≥3 bars |
-| `inducement.py` (v6.11) | `InducementDetector.detect_idm(df, direction)`, `InducementEvent` | Rejection candle (wick failed) detection within 8 bars — wick ≥ 1.5 × body. Used as +10/-5 confluence in `_evaluate_buy/sell_signal`. |
+| `mean_reversion_strategy.py` (v8.0+) | `MeanReversionStrategy.analyze_with_data`, `MRSignal`, `MRSignalType`, `LiveMRScanner` (live entry), `TradeSignal=MRSignal` (legacy alias), `SignalType=MRSignalType` (legacy alias) | The whole strategy stack: BB %B extreme + RSI confirm + ADX H1 trend block + reversal-wick. RR 1:1, SL = 1.0×ATR (tight). `LiveMRScanner` is the drop-in replacement for `SMCStrategy` in main.py. |
 
-**Confluence**: inside `SMCStrategy.scan_signal`, scores combine OB + FVG + Sweep + Structure + Indicators, capped at 100 (session multiplier × raw).
+**v8.0.6 cleanup (2026-05-07)** — SMC source files deleted: `smc_strategy.py` (and `.bak_v6.13`), `order_blocks.py`, `fair_value_gaps.py`, `liquidity_sweeps.py`, `inducement.py`, `market_structure.py`, plus `tests/test_order_blocks.py`. Live runtime uses MR exclusively. `TradeSignal` and `SignalType` are still importable from `mean_reversion_strategy` as legacy aliases (for `trade_executor` and historical test code).
 
 ### SL Formula & ATR Floor (4 separate knobs — do not confuse, v6.14)
 
@@ -141,6 +145,8 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 | `aux_rollout_buffer.py` | `AuxRolloutBuffer(RolloutBuffer)`, `.aux_targets: np.ndarray` | RolloutBuffer extended with per-step `aux_targets` (parallels `rewards`/`values`). |
 | `rl_agent.py` | `SelfLearningAgent.OBS_DIM` (= **29** v7), `.should_take_signal`, `.get_action_confidence`, `.initialize_model`, `._normalize_obs` | PPO inference wrapper for live — loads `vec_normalize_sf.pkl` so obs normalization matches training. Uses `AuxAwareACPolicy` weights at inference (aux head ignored at predict). |
 | `chronos_forecaster.py` (v7) | `ChronosForecaster.__init__`, `.forecast(symbol, df_m15)`, `.compute_features(forecast, direction, atr)`, `.forecast_features` (convenience), `.is_available` | Amazon Chronos 2 zero-shot wrapper (`amazon/chronos-bolt-small`). M15 × 8 ahead median + q10 + q90 → 2 obs features (`chronos_alignment`, `chronos_uncertainty_norm`). Cache key `(symbol, last_bar_ts)`, LRU evict @ 64 entries. Determinism via `torch.manual_seed(0)`. Disable: env `BOT_DISABLE_CHRONOS=1` or `bot_config.ml.CHRONOS_ENABLED = False`. **v7.0.2 formula refactor**: `compute_features` flip alignment sign (`direction × sign(close − median)`) + Brownian-scale uncertainty (`/ atr × √8`). Reason: pool diagnostic v7.0 corr(align, outcome) = −0.018 (anti-signal — SMC ค้าขาย swing/reversal สวนเทรนด์), unc saturated 96.2% ที่ 3.0 (variance ของ forecast 8-bar ขยายตาม √horizon). |
+| `mean_reversion_backtester.py` (v8.0) | `MeanReversionBacktester(StrategyBacktester)`, `.generate_episode_signals`, `._bars_to_first_hit`, `MR_SCAN_POINTS_PER_DAY=12`, `MR_FUTURE_BARS=32` | Pool builder for the MR strategy. Inherits all data-loading / `_resolve_trade` machinery from SMC backtester; only swaps in `MeanReversionStrategy`. Scans every 2h (vs SMC every 6h) because BB extremes are time-sensitive. Adds `bars_to_resolution` + `is_quick_tp` per signal so the env can shape "quick TP" rewards. Pool path: `data/mr_signal_pool_<N>.pkl`. |
+| `mean_reversion_env.py` (v8.0) | `MeanReversionFilterEnv(FTMOSignalFilterEnv)`, `.step` (overridden), `._get_obs` (overridden), `QUICK_TP_BARS=5`, `QUICK_TP_BONUS=0.50`, `PROLONGED_LOSS_BARS=12`, `PROLONGED_LOSS_PENALTY=0.40`, `BASE_LOSS_PENALTY=0.10`, `DURATION_FINE_COEF=0.02`, `ADX_VIOLATION_PENALTY=0.30` | RL env for MR. Same 32-dim obs shape (so VecNormalize stays compat), but reinterprets obs[4]=`bb_extreme`, obs[10]=`bb_band_width_atr/3`, obs[26]=`adx_inverse_norm`. Reward shaping per v8.0 spec: dense quick-TP bonus (≤5 bars), slow-win bonus, base-loss + per-bar duration fine + prolonged-loss extra penalty. ADX > 25 violation deducts another 0.30R. |
 
 **Quality model loading**: `StrategyBacktester.__init__` auto-loads `data/signal_quality_model.pkl` if present, so pool signals always include `ml_score` (defaults to 0.5 = neutral when unavailable). Payload format: `{"model": GBM, "calibrator": IsotonicRegression, "feature_names": [...], ...}`.
 
@@ -262,7 +268,8 @@ Key dataclasses:
 | `FTMOConfig` | `DAILY_LOSS_HARD_STOP_PCT=0.04`, `MAX_DRAWDOWN_HARD_STOP_PCT=0.08`, `PROFIT_TARGET_PCT=0.10`, `MIN_RISK_PER_TRADE_PCT=0.005`, `MAX_RISK_PER_TRADE_PCT=0.008`, `DEFAULT_RISK_PER_TRADE_PCT=0.007` ⭐, `MIN_CONFLUENCE_SCORE=70.0`, `CONSISTENCY_RULE_THRESHOLD=1.0` (2-step Standard → check off), `COOLDOWN_AFTER_LOSS_MIN=60`, `POST_TP_LOCK_TTL_MIN=60` |
 | `SymbolConfig.symbols` | 10 symbols: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, **XAUUSD** |
 | `MLConfig` (v7) | `CHRONOS_MODEL_NAME="amazon/chronos-bolt-small"`, `CHRONOS_DEVICE="cpu"`, `CHRONOS_PREDICTION_LENGTH=8`, `CHRONOS_CONTEXT_LENGTH=512`, `CHRONOS_ENABLED=True`. Single source of truth สำหรับ pool builder + live. |
-| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules. v7: + `bot_config.ml` |
+| `MeanReversionConfig` (v8.0) | `strategy_mode="smc"` (flip to `"mean_reversion"` after MR eval gates pass), `bb_period=20`, `bb_std=2.0`, `bb_oversold=0.10`, `bb_overbought=0.90`, `rsi_oversold=30.0`, `rsi_overbought=70.0`, `adx_trend_block=25.0`, `sl_atr_mult=1.0`, `rr_ratio=1.0`, `quick_tp_bars=5`, `quick_tp_bonus=0.50`, `slow_win_bonus=0.20`, `prolonged_loss_bars=12`, `prolonged_loss_penalty=0.40`, `base_loss_penalty=0.10`, `duration_fine_coef=0.02` |
+| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules. v7: + `bot_config.ml`. v8.0: + `bot_config.mr` |
 
 ### `news_events.py` — Hardcoded fallback news
 
@@ -323,6 +330,10 @@ Key dataclasses:
 | `build_signal_pool.py` | Multiprocessing 8 workers — calls `StrategyBacktester.generate_episode_signals` × N → `data/signal_pool_10000.pkl` |
 | `train_signal_quality.py` | GBM + `GroupKFold cross_val_predict` (group=episode_id, OOF) → fits `IsotonicRegression` calibrator on OOF probs → saves `{model, calibrator, ...}` payload + re-scores pool with calibrated probs in place |
 | `train_signal_filter.py` | `AuxAwarePPO` + `AuxAwareACPolicy` 2-phase curriculum (P1 Alpha **10M steps** → P2 Risk **5M steps**, aux loss weight=0.5, LR 5e-5, ent_coef 0.02, EarlyStopOnValueLoss threshold 20) → `models/ppo_signal_filter.zip` |
+| `build_mr_signal_pool.py` (v8.0) | Multiprocessing — calls `MeanReversionBacktester.generate_episode_signals` × N → `data/mr_signal_pool_<N>.pkl` |
+| `train_mr_signal_quality.py` (v8.0) | GBM + Isotonic on MR pool. Same workflow as SMC trainer; reads `mr_signal_pool_<N>.pkl`, writes `data/mr_signal_quality_model.pkl`. Adds MR-specific features (`bb_extreme`, `bb_band_width_atr`, `mr_setup_score`, `reversal_wick_ratio`) to `FEATURE_KEYS`. |
+| `train_mr_signal_filter.py` (v8.0) | `AuxAwarePPO` + `AuxAwareACPolicy` 2-phase curriculum on `MeanReversionFilterEnv`. CLI flags forward MR shaping params (`--quick_tp_bonus`, `--prolonged_loss_penalty`, `--duration_fine_coef`, ...) → `models/mr/ppo_mr_filter.zip`. Default P1 5M / P2 2M (smaller than SMC because MR's sharper reward signal converges faster). |
+| `auto_train_pipeline.py` (v8.0) | **Autonomous orchestrator** — Build pool → GBM → RL → 5000-eps Eval → check gates (Pass Rate ≥ 8%, Total DD max ≤ 6%, Daily DD max ≤ 3.5%, Profitable ≥ 55%, Breach ≤ 5%) → if fail, run `tune_hyperparams()` (mutates `HyperParams` based on which gate failed) and loop. Logs to `logs/auto_train_pipeline.log` + `.jsonl` per iteration; snapshots best model to `models/mr/best/`. CLI: `--max_iterations`, `--max_hours`, `--target_*` gates, `--dry_run`. |
 | `fetch_mt5_data.py` | (Windows only) fetches OHLCV from MT5 → CSV under `data/ohlcv/` |
 | `import_forexfactory_csv.py` | Manual CSV → `news_calendar.json` import (alternative to `NewsCalendarScheduler`) |
 | `test_chronos_accuracy.py` (v7.0.7) | **Benchmark tool** — rolling-window backtest ของ `ChronosForecaster` บน historical CSV. คำนวณ 3 metrics: Direction Accuracy, Quantile Coverage, MAPE. Standalone (ไม่กระทบ live/train). v7.0.7 result: TOTAL Dir Acc 50.5%, Coverage 79.8% (calibrated), MAPE 0.12%. Run: `.venv/bin/python ftmo_trading_bot/scripts/test_chronos_accuracy.py` |

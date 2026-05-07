@@ -1,0 +1,55 @@
+{
+  "history": [
+    {
+      "iteration": 0,
+      "timestamp": "2026-05-06T17:19:07+00:00",
+      "duration_sec": 718.9737918376923,
+      "hyperparams": {
+        "timesteps_p1": 5000000,
+        "timesteps_p2": 2000000,
+        "n_envs": 8,
+        "pool_size": 3000,
+        "pool_workers": 8,
+        "outcome_noise": 0.05,
+        "ml_threshold": 0.4,
+        "risk_per_trade": 0.0099,
+        "lr_p1": 0.0003,
+        "lr_p2": 5e-05,
+        "quick_tp_bonus": 0.5,
+        "slow_win_bonus": 0.2,
+        "prolonged_loss_penalty": 0.4,
+        "base_loss_penalty": 0.1,
+        "duration_fine_coef": 0.02,
+        "rebuild_pool": false,
+        "rebuild_gbm": false
+      },
+      "metrics": {
+        "pass_rate": 0.593,
+        "breach_rate": 0.0,
+        "profitable_rate": 0.891,
+        "win_rate": 0.615542270395547,
+        "take_rate": 0.4634813105035154,
+        "total_dd_max": 0.058,
+        "daily_dd_max": 0.0300000000000001,
+        "profit_avg": 7229.5886250352505
+      },
+      "decision": "pass",
+      "notes": "all_gates_passed",
+      "artefact_paths": {},
+      "error": null
+    }
+  ],
+  "best_metrics": {
+    "pass_rate": 0.593,
+    "breach_rate": 0.0,
+    "profitable_rate": 0.891,
+    "win_rate": 0.615542270395547,
+    "take_rate": 0.4634813105035154,
+    "total_dd_max": 0.058,
+    "daily_dd_max": 0.0300000000000001,
+    "profit_avg": 7229.5886250352505
+  },
+  "best_iteration": 0,
+  "elapsed_hours": 0.199715919163492,
+  "finished": true
+}
