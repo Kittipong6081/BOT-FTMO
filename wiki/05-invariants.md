@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.7** — Windows UTF-8 fix for audit scripts)
+> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.8** — MRSignal backward-compat properties)
 
 ## TL;DR (30-second scan)
 
@@ -213,9 +213,29 @@ Inside `TradeExecutor._check_correlation`:
 
 ## 📚 Version Log (reverse chronological)
 
-### 2026-05-07 — v8.0.7 Windows VPS UTF-8 fix for audit scripts
+### 2026-05-07 — v8.0.8 MRSignal backward-compat @property (live AttributeError fix)
 
-**Problem** — VPS (Windows) ran `python scripts/leakage_audit.py` and hit:
+**Problem** — VPS started bot, immediately crashed with:
+
+```text
+⚠️ [Bot] Strategy/Execution error: 'MRSignal' object has no attribute 'rr_ratio'
+```
+
+Live path (`main._build_signal_observation`, `TradeExecutor.execute_signal`, `_log_signal_scan`) reads `sig.rr_ratio` / `sig.tp_distance` / `sig.timestamp` directly. These were attributes on the legacy SMC `TradeSignal` dataclass but missing from `MRSignal` (added v8.0).
+
+**Fix** — added 3 `@property` accessors to `MRSignal`:
+
+- `rr_ratio` → computed from `tp_distance / sl_distance` (returns 1.0 for MR fixed RR 1:1)
+- `tp_distance` → `abs(tp_price - entry_price)`
+- `timestamp` → `datetime.now(timezone.utc)` (signal-time fallback)
+
+These join the existing v7.2.2 backward-compat set: `atr_pips`, `sl_distance_atr`, `bias_alignment`, `ob_size_atr`, `direction`. Together they make `MRSignal` a full duck-type replacement for `TradeSignal`.
+
+**Invariant** — when removing/replacing a dataclass that's depended on by multiple modules (live path), audit all `getattr(sig, X)` and `sig.X` accesses across `main.py`, `execution/`, `analytics/`. Provide `@property` for any attribute the live path reads, even if the new schema doesn't store it.
+
+### 2026-05-07 — v8.0.7 Windows VPS audit-script compatibility (UTF-8 + OHLCV-optional)
+
+**Problem 1** — VPS (Windows) ran `python scripts/leakage_audit.py` and hit:
 
 ```text
 UnicodeDecodeError: 'charmap' codec can't decode byte 0x81 ...
@@ -223,14 +243,20 @@ UnicodeDecodeError: 'charmap' codec can't decode byte 0x81 ...
 
 Audit scripts opened source files (e.g. `main.py`, `mean_reversion_strategy.py`) without specifying encoding. On Windows the default codec is **cp1252** which can't decode the Thai comments embedded throughout the source.
 
-**Fix** — added `encoding="utf-8"` to all 4 text-mode `open()` calls in audit scripts:
+**Fix 1** — added `encoding="utf-8"` to all 4 text-mode `open()` calls in audit scripts:
 
 - `scripts/leakage_audit.py` — `_extract_function_source` (1 call)
 - `scripts/parity_audit.py` — `audit_ml_threshold` (2 calls), `audit_risk_per_trade` (1 call)
 
 Mac (UTF-8 default) was unaffected. After fix, both scripts run identically on Windows + Mac.
 
+**Problem 2** — `parity_audit.py` Audit 4 (`audit_obs_dim`) crashed on VPS because `MeanReversionFilterEnv.__init__` requires OHLCV CSVs, which are gitignored and only exist on the training Mac. Live `main.py` doesn't need them (uses MT5 real-time feed), but the audit's strict env init blocked even reading class-level constants.
+
+**Fix 2** — wrapped `audit_obs_dim` env init in `try/except RuntimeError`. On VPS-style failure (no OHLCV), fall back to checking `SelfLearningAgent.OBS_DIM == 32` only. Audit prints warning but does not fail — sufficient for live deploy sanity.
+
 **Invariant added** — any text-mode `open()` reading project source files MUST specify `encoding="utf-8"`. Scripts that grep/parse project code are subject to this rule. Binary opens (`"rb"`/`"wb"`) are unaffected.
+
+**Invariant added** — audit scripts MUST be VPS-friendly (graceful when OHLCV CSVs / pool / training artifacts are missing). Audits 4 (env init) and 6 (indicator parity) skip on missing data; remaining audits (1–3, 5, 7) cover everything live needs.
 
 **v8.0.6 cleanup recap** — also covered in same release: SMC source files removed (`smc_strategy.py` + 5 detectors + tests, ~214 KB), unused `SessionConfig` fields removed (`london_start`/`newyork_start`/`london_end`/`newyork_end`), Excel schema slimmed (Trades 66→58 cols, Signals 23→20 cols) with `_COL`/`_SCOL` name-based column lookup + auto-archive of legacy xlsx, and `models/mr/` artifacts trimmed (~241 MB).
 

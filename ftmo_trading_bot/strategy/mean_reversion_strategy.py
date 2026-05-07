@@ -147,6 +147,28 @@ class MRSignal:
     def direction(self) -> float:
         return 1.0 if self.signal_type == MRSignalType.BUY else -1.0
 
+    # v8.0.8: properties needed by live path that legacy TradeSignal had
+    @property
+    def rr_ratio(self) -> float:
+        """RR ratio = TP distance / SL distance. MR fixes this at 1:1."""
+        if self.sl_distance <= 0:
+            return 0.0
+        tp_dist = abs(self.tp_price - self.entry_price)
+        return tp_dist / self.sl_distance
+
+    @property
+    def tp_distance(self) -> float:
+        return abs(self.tp_price - self.entry_price)
+
+    @property
+    def timestamp(self):
+        """Live path expects `sig.timestamp` for logging. Returns now (UTC).
+        MR strategy doesn't stamp signals at scan time; live `_log_signal_scan`
+        uses TimeManager.get_server_time() separately when this returns None.
+        """
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc)
+
 
 # v8.0.6: legacy alias — `TradeSignal` is the historical name. MRSignal
 # already mimics its field set + adds MR-specific extras (bb_extreme,
