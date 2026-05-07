@@ -55,7 +55,8 @@ OBS_BUILDERS = [
 
 def _extract_function_source(filepath: str, func_name: str) -> str:
     """Pull the AST source of one function from a file (no class context)."""
-    src = open(os.path.join(ROOT, filepath)).read()
+    # Force UTF-8 — Windows defaults to cp1252 which can't decode Thai chars in source.
+    src = open(os.path.join(ROOT, filepath), encoding="utf-8").read()
     tree = ast.parse(src)
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:

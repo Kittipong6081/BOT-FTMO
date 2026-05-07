@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.5** — MR pipeline ALL GATES PASSED, live wired)
+> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.7** — Windows UTF-8 fix for audit scripts)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,27 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-07 — v8.0.7 Windows VPS UTF-8 fix for audit scripts
+
+**Problem** — VPS (Windows) ran `python scripts/leakage_audit.py` and hit:
+
+```text
+UnicodeDecodeError: 'charmap' codec can't decode byte 0x81 ...
+```
+
+Audit scripts opened source files (e.g. `main.py`, `mean_reversion_strategy.py`) without specifying encoding. On Windows the default codec is **cp1252** which can't decode the Thai comments embedded throughout the source.
+
+**Fix** — added `encoding="utf-8"` to all 4 text-mode `open()` calls in audit scripts:
+
+- `scripts/leakage_audit.py` — `_extract_function_source` (1 call)
+- `scripts/parity_audit.py` — `audit_ml_threshold` (2 calls), `audit_risk_per_trade` (1 call)
+
+Mac (UTF-8 default) was unaffected. After fix, both scripts run identically on Windows + Mac.
+
+**Invariant added** — any text-mode `open()` reading project source files MUST specify `encoding="utf-8"`. Scripts that grep/parse project code are subject to this rule. Binary opens (`"rb"`/`"wb"`) are unaffected.
+
+**v8.0.6 cleanup recap** — also covered in same release: SMC source files removed (`smc_strategy.py` + 5 detectors + tests, ~214 KB), unused `SessionConfig` fields removed (`london_start`/`newyork_start`/`london_end`/`newyork_end`), Excel schema slimmed (Trades 66→58 cols, Signals 23→20 cols) with `_COL`/`_SCOL` name-based column lookup + auto-archive of legacy xlsx, and `models/mr/` artifacts trimmed (~241 MB).
 
 ### 2026-05-07 — v8.0.5 🎉 MR pipeline ALL GATES PASSED, live wired
 

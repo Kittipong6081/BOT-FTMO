@@ -109,7 +109,8 @@ def audit_ml_threshold() -> int:
 
     # 1) Trainer default — read CLI parser
     train_default = None
-    for line in open(os.path.join(ROOT, "scripts", "train_mr_signal_filter.py")):
+    # Force UTF-8 — Windows cp1252 chokes on Thai source comments.
+    for line in open(os.path.join(ROOT, "scripts", "train_mr_signal_filter.py"), encoding="utf-8"):
         if "--ml_threshold" in line and "default" in line:
             # parser.add_argument("--ml_threshold", type=float, default=0.40)
             try:
@@ -120,7 +121,7 @@ def audit_ml_threshold() -> int:
 
     # 2) Auto-pipeline default — HyperParams.ml_threshold
     auto_pipeline_default = None
-    for line in open(os.path.join(ROOT, "scripts", "auto_train_pipeline.py")):
+    for line in open(os.path.join(ROOT, "scripts", "auto_train_pipeline.py"), encoding="utf-8"):
         if "ml_threshold:" in line and "float" in line:
             # ml_threshold: float = 0.40
             try:
@@ -163,7 +164,7 @@ def audit_risk_per_trade() -> int:
 
     # Auto-pipeline default
     auto_pipe_default = None
-    for line in open(os.path.join(ROOT, "scripts", "auto_train_pipeline.py")):
+    for line in open(os.path.join(ROOT, "scripts", "auto_train_pipeline.py"), encoding="utf-8"):
         if "risk_per_trade:" in line and "float" in line:
             try:
                 auto_pipe_default = float(line.split("=")[-1].strip())
