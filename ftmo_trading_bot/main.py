@@ -245,7 +245,7 @@ class FTMOTradingBot:
 
         if self._rl_agent:
             print("━" * 40)
-            print("🧠 AI Signal Filter Agent — พร้อมกรอง signal จาก SMC Strategy")
+            print("🧠 AI Signal Filter Agent — พร้อมกรอง MR signals (PPO + AuxTask)")
             print("━" * 40)
 
         # ขั้นตอนที่ 1: เชื่อมต่อ MT5
@@ -299,13 +299,18 @@ class FTMOTradingBot:
         except Exception as e:
             print(f"⚠️ [Bot] Analyzer load_from_excel ล้มเหลว: {e}")
 
-        # ขั้นตอนที่ 4: เตรียมกลยุทธ์ SMC
+        # ขั้นตอนที่ 4: เตรียมกลยุทธ์ Mean Reversion (v8.0+)
+        from config.settings import bot_config as _bc
+        _mr = _bc.mr
         print("\n" + "━" * 40)
-        print("🎯 ขั้นตอนที่ 4: เริ่มต้น SMC Strategy Engine")
+        print("🎯 ขั้นตอนที่ 4: เริ่มต้น Mean Reversion Strategy Engine")
         print("━" * 40)
-        print(f"   📊 Strategy: Smart Money Concepts (SMC)")
-        print(f"   📦 Components: Indicators + Market Structure + Order Blocks")
-        print(f"   🎯 Min Confluence: {SMCStrategy.MIN_CONFLUENCE_SCORE}/100")
+        print(f"   📊 Strategy: Mean Reversion + Trend Filter (v8.0)")
+        print(f"   📦 Entry: BB%B {_mr.bb_oversold:.2f}/{_mr.bb_overbought:.2f} + RSI {_mr.rsi_oversold:.0f}/{_mr.rsi_overbought:.0f} + ADX H1 ≤ {_mr.adx_trend_block:.0f}")
+        print(f"   🎯 SL = {_mr.sl_atr_mult:.1f}×ATR  |  TP = {_mr.rr_ratio:.1f}×SL  (RR 1:{_mr.rr_ratio:.1f}, quick TP)")
+        # `SMCStrategy` is aliased to `LiveMRScanner` in v8.0+ — class attr `MIN_CONFLUENCE_SCORE`
+        # is the MR confluence floor (default 30). Kept import name for backward-compat.
+        print(f"   🧭 ML threshold: {_bc.ftmo.ML_FILTER_THRESHOLD:.2f}  |  MR setup score floor: {SMCStrategy.MIN_CONFLUENCE_SCORE:.0f}/100")
 
         # ขั้นตอนที่ 5: แสดงสรุปการตั้งค่า
         self._print_config_summary()
@@ -1018,17 +1023,19 @@ class FTMOTradingBot:
         sym = bot_config.symbols
         ftmo = bot_config.ftmo
         print(f"   📊 คู่เงิน ({len(sym.symbols)}):     {', '.join(sym.symbols)}")
-        print(f"   ⏱️ Timeframes:       {sym.primary_timeframe} (Entry) + "
-              f"{sym.structure_timeframe} (Structure) + {sym.higher_timeframe} (Trend)")
+        print(f"   ⏱️ Timeframes (v8.0): {sym.primary_timeframe} (Entry) + "
+              f"{sym.structure_timeframe} (ADX trend filter)")
         print(f"   🛡️ Daily Stop:       {ftmo.DAILY_LOSS_HARD_STOP_PCT:.0%} "
               f"(FTMO 5% — buffer 1%)")
         print(f"   🛡️ Max Drawdown:     {ftmo.MAX_DRAWDOWN_HARD_STOP_PCT:.0%} "
               f"(FTMO 10% — buffer 2%)")
-        print(f"   💰 Risk/Trade:       {ftmo.MIN_RISK_PER_TRADE_PCT:.1%} - "
-              f"{ftmo.MAX_RISK_PER_TRADE_PCT:.1%}  "
-              f"(default {ftmo.DEFAULT_RISK_PER_TRADE_PCT:.1%})")
-        print(f"   🎯 R:R:              Dynamic 1.5 / 2.0 / 2.5 (by ADX trend strength) "
-              f"— min 1:{ftmo.MIN_RISK_REWARD_RATIO}")
+        print(f"   💰 Risk/Trade:       {ftmo.MIN_RISK_PER_TRADE_PCT:.2%} - "
+              f"{ftmo.MAX_RISK_PER_TRADE_PCT:.2%}  "
+              f"(default {ftmo.DEFAULT_RISK_PER_TRADE_PCT:.2%})")
+        print(f"   🎯 R:R:              Fixed 1:{ftmo.PREFERRED_RISK_REWARD_RATIO:.1f} "
+              f"(MR quick-TP) — min 1:{ftmo.MIN_RISK_REWARD_RATIO:.1f}")
+        print(f"   🧭 ML threshold:     {ftmo.ML_FILTER_THRESHOLD:.2f}  "
+              f"(signals < threshold filtered before agent)")
         print(f"   📋 Max Positions:    {ftmo.MAX_OPEN_POSITIONS}")
         print(f"   🎯 Profit Target:    {ftmo.PROFIT_TARGET_PCT:.0%}  "
               f"(FTMO Challenge)")
@@ -1210,8 +1217,8 @@ class FTMOTradingBot:
                             # === v6.9: Build live_context สำหรับ logging + executor ===
                             live_context = self._build_live_context(sig)
 
-                            # === v6.12: ML quality gate (live ↔ training distribution sync) ===
-                            # FTMOSignalFilterEnv กรอง signals ที่ ml_score < 0.36 ตอน train
+                            # === ML quality gate (live ↔ training distribution sync, v8.0.3) ===
+                            # FTMOSignalFilterEnv กรอง signals ที่ ml_score < 0.30 ตอน train
                             # → live ก็ต้องกรองเดียวกัน ไม่งั้น agent เห็น distribution กว้างกว่าที่ฝึก
                             ml_threshold = float(bot_config.ftmo.ML_FILTER_THRESHOLD)
                             if ml_threshold > 0.0 and live_context.get("ml_score", 0.0) < ml_threshold:
