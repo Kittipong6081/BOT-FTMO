@@ -56,21 +56,26 @@ class TradeManager:
 
     ลำดับการจัดการ (ทุก Tick):
     1. ซิงค์กับ MT5 (ตรวจ SL/TP Hit)
-    2. ตรวจสอบ Break-Even Move (best_rr >= 0.5 → SL → Entry)
-    3. ตรวจสอบ Partial Close (best_rr >= 0.7 → ปิด 50%)
+    2. ตรวจสอบ Partial Close (best_rr >= 0.5 → ปิด 50%) — ทำก่อน BE
+    3. ตรวจสอบ Break-Even Move (best_rr >= 0.5 → SL → Entry) — ทำหลัง Partial
     4. Trailing — DISABLED ภายใต้ MR RR=1:1 (TP ปิดก่อน trail ทำงาน)
     5. ตรวจสอบ Force Close (Friday 20:45 EET / Daily Overnight 23:30 EET / Friday Warning UTC)
+
+    v8.0.14 (Partial-first fix): Partial 50% ทำงานก่อน BE — กัน case "BE-only without partial"
+    ที่ v8.0.12 มี (BE 0.5R, Partial 0.7R) ถ้า MFE peak ระหว่าง 0.5-0.7R แล้ว revert
+    จะได้ BE-only ปิด 0 บาท. v8.0.14: ทั้งคู่ที่ 0.5R, Partial เรียกก่อน → ปิด 50% เก็บ
+    0.25R + เลื่อน SL → entry. Revert มาก็ได้กำไร 0.25R จาก partial แน่ๆ.
 
     v8.0.12 (MR RR=1:1 alignment): triggers ปรับให้ทำงานก่อน TP จะปิด position
     เดิมตั้ง 1.0 / 1.0 / 1.5 จากยุค SMC RR=1:2.5 — ภายใต้ MR RR=1:1 = dead code
     ทุกตัว (TP ปิด @ 1.0R ก่อน BE/Partial ทำงาน, Trail 1.5R เป็นไปไม่ได้เลย).
     """
 
-    # === ค่าคงที่สำหรับการจัดการ (v8.0.12 MR RR=1:1 tuned) ===
-    BE_TRIGGER_RR: float = 0.5          # เลื่อน SL มา Entry เมื่อ best_rr ≥ 0.5R (ครึ่งทาง TP)
+    # === ค่าคงที่สำหรับการจัดการ (v8.0.14 Partial-first fix) ===
+    BE_TRIGGER_RR: float = 0.5          # เลื่อน SL มา Entry เมื่อ best_rr ≥ 0.5R (หลัง Partial)
     BE_OFFSET_PIPS: float = 0.0         # เลื่อน SL มา Entry พอดี (ไม่มี offset)
     PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ Partial Trigger Hit
-    PARTIAL_TRIGGER_RR: float = 0.7     # ปิดบางส่วนเมื่อ best_rr ≥ 0.7R (70% to TP)
+    PARTIAL_TRIGGER_RR: float = 0.5     # ปิด 50% ที่ best_rr ≥ 0.5R (เท่า BE — Partial เรียกก่อน BE)
     TRAIL_ACTIVATION_RR: float = 99.0   # DISABLED — MR RR=1:1 ปิดที่ 1.0R ก่อน trail ทำงาน
     TRAIL_ATR_MULTIPLIER: float = 1.0   # Trail SL ห่างจาก Best Price = ATR × 1.0 (unused)
 
@@ -260,13 +265,16 @@ class TradeManager:
             best_profit = trade.entry_price - state.best_price
         best_rr = best_profit / sl_distance if sl_distance > 0 else 0
 
-        # === ขั้นตอนที่ 1: Break-Even Move (ใช้ best_rr — กัน spike-then-revert) ===
-        if not state.breakeven_moved and best_rr >= self.BE_TRIGGER_RR:
-            self._move_to_breakeven(trade, state, price_info)
-
-        # === ขั้นตอนที่ 2: Partial Close (ใช้ best_rr) ===
+        # === ขั้นตอนที่ 1: Partial Close (ใช้ best_rr) — v8.0.14: ทำก่อน BE ===
+        # เหตุผล: ถ้า MFE peak ที่ trigger threshold แล้ว revert ทันที
+        # → Partial ปิด 50% เก็บกำไร, BE lock entry → revert มาได้ +0.25R แน่
+        # ถ้า BE ทำก่อน → Partial อาจไม่ทันยิงเลย (revert ก่อนถึง partial trigger)
         if not state.partial_closed and best_rr >= self.PARTIAL_TRIGGER_RR:
             self._partial_close(trade, state)
+
+        # === ขั้นตอนที่ 2: Break-Even Move (หลัง Partial — กัน spike-then-revert) ===
+        if not state.breakeven_moved and best_rr >= self.BE_TRIGGER_RR:
+            self._move_to_breakeven(trade, state, price_info)
 
         # === ขั้นตอนที่ 3: Trailing Stop (ยังใช้ current_rr — ต้อง confirm trend ต่อ) ===
         if current_rr >= self.TRAIL_ACTIVATION_RR:

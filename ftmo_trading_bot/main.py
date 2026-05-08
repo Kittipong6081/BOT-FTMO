@@ -1341,6 +1341,8 @@ class FTMOTradingBot:
 
         เรียกทุก 720 loops (~1 ชม.). ถ้ามี ≥ 3 features drift → log + Discord ping.
         ไม่ block trading — แค่ alert ให้ user รู้ว่าควร retrain.
+
+        v8.0.14 — Append ลงไฟล์ logs/gbm_drift.log ด้วย กัน console scroll-out.
         """
         if self._quality_model is None:
             return
@@ -1358,6 +1360,19 @@ class FTMOTradingBot:
                 f"(KS > 0.15). Top: {top_str}"
             )
             print(msg)
+            # v8.0.14: persistent drift log — กัน PowerShell scrollback ตัด log เก่า
+            try:
+                import os
+                from datetime import datetime
+                root = os.path.dirname(os.path.abspath(__file__))
+                log_dir = os.path.join(root, "logs")
+                os.makedirs(log_dir, exist_ok=True)
+                drift_log = os.path.join(log_dir, "gbm_drift.log")
+                ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                with open(drift_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] count={len(drifts)} top={top_str}\n")
+            except Exception as e:
+                print(f"⚠️ [Drift] log file write failed: {e}")
             try:
                 self._notifier.send_alert(msg, level="warning")
             except Exception:

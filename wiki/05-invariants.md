@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.13** — Orphan position recovery + trail_states persistence)
+> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.14** — Partial-first fix: close 50% before BE move)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,48 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-07 — v8.0.14 Partial-first fix + persistent drift log
+
+**Persistent GBM drift log** — `_check_gbm_drift` ก่อน v8.0.14 print ลง console เท่านั้น. PowerShell scrollback default 9,001 บรรทัด — บอท print หลายบรรทัด/วินาที → drift alert ที่ขึ้นช่วงต้นถูก scroll ออกไปก่อน user เห็น. v8.0.14 append ลง `logs/gbm_drift.log` (timestamp ISO-8601 UTC + count + top 5 features) → ดูประวัติ drift ได้ครบทุก hour boundary แม้บอท run นานข้ามวัน.
+
+---
+
+### 2026-05-07 — v8.0.14 Partial-first fix: close 50% before BE move
+
+**Problem** — User observed BE move firing alone without Partial close (regression introduced by v8.0.12):
+
+| State | v8.0.11 | v8.0.12 | **v8.0.14** |
+|---|---|---|---|
+| `BE_TRIGGER_RR` | 1.0 (dead — TP closes first) | 0.5 | **0.5** |
+| `PARTIAL_TRIGGER_RR` | 1.0 (dead) | **0.7** | **0.5** |
+| Code order | BE → Partial | BE → Partial | **Partial → BE** |
+| MFE peak 0.6R then revert | nothing fires | **BE only, no Partial** ❌ | Partial 50% + BE ✅ |
+
+v8.0.12 left a gap between BE trigger (0.5R) and Partial trigger (0.7R). If price peaks at 0.6R and reverts, BE moves SL to entry but Partial never fires → revert closes at entry = $0 net (no profit captured). User's expected behavior (matching legacy SMC era): close 50% first, THEN move SL to BE — guarantees +0.25R profit on revert.
+
+**Fix** — Two changes in `TradeManager`:
+
+1. `PARTIAL_TRIGGER_RR`: 0.7 → **0.5** (same threshold as BE).
+2. Code order in `_manage_single_position`: **Partial check BEFORE BE check** — both fire on the same loop tick when MFE first crosses 0.5R.
+
+```python
+# v8.0.14: Partial first (close 50% → lock 0.25R profit)
+if not state.partial_closed and best_rr >= self.PARTIAL_TRIGGER_RR:
+    self._partial_close(trade, state)
+
+# Then BE (move SL → entry — remaining 50% can run to TP)
+if not state.breakeven_moved and best_rr >= self.BE_TRIGGER_RR:
+    self._move_to_breakeven(trade, state, price_info)
+```
+
+**Net behavior under MR RR=1:1**:
+
+- MFE crosses 0.5R → Partial closes 50% (locks 0.25R) → BE moves SL to entry
+- If revert: remaining 50% closes at entry = +0.25R net guaranteed
+- If continues to TP: remaining 50% closes at +1.0R = +0.5R; total = 0.25 + 0.5 = +0.75R
+
+**Invariant** — when configuring BE/Partial triggers under any RR target, **Partial must execute BEFORE BE in the same management cycle** (either via code order at same threshold, or via `PARTIAL_TRIGGER_RR < BE_TRIGGER_RR`). Otherwise the bot can move SL to BE without taking partial profit, and a revert closes the entire position at $0 — losing the safety net the design was meant to provide.
 
 ### 2026-05-07 — v8.0.13 Orphan position recovery + trail_states persistence
 
