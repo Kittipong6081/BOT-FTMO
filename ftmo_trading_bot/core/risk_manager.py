@@ -77,6 +77,9 @@ class RiskManager:
         # === สถิติรายวัน ===
         self._daily_closed_pnl: float = 0.0         # P/L ที่ปิดไปแล้ววันนี้
         self._daily_trades_count: int = 0            # จำนวนเทรดวันนี้
+        # v8.0.16: throttle "Give-back from peak" alert — print เฉพาะข้าม 1% milestone ใหม่
+        # (เดิม print ทุก 5s = spam; reset วันใหม่ + ทุกครั้งที่ peak ใหม่)
+        self._last_give_back_alert_pct: float = 0.0
 
         # === Cooldown / Anti-Revenge-Trading State (v2) ===
         # เวลาที่โดน SL ล่าสุดของแต่ละ symbol (ISO string)
@@ -236,6 +239,7 @@ class RiskManager:
         self._current_day = broker_today
         self._daily_closed_pnl = 0.0
         self._daily_trades_count = 0
+        self._last_give_back_alert_pct = 0.0   # v8.0.16: clean slate วันใหม่
 
         # Reset cooldown / revenge-trading counters ข้ามวัน (รวม weekend rollover)
         # Reason: ขาดทุน 3 ไม้วันศุกร์ไม่ควรทำให้เช้าวันจันทร์ halt ทันที
@@ -298,15 +302,23 @@ class RiskManager:
 
         # === Track Intraday Peak Equity (สำหรับ warning + dashboard) ===
         # ใช้เตือนการ give-back จากกำไรลอยกลางวัน — ไม่ใช่กฎ FTMO แต่เป็น internal safety
+        # v8.0.16: throttle ให้ print เฉพาะข้าม 1% milestone ใหม่ (กัน spam ทุก 5s)
         if current_equity > self._peak_daily_equity:
             self._peak_daily_equity = current_equity
+            self._last_give_back_alert_pct = 0.0  # reset เมื่อ peak ใหม่
         elif self._peak_daily_equity > 0:
             give_back = self._peak_daily_equity - current_equity
             give_back_pct = give_back / self._peak_daily_equity
-            if give_back_pct >= 0.02 and self._state == BotState.ACTIVE:
+            current_milestone = int(give_back_pct * 100)        # 2.5% → 2
+            last_milestone = int(self._last_give_back_alert_pct * 100)
+            if (give_back_pct >= 0.02
+                    and current_milestone > last_milestone
+                    and self._state == BotState.ACTIVE):
                 print(f"⚠️ [Risk Manager] Give-back จาก peak วันนี้: {give_back_pct:.2%} "
                       f"(peak=${self._peak_daily_equity:,.2f} → now=${current_equity:,.2f})")
-            
+                self._last_give_back_alert_pct = give_back_pct
+
+
         # === ตรวจสอบที่ 2: Max Drawdown (ร้ายแรงที่สุด) ===
         max_dd_result = self._check_max_drawdown(current_equity)
         if max_dd_result:

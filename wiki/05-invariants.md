@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-08 | Scope: red flags, version log, migration notes (latest: **v8.0.15** — RR FP-precision fix v2: relative tolerance + rr_ratio snap)
+> Last Updated: 2026-05-08 | Scope: red flags, version log, migration notes (latest: **v8.0.16** — Throttle Give-back-from-peak alert (anti-spam))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,32 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-08 — v8.0.16 Throttle Give-back-from-peak alert (anti-spam)
+
+**Problem** — `RiskManager.check_risk()` ถูกเรียกทุก 5s. เมื่อ equity ตกจาก peak ≥2% → log ถูก print ทุก loop = **17,000+ ครั้ง/วัน** = console spam
+
+**Fix** — เพิ่ม `_last_give_back_alert_pct` แล้ว throttle ให้ print เฉพาะเมื่อ give-back **ก้าวข้าม 1% milestone ใหม่** (2.0% → 3.0% → 4.0% ...)
+
+```python
+current_milestone = int(give_back_pct * 100)
+last_milestone = int(self._last_give_back_alert_pct * 100)
+if (give_back_pct >= 0.02
+        and current_milestone > last_milestone
+        and self._state == BotState.ACTIVE):
+    print(f"⚠️ Give-back ...")
+    self._last_give_back_alert_pct = give_back_pct
+```
+
+**Reset state** ที่ 2 จุด:
+- `_on_new_day()` → reset วันใหม่ clean slate
+- เมื่อ peak ใหม่ (`current_equity > peak`) → reset เพื่อให้ alert ครั้งหน้าเริ่มจาก 0
+
+**ผลที่คาด**: print ลดจาก 17,000+/วัน → 2-3/วัน (ตอน DD ขยายข้าม milestone จริง). ยังเก็บ visibility สำหรับ user ตอน DD ขยาย — แค่ไม่ spam.
+
+**Invariant** — log ที่ขึ้นทุก loop ต้อง throttle (milestone-based, time-based, หรือ state-change-based) ก่อน print. ถ้าไม่ throttle → spam ปกปิด log สำคัญอื่น เช่น signal scan / order execution.
+
+---
 
 ### 2026-05-08 — v8.0.15 RR FP-precision fix v2 (XAUUSD regression)
 
