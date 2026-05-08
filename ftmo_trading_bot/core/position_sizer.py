@@ -334,9 +334,9 @@ class PositionSizer:
         # คำนวณ Risk:Reward Ratio
         rr_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
 
-        # ตรวจสอบ RR ขั้นต่ำ (v8.0.11: epsilon tolerance — FP precision fix)
-        if rr_ratio < self._config.MIN_RISK_REWARD_RATIO - 1e-4:
-            print(f"⚠️ [Position Sizer] RR Ratio ({rr_ratio:.2f}) ต่ำกว่าขั้นต่ำ ({self._config.MIN_RISK_REWARD_RATIO})")
+        # ตรวจสอบ RR ขั้นต่ำ (v8.0.15: 1% relative tolerance — รองรับทุก symbol)
+        if rr_ratio < self._config.MIN_RISK_REWARD_RATIO * (1.0 - 0.01):
+            print(f"⚠️ [Position Sizer] RR Ratio ({rr_ratio:.4f}) ต่ำกว่าขั้นต่ำ ({self._config.MIN_RISK_REWARD_RATIO})")
             # ปรับ TP ให้ได้ RR ขั้นต่ำ
             tp_distance = sl_distance * self._config.MIN_RISK_REWARD_RATIO
             rr_ratio = self._config.MIN_RISK_REWARD_RATIO

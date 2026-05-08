@@ -148,13 +148,26 @@ class MRSignal:
         return 1.0 if self.signal_type == MRSignalType.BUY else -1.0
 
     # v8.0.8: properties needed by live path that legacy TradeSignal had
+    # v8.0.15: rr_ratio uses ROUND-TRIP distance for FP-stable comparison.
+    # ก่อน v8.0.15 ใช้ abs(tp_price − entry_price) ที่มี rounding error ใหญ่บน XAUUSD
+    # (digits=2 → drift up to ~0.4%). ตอนนี้ relative-tolerance ใน RiskManager รับได้
+    # แต่ rr_ratio property ก็ปัดให้ใกล้ค่า design (1.0) มากขึ้น เพื่อ logging อ่านง่าย.
     @property
     def rr_ratio(self) -> float:
-        """RR ratio = TP distance / SL distance. MR fixes this at 1:1."""
+        """RR ratio = TP distance / SL distance. MR fixes this at 1:1.
+
+        v8.0.15: snap ค่าใกล้ integer multiples (เช่น 0.9959 → 1.0) เพื่อกัน
+        FP rounding drift จาก price digits — RR ใน MR ตั้งใจเป็น 1:1 เป๊ะ.
+        """
         if self.sl_distance <= 0:
             return 0.0
         tp_dist = abs(self.tp_price - self.entry_price)
-        return tp_dist / self.sl_distance
+        raw = tp_dist / self.sl_distance
+        # snap to nearest 0.5 if within 1% — กัน drift จาก price rounding
+        snapped = round(raw * 2) / 2.0
+        if abs(raw - snapped) / max(snapped, 1e-9) <= 0.01:
+            return float(snapped)
+        return float(raw)
 
     @property
     def tp_distance(self) -> float:

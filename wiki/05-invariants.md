@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-07 | Scope: red flags, version log, migration notes (latest: **v8.0.14** — Partial-first fix: close 50% before BE move)
+> Last Updated: 2026-05-08 | Scope: red flags, version log, migration notes (latest: **v8.0.15** — RR FP-precision fix v2: relative tolerance + rr_ratio snap)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,70 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-08 — v8.0.15 RR FP-precision fix v2 (XAUUSD regression)
+
+**Problem** — User เจอ log เดิม **อีกครั้ง** บน XAUUSD แม้ v8.0.11 จะแก้ FP-precision ไปแล้ว:
+
+```text
+🚫 [Executor] Risk Manager ปฏิเสธ: ❌ Risk:Reward (1.00) ต่ำกว่าขั้นต่ำ (1.0)
+📡 [Agent] TAKE SELL XAUUSD Conf=79 RR=1:1.0 (confidence=1.00)
+```
+
+**Root cause** — v8.0.11 ใช้ epsilon `1e-4` (0.01% absolute) ซึ่งพอสำหรับ FX 5-digit แต่ **ไม่พอสำหรับ XAUUSD** ที่ digits=2 → rounding error สูงถึง ~0.4%.
+
+**Math** (XAUUSD): entry=2300.45, sl_distance=1.235 (raw, unrounded), rr=1.0:
+
+```python
+tp_price = round(2300.45 - 1.235, 2)        # = 2299.22 (rounded)
+tp_dist  = abs(2300.45 - 2299.22)            # = 1.2299999... (FP subtraction)
+rr_ratio = 1.2299999... / 1.235              # = 0.9959 ❌ (under 1.0 by 0.41%)
+```
+
+`0.9959 < 1.0 - 1e-4` → **REJECT**
+
+**Symbol-specific drift table**:
+
+| Digits | Symbols | Worst-case rr drift |
+|---|---|---|
+| 5 | EURUSD, GBPUSD, NZDUSD, USDCHF, USDCAD, AUDUSD | ~0.001% |
+| 3 | USDJPY, EURJPY, GBPJPY (JPY pairs) | ~0.04% |
+| **2** | **XAUUSD, XAGUSD (metals)** | **~0.4%** ← ทำลาย 1e-4 tolerance |
+
+**Fix** — 2 layers:
+
+1. **Tolerance เป็น relative 1%** ใน `RiskManager.can_open_trade` + `PositionSizer.calculate_sl_tp_prices`:
+
+   ```python
+   if rr_ratio < self._config.MIN_RISK_REWARD_RATIO * (1.0 - 0.01):
+   ```
+
+2. **`MRSignal.rr_ratio` snap-to-half** เมื่อ raw value อยู่ภายใน 1% ของ multiple of 0.5:
+
+   ```python
+   raw = tp_dist / sl_distance   # 0.9959 (drifted)
+   snapped = round(raw * 2) / 2  # 1.0
+   if abs(raw - snapped) / snapped <= 0.01:
+       return float(snapped)     # ใช้ 1.0 ไม่ใช่ 0.9959
+   return float(raw)
+   ```
+
+→ rr_ratio property คืนค่าใกล้ design (1.0) ได้ตรงทุก symbol → log อ่านง่าย + RiskManager check ผ่าน.
+
+**Why two layers** — defense in depth. Tolerance check protects RiskManager/PositionSizer; snap normalizes the displayed/derived value across consumers (logs, ML features, `to_dict`, drift detector).
+
+**Verification** (test bench): all 4 representative symbols pass after fix:
+
+```
+✅ XAUUSD digits=2: raw=0.995951 → rr_ratio=1.0
+✅ NZDUSD digits=5: raw=1.000000 → rr_ratio=1.0
+✅ GBPUSD digits=5: raw=1.000000 → rr_ratio=1.0
+✅ USDJPY digits=3: raw=1.000000 → rr_ratio=1.0
+```
+
+**Invariant** — when comparing FP-derived ratios to a threshold across symbols with different `digits`, **absolute** tolerance is unsafe — different digit counts → different rounding budgets → drift varies by 1000×. Use **relative tolerance** (% of the threshold) and snap derived values to design intent at the source (`MRSignal.rr_ratio`).
+
+---
 
 ### 2026-05-07 — v8.0.14 Partial-first fix + persistent drift log
 

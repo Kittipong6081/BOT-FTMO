@@ -519,10 +519,11 @@ class RiskManager:
         # === ตรวจสอบที่ 3: Risk:Reward Ratio ===
         # v8.0.11 fix: epsilon tolerance for FP precision. MR strategy stores
         # sl_distance directly but derives tp_distance from rounded prices, so
-        # rr_ratio can be 0.99999... when designed as 1.0 → was rejecting every
-        # MR signal with RR=1:1 exactly.
-        if rr_ratio < self._config.MIN_RISK_REWARD_RATIO - 1e-4:
-            return (False, f"❌ Risk:Reward ({rr_ratio:.2f}) ต่ำกว่าขั้นต่ำ ({self._config.MIN_RISK_REWARD_RATIO})")
+        # rr_ratio can drift below 1.0 even when designed as 1.0.
+        # v8.0.15 fix: tolerance 1e-4 ไม่พอสำหรับ XAUUSD (digits=2 → drift ~0.4%).
+        # ใช้ 1% relative tolerance ครอบคลุมทุก symbol (FX 0.001%, JPY 0.04%, XAU 0.4%).
+        if rr_ratio < self._config.MIN_RISK_REWARD_RATIO * (1.0 - 0.01):
+            return (False, f"❌ Risk:Reward ({rr_ratio:.4f}) ต่ำกว่าขั้นต่ำ ({self._config.MIN_RISK_REWARD_RATIO})")
 
         # === ตรวจสอบที่ 4: ความเสี่ยงต่อเทรด ===
         account = self._connector.get_account_info()
