@@ -1278,6 +1278,22 @@ class FTMOTradingBot:
                 try:
                     self._trade_manager.manage_all_positions()
 
+                    # v8.0.17: Daily Profit Cap (Option D) — เช็คทุก loop
+                    # ใช้ closed + floating P/L เทียบกับ initial × 1.5%
+                    try:
+                        account = self._connector.get_account_info()
+                        if account:
+                            equity = account.get("equity", 0.0)
+                            floating = self._connector.get_total_floating_pnl()
+                            if self._risk_manager.check_daily_profit_cap(equity, floating):
+                                cap_closed = self._trade_manager.close_all_positions(
+                                    reason="Daily Profit Cap (Option D)"
+                                )
+                                print(f"🎯 [Bot] Daily profit cap ถึง — ปิด {cap_closed} positions, "
+                                      f"หยุดเทรดวันนี้")
+                    except Exception as e:
+                        print(f"⚠️ [Bot] Daily profit cap check error: {e}")
+
                     # v7.1.10: Pre-news close — ปิด position ก่อนข่าวแรง sync กับ block สัญญาณใหม่
                     news_closed = self._trade_manager.check_news_close()
                     if news_closed > 0:

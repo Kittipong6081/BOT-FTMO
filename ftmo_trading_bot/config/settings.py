@@ -90,6 +90,17 @@ class FTMOConfig:
     # === ระดับกำไรเป้าหมาย (FTMO Challenge) ===
     # FTMO Challenge ต้องทำกำไร 10% ใน 30 วัน
     PROFIT_TARGET_PCT: float = 0.10  # 10%
+
+    # === Daily Profit Cap (v8.0.17 — Option D Hard Stop) ===
+    # หยุดเทรดเมื่อกำไรวันนี้ ถึง DAILY_PROFIT_CAP_PCT × INITIAL balance.
+    # นับจาก initial balance (anchor ของ challenge) — ไม่ใช่ daily start
+    # → $10k port: cap = $160 ทุกวัน, $100k port: cap = $1600 ทุกวัน
+    # Trigger ใช้ closed P/L + floating P/L (Option B)
+    # Reset = broker EET midnight (Option A) ผ่าน _on_new_day
+    # Action = ปิดทุก open position + block new trades จนกว่าวันใหม่
+    # v8.0.17: 1.6% (เพิ่มจาก 1.5% เป็น 0.1pp buffer สำหรับ slippage + spread + commission)
+    DAILY_PROFIT_CAP_ENABLED: bool = True
+    DAILY_PROFIT_CAP_PCT: float = 0.016     # 1.6% ของ initial balance
     
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน

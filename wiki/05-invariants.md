@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-08 | Scope: red flags, version log, migration notes (latest: **v8.0.16** — Throttle Give-back-from-peak alert (anti-spam))
+> Last Updated: 2026-05-09 | Scope: red flags, version log, migration notes (latest: **v8.0.17** — Daily Profit Cap (Option D Hard Stop))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,65 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-09 — v8.0.17 Daily Profit Cap (Option D Hard Stop)
+
+**Goal** — User เลือก Option D เพื่อ "ล็อกกำไรวันนี้ + หยุดเทรด" เมื่อกำไรถึง 1.5% ของ initial balance. ใช้สำหรับ FTMO Phase 1 Challenge — passing target +10% ใน 7-10 วัน โดยไม่เสี่ยง give-back
+
+**Specifications** (ตามที่ user ยืนยัน):
+
+| Setting | Value | เหตุผล |
+|---|---|---|
+| Cap anchor | `_initial_balance` (FTMO challenge start) | คงที่ตลอด challenge — ไม่ scale ตาม daily growth |
+| Cap pct | **1.6%** | $10k → $160, $100k → $1600 (1.6% มี 0.1pp buffer สำหรับ slippage/spread vs target 1.5%) |
+| Trigger metric | **closed P/L + floating P/L** (Option B) | ตรวจ realtime — กัน give-back ภายในวัน |
+| Reset boundary | **Broker EET midnight** (Option A) | ตรงกับกฎ FTMO Daily Loss Limit |
+| Action | **ปิดทุก position + block new trades** | หยุดสนิท, lock เป๊ะ |
+| Feature flag | `DAILY_PROFIT_CAP_ENABLED = True` | ปิดได้ตอน funded account |
+
+**Implementation** (4 ไฟล์):
+
+```python
+# config/settings.py — FTMOConfig
+DAILY_PROFIT_CAP_ENABLED: bool = True
+DAILY_PROFIT_CAP_PCT: float = 0.015
+
+# core/risk_manager.py — RiskManager
+self._daily_profit_locked: bool = False  # __init__
+def check_daily_profit_cap(self, equity, floating_pnl) -> bool:
+    if not enabled or self._daily_profit_locked: return False
+    cap = self._initial_balance * 0.015
+    total_pnl = equity - self._daily_start_equity
+    if total_pnl >= cap:
+        self._daily_profit_locked = True; self._save_state()
+        return True   # signal to caller: close all + block
+
+# can_open_trade — early reject
+if self._daily_profit_locked:
+    return (False, "🎯 Daily profit cap ถึงแล้ว — รอวันใหม่")
+
+# execution/trade_manager.py
+def close_all_positions(self, reason: str) -> int:
+    for ticket in list(executor.active_trades.keys()):
+        executor.close_trade(ticket, reason=reason)
+
+# main.py main loop (after manage_all_positions)
+if risk.check_daily_profit_cap(equity, floating):
+    trade_mgr.close_all_positions("Daily Profit Cap (Option D)")
+```
+
+**Persistence** — `_daily_profit_locked` saved to `bot_state.json` (schema v7) เพื่อ survive bot restart. Reset ใน `_on_new_day()` พร้อม daily counters.
+
+**Trade-off acknowledged**:
+- ✅ ป้องกัน give-back วันที่บอททำกำไรเช้าแล้วคืนบ่าย (เห็นใน live: 8 พ.ค. peak +$237 → final +$156)
+- ✅ ผ่าน FTMO Phase 1 challenge เร็วขึ้น (7-10 วัน vs 14 วันตำรา)
+- ❌ ตัด upside วันที่บอท hot (cap ที่ 1.5% เลย)
+- ❌ Realize floating losses ตอน trigger — อาจแย่กว่าปล่อย Partial-first ทำงาน
+- 🔧 แก้ได้: ตั้ง `DAILY_PROFIT_CAP_ENABLED=False` หลังได้ funded
+
+**Invariant** — `check_daily_profit_cap` ใช้ `_initial_balance` เป็น anchor (ไม่ใช่ `_daily_start_equity` หรือ current `balance`). ห้ามเปลี่ยน — เพราะ user ตั้งใจให้ cap คงที่ตลอด challenge ไม่ใช่ scale ตาม account growth ที่ทำให้ "ทำเงินเก่ง = cap สูงขึ้น = หยุดยากขึ้น".
+
+---
 
 ### 2026-05-08 — v8.0.16 Throttle Give-back-from-peak alert (anti-spam)
 

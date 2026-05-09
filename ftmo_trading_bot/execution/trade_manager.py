@@ -597,6 +597,28 @@ class TradeManager:
     # ⏰ Session Close (ปิดก่อนหมด Session)
     # =========================================================================
 
+    def close_all_positions(self, reason: str) -> int:
+        """
+        ปิดทุก open position ทันที (market order) — ใช้กับ Daily Profit Cap (v8.0.17 Option D)
+        และ trigger force-close อื่นๆ ในอนาคต.
+
+        Args:
+            reason: เหตุผล (จะ log + บันทึกใน trade record)
+
+        Returns:
+            int: จำนวน position ที่ปิดสำเร็จ
+        """
+        active_tickets = list(self._executor.active_trades.keys())
+        if not active_tickets:
+            return 0
+
+        closed_count = 0
+        print(f"🛑 [Trade Manager] ปิดทุก position ({len(active_tickets)}) — เหตุผล: {reason}")
+        for ticket in active_tickets:
+            if self._executor.close_trade(ticket, reason=reason):
+                closed_count += 1
+        return closed_count
+
     def check_session_close(self) -> int:
         """
         ตรวจสอบ trigger ปิด position แบบบังคับ (3 ระดับ ตามลำดับความสำคัญ):
