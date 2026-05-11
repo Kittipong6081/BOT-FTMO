@@ -91,6 +91,14 @@ class FTMOConfig:
     # FTMO Challenge ต้องทำกำไร 10% ใน 30 วัน
     PROFIT_TARGET_PCT: float = 0.10  # 10%
 
+    # === Monday Morning Delay (v8.0.19 — กัน volatile post-weekend) ===
+    # ข้อมูลจริง 11 พ.ค.: 3 ไม้แรก (01:06, 03:50, 03:54 EET) เสีย $300+ ก่อน
+    # ตลาดสงบลง. หน่วงไม่ให้บอทเทรดในช่วง MONDAY_DELAY_END_HOUR_EET ชม.แรก
+    # ของ Monday (EET) — ตามเวลา server FTMO. หลังจากนั้นเทรดปกติ.
+    # Tue-Fri ไม่กระทบ.
+    MONDAY_DELAY_ENABLED: bool = True
+    MONDAY_DELAY_END_HOUR_EET: int = 4   # ห้ามเทรด Monday 00:00-03:59 EET (= 04:00-07:59 ICT)
+
     # === Flip-Lock TTL (v8.0.18 — fix lock ค้างข้าม weekend) ===
     # FLIP_LOCK_MIN_MINUTES = MIN wait (เวลาเร็วสุดที่ unlock ได้)
     # FLIP_LOCK_MAX_MINUTES = MAX TTL — หลังจากนี้ unlock อัตโนมัติ (ไม่ต้องรอ retrace)
