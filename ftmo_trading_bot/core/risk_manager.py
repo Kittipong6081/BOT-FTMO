@@ -529,6 +529,16 @@ class RiskManager:
         Returns:
             Tuple[bool, str]: (อนุญาตหรือไม่, เหตุผล)
         """
+        # === ตรวจสอบที่ 0a: Monday Morning Delay (v8.0.19) ===
+        # ข้ามช่วงผันผวนหลัง weekend (Monday 00:00-03:59 EET)
+        # ข้อมูลจริง 11 พ.ค.: 3 ไม้แรก Monday เสีย $300 ก่อนตลาดสงบ
+        if getattr(self._config, "MONDAY_DELAY_ENABLED", False):
+            now = TimeManager.get_server_time()
+            delay_end_hour = getattr(self._config, "MONDAY_DELAY_END_HOUR_EET", 4)
+            if now.weekday() == 0 and now.hour < delay_end_hour:
+                return (False, f"🌅 Monday delay: รอ {delay_end_hour:02d}:00 EET "
+                        f"({delay_end_hour + 4:02d}:00 ICT) ก่อนเทรด")
+
         # === ตรวจสอบที่ 0: Daily Profit Cap (v8.0.17 — Option D) ===
         # ถ้า cap ถึงแล้ววันนี้ → block เปิด trade ใหม่จนกว่าวันใหม่
         if self._daily_profit_locked:

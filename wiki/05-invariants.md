@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-10 | Scope: red flags, version log, migration notes (latest: **v8.0.18** — Flip-lock TTL (กัน lock ค้างข้าม weekend))
+> Last Updated: 2026-05-11 | Scope: red flags, version log, migration notes (latest: **v8.0.19** — Monday Morning Delay (4 ชม.))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,26 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-11 — v8.0.19 Monday Morning Delay (4 ชม.)
+
+**Problem** — ข้อมูลจริงจาก Monday 11 พ.ค.: 3 ไม้แรก (เปิด 01:06, 03:50, 03:54 EET) เสีย $300+ ก่อนตลาดจะสงบลง. MFE เพียง 0-4 pips → ราคาวิ่งสวนทันทีหลัง entry (ลักษณะ post-weekend gap-fill + thin liquidity). บอท recover ตอน 06:00 EET เป็นต้นไป — แต่ก็เสียโอกาส +$200 ที่เซฟได้
+
+**Fix** — เพิ่ม `MONDAY_DELAY_ENABLED` + `MONDAY_DELAY_END_HOUR_EET` (default 4) ใน `FTMOConfig`. `can_open_trade` block trade เมื่อ:
+
+```python
+now.weekday() == 0 and now.hour < MONDAY_DELAY_END_HOUR_EET
+```
+
+→ Monday 00:00-03:59 EET (= 04:00-07:59 ICT) ห้ามเปิด trade ใหม่
+→ Tue-Fri ไม่กระทบ (weekday != 0)
+
+**Caveats**:
+- Friday Session Close + Sunday weekend gap ยังคงเดิม
+- Open positions ที่ค้างจาก Friday ยัง managed ปกติ (เฉพาะการเปิด trade ใหม่ที่ block)
+- ไม่ block Sunday 22:00-23:59 EET (weekday=6) — บอท practice ก็ไม่ค่อยเทรดช่วงนี้อยู่แล้ว
+
+**Invariant** — Time-based gates ใช้ broker EET time (`TimeManager.get_server_time()`) เสมอ — ไม่ใช่ UTC หรือ local time. มิเช่นนั้น DST shift จะทำให้ window ขยับ ±1 ชม.
 
 ### 2026-05-10 — v8.0.18 Flip-lock TTL (กัน lock ค้างข้าม weekend)
 
