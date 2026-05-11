@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-09 | Scope: red flags, version log, migration notes (latest: **v8.0.17** — Daily Profit Cap (Option D Hard Stop))
+> Last Updated: 2026-05-10 | Scope: red flags, version log, migration notes (latest: **v8.0.18** — Flip-lock TTL (กัน lock ค้างข้าม weekend))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,22 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-10 — v8.0.18 Flip-lock TTL (กัน lock ค้างข้าม weekend)
+
+**Problem** — Friday ปิด SELL XAUUSD @ 4746 → Monday ราคา 4673 (ลงต่อ ไม่ retrace) → flip-lock สำหรับ BUY ค้างถาวร เพราะ logic ต้องการ ask > 4746 จึง unlock แต่ราคาไม่ขึ้นถึง. บอท blocked จากการเปิด BUY XAUUSD ทั้งสุดสัปดาห์ + จันทร์.
+
+**Root cause** — `register_flip_lock` ตั้ง `min_unlock_time` (5 นาที) เป็น floor แต่ไม่มี max expiry. `is_flip_locked` ปลดล็อกแค่ตอน price retrace ผ่าน threshold เท่านั้น. ถ้าราคาไม่ retrace = lock ค้าง.
+
+**Fix**:
+1. เพิ่ม `FLIP_LOCK_MAX_MINUTES = 240` (4 ชม.) ใน `FTMOConfig`
+2. `register_flip_lock` เก็บ `max_expiry_time` ใน lock dict
+3. `is_flip_locked` เช็ค expiry ก่อน — ถ้าเลย expiry → ลบ lock + return unlocked
+4. `_load_state` ล้าง legacy locks ที่ไม่มี `max_expiry_time` (สำหรับ state เก่าก่อน v8.0.18)
+
+**Invariant** — locks ทุกแบบ (flip-lock, post-TP, cooldown) ต้องมี MAX TTL เพื่อกัน state ค้างเมื่อ assumption (เช่น "ราคาจะ retrace") ไม่เกิดขึ้น
+
+---
 
 ### 2026-05-09 — v8.0.17 Daily Profit Cap (Option D Hard Stop)
 

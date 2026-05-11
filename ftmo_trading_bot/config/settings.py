@@ -91,6 +91,14 @@ class FTMOConfig:
     # FTMO Challenge ต้องทำกำไร 10% ใน 30 วัน
     PROFIT_TARGET_PCT: float = 0.10  # 10%
 
+    # === Flip-Lock TTL (v8.0.18 — fix lock ค้างข้าม weekend) ===
+    # FLIP_LOCK_MIN_MINUTES = MIN wait (เวลาเร็วสุดที่ unlock ได้)
+    # FLIP_LOCK_MAX_MINUTES = MAX TTL — หลังจากนี้ unlock อัตโนมัติ (ไม่ต้องรอ retrace)
+    # กัน case Friday ปิด SELL XAUUSD @ 4746 → Monday ราคา 4673 (ลงต่อ ไม่ retrace)
+    # → ก่อน fix: lock ค้างถาวร; หลัง fix: TTL 4 ชม. ล้าง lock ทิ้งเอง
+    FLIP_LOCK_MIN_MINUTES: int = 5      # เวลาขั้นต่ำก่อน unlock ได้
+    FLIP_LOCK_MAX_MINUTES: int = 240    # TTL (4 ชม.) — auto-expire ไม่ว่าราคาจะ retrace หรือไม่
+
     # === Daily Profit Cap (v8.0.17 — Option D Hard Stop) ===
     # หยุดเทรดเมื่อกำไรวันนี้ ถึง DAILY_PROFIT_CAP_PCT × INITIAL balance.
     # นับจาก initial balance (anchor ของ challenge) — ไม่ใช่ daily start

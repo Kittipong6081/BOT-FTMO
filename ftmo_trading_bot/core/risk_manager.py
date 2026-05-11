@@ -932,6 +932,26 @@ class RiskManager:
             # --- v6: Directional Flip-Lock (fallback สำหรับไฟล์เก่า) ---
             self._flip_lock = data.get("flip_lock", {}) or {}
 
+            # v8.0.18: ล้าง legacy flip_lock ที่ไม่มี max_expiry_time (สร้างก่อน fix)
+            # → กัน lock ค้างจาก weekend ก่อน TTL feature deploy
+            now = TimeManager.get_server_time()
+            stale_symbols = []
+            for sym, lock in self._flip_lock.items():
+                if "max_expiry_time" not in lock:
+                    stale_symbols.append(sym)
+                else:
+                    try:
+                        expiry = datetime.fromisoformat(lock["max_expiry_time"])
+                        if expiry.tzinfo is None:
+                            expiry = expiry.replace(tzinfo=now.tzinfo)
+                        if now >= expiry:
+                            stale_symbols.append(sym)
+                    except Exception:
+                        stale_symbols.append(sym)
+            for sym in stale_symbols:
+                print(f"🧹 [Risk Manager] ล้าง stale flip-lock: {sym} (legacy/expired)")
+                self._flip_lock.pop(sym, None)
+
             # --- v7 (v8.0.17): Daily Profit Cap state ---
             self._daily_profit_locked = bool(data.get("daily_profit_locked", False))
 
@@ -1346,8 +1366,11 @@ class RiskManager:
             threshold = close_price + retrace_mult * atr_val
 
         min_unlock_min = getattr(self._config, "FLIP_LOCK_MIN_MINUTES", 5)
+        # v8.0.18: MAX TTL — กัน lock ค้างถาวรถ้าราคาไม่ retrace (เช่นข้าม weekend)
+        max_ttl_min = getattr(self._config, "FLIP_LOCK_MAX_MINUTES", 240)  # 4 ชม.
         now = TimeManager.get_server_time()
         min_unlock_time = (now + timedelta(minutes=min_unlock_min)).isoformat()
+        max_expiry_time = (now + timedelta(minutes=max_ttl_min)).isoformat()
 
         self._flip_lock[symbol] = {
             "closed_direction": closed_direction,
@@ -1355,6 +1378,7 @@ class RiskManager:
             "atr_at_close": float(atr_val),
             "unlock_threshold": float(threshold),
             "min_unlock_time": min_unlock_time,
+            "max_expiry_time": max_expiry_time,
         }
         print(f"🔄 [Risk Manager] Flip-lock set: {symbol} {closed_direction} closed @ {close_price} "
               f"→ opposite dir lock until price retraces {retrace_mult}×ATR "
@@ -1395,6 +1419,23 @@ class RiskManager:
         now = TimeManager.get_server_time()
         if min_unlock.tzinfo is None:
             min_unlock = min_unlock.replace(tzinfo=now.tzinfo)
+
+        # === v8.0.18: Max TTL expiry (กัน lock ค้างถาวรข้าม weekend) ===
+        # ถ้าเลย max_expiry_time แล้ว → ล้าง lock ทิ้ง ไม่ว่าราคาจะ retrace หรือไม่
+        max_expiry_iso = lock.get("max_expiry_time", "")
+        if max_expiry_iso:
+            try:
+                max_expiry = datetime.fromisoformat(max_expiry_iso)
+                if max_expiry.tzinfo is None:
+                    max_expiry = max_expiry.replace(tzinfo=now.tzinfo)
+                if now >= max_expiry:
+                    print(f"⏰ [Risk Manager] Flip-lock {symbol} expired (TTL หมด) "
+                          f"— clear lock อัตโนมัติ")
+                    self._flip_lock.pop(symbol, None)
+                    return (False, "")
+            except Exception:
+                pass  # broken expiry → ignore, fallback to other checks
+
         if now < min_unlock:
             remaining_s = int((min_unlock - now).total_seconds())
             return (True, f"Flip-lock {symbol}: เพิ่งปิด {closed_dir} — รอ {remaining_s}s")
