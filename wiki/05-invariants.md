@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-12 | Scope: red flags, version log, migration notes (latest: **v8.0.21** — Pre-news block ใน can_open_trade (กัน open-then-close)
+> Last Updated: 2026-05-12 | Scope: red flags, version log, migration notes (latest: **v8.0.22** — Daily Loss Cap -3% (Option D mirror, symmetric protection))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,49 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-12 — v8.0.22 Daily Loss Cap -3% (Option D mirror, symmetric protection)
+
+**Context** — Production deploy ระหว่าง user สอบ The5ers จริง. วันนี้ขาดทุน -$172 และลึกสุด -$345 (3.45%) — ใกล้ FTMO Daily DD breach (-4% = -$400) มาก. ระบบเดิม asymmetric:
+
+- ✅ Daily Profit Cap +1.6% (v8.0.17) — lock กำไร
+- ❌ ไม่มี Daily Loss Cap — ปล่อยขาดทุนถึง FTMO limit -4%
+
+**Fix** — เพิ่ม Daily Loss Cap **-3%** ($300/$10k, $3000/$100k) เป็น mirror ของ profit cap:
+
+| Direction | Cap | Action |
+|---|---|---|
+| 🟢 Profit | +1.6% (v8.0.17) | Lock + close all + block new |
+| 🔴 **Loss** | **-3.0% (v8.0.22)** | **Lock + close all + block new** |
+
+**Implementation** (mirror v8.0.17 pattern):
+
+- `config/settings.py` — `DAILY_LOSS_CAP_ENABLED` + `DAILY_LOSS_CAP_PCT = 0.030`
+- `core/risk_manager.py` — `_daily_loss_locked` state, `check_daily_loss_cap()`, `is_daily_loss_locked()`, gate ใน `can_open_trade`, reset ใน `_on_new_day`, persist ใน save/load state
+- `main.py` — เรียก `check_daily_loss_cap` คู่ขนานกับ profit cap
+
+**Buffer to FTMO 4% Daily DD** = 1% = $100 — กัน slippage/spread แต่ไม่ tight เกินไป
+
+**Reset** — broker EET midnight ผ่าน `_on_new_day` (เดียวกันกับ profit cap)
+
+**Why -3.0% (ไม่ใช่ -2.5% หรือ -3.5%)**:
+
+- 2.5% = อาจหยุดเร็วเกิน (วันนี้ peak DD 3.45% → cap 2.5% หยุดที่ 1%)
+- **3.0% = สมดุล** — หยุดก่อน FTMO breach 1%, ให้โอกาส recovery 1 trade
+- 3.5% = buffer แค่ 0.5% — slippage อาจชน
+
+**Smoke test verified**:
+
+```text
+A) Total P/L -$300 (exact) → trigger=True ✓
+B) Total P/L -$299 (just under) → trigger=False ✓
+C) Total P/L -$345 (today peak) → trigger=True ✓
+D) Total P/L +$100 (profit) → trigger=False ✓
+```
+
+**Rollback plan** — set `DAILY_LOSS_CAP_ENABLED=False` ใน config ปิด feature ทันที (ไม่ต้อง revert code)
+
+**Invariant** — ทุก daily cap (profit + loss) ต้อง anchor ที่ `_initial_balance` (challenge anchor) ไม่ใช่ `_daily_start_equity` — เพราะ cap ต้องคงที่ตลอด challenge ไม่ scale ตาม daily growth/drawdown
 
 ### 2026-05-12 — v8.0.21 Pre-news block ใน can_open_trade (กัน open-then-close)
 

@@ -117,6 +117,16 @@ class FTMOConfig:
     # v8.0.17: 1.6% (เพิ่มจาก 1.5% เป็น 0.1pp buffer สำหรับ slippage + spread + commission)
     DAILY_PROFIT_CAP_ENABLED: bool = True
     DAILY_PROFIT_CAP_PCT: float = 0.016     # 1.6% ของ initial balance
+
+    # === Daily Loss Cap (v8.0.22 — Option D mirror) ===
+    # ห้ามเทรดเมื่อ daily P/L ≤ -DAILY_LOSS_CAP_PCT × INITIAL balance.
+    # Symmetric กับ profit cap → $10k port: -$300 ทุกวัน, $100k port: -$3000
+    # Trigger ใช้ closed + floating (เหมือน profit cap)
+    # Reset = broker EET midnight ผ่าน _on_new_day
+    # Action = ปิดทุก position + block new trades จนกว่าวันใหม่
+    # Buffer to FTMO 4% Daily DD: 1% = $100 (กัน slippage + spread)
+    DAILY_LOSS_CAP_ENABLED: bool = True
+    DAILY_LOSS_CAP_PCT: float = 0.030       # 3% ของ initial balance (= $300/$10k)
     
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน

@@ -84,6 +84,10 @@ class RiskManager:
         # position + block new trades จนกว่าวันใหม่. Anchor ใช้ initial_balance
         # ของ challenge (ไม่ใช่ daily start) → cap คงที่ตลอด challenge.
         self._daily_profit_locked: bool = False
+        # v8.0.22: Daily Loss Cap (Option D mirror) — symmetric กับ profit cap
+        # ครบ DAILY_LOSS_CAP_PCT (3%) → close all + block new trades จนกว่าวันใหม่
+        # Buffer to FTMO 4% Daily DD: 1% = $100 (กัน slippage + spread)
+        self._daily_loss_locked: bool = False
 
         # === Cooldown / Anti-Revenge-Trading State (v2) ===
         # เวลาที่โดน SL ล่าสุดของแต่ละ symbol (ISO string)
@@ -245,6 +249,7 @@ class RiskManager:
         self._daily_trades_count = 0
         self._last_give_back_alert_pct = 0.0   # v8.0.16: clean slate วันใหม่
         self._daily_profit_locked = False      # v8.0.17: reset daily profit cap
+        self._daily_loss_locked = False        # v8.0.22: reset daily loss cap
 
         # Reset cooldown / revenge-trading counters ข้ามวัน (รวม weekend rollover)
         # Reason: ขาดทุน 3 ไม้วันศุกร์ไม่ควรทำให้เช้าวันจันทร์ halt ทันที
@@ -501,6 +506,54 @@ class RiskManager:
         """ตอบว่าวันนี้ล็อกแล้วหรือไม่ (จาก daily profit cap)"""
         return self._daily_profit_locked
 
+    # =========================================================================
+    # 🛑 Daily Loss Cap (v8.0.22 — Option D mirror)
+    # =========================================================================
+
+    def check_daily_loss_cap(self, current_equity: float, floating_pnl: float) -> bool:
+        """
+        เช็คว่าขาดทุนวันนี้ (closed + floating) ถึง loss cap แล้วหรือยัง.
+        Mirror ของ check_daily_profit_cap แต่ trigger ฝั่งลบ.
+
+        ถ้าเพิ่งถึง: ตั้ง _daily_loss_locked = True + คืน True เพื่อให้ caller
+        ปิด open positions ทั้งหมด.
+
+        Args:
+            current_equity: equity ปัจจุบัน (จาก MT5)
+            floating_pnl: P/L ลอย (sum ของ open positions)
+
+        Returns:
+            True = เพิ่ง trigger รอบนี้ (close all + block new)
+            False = ไม่ถึง cap หรือ locked อยู่แล้ว (no-op)
+        """
+        if not self._config.DAILY_LOSS_CAP_ENABLED:
+            return False
+        if self._daily_loss_locked:
+            return False  # locked แล้ว ไม่ต้อง trigger ซ้ำ
+
+        # cap_amount = positive value (e.g., $300 บน $10k account)
+        cap_amount = self._initial_balance * self._config.DAILY_LOSS_CAP_PCT
+        # daily P/L = closed + floating (รวมแล้วใน current_equity - daily_start_equity)
+        # negative เมื่อขาดทุน
+        total_pnl_today = current_equity - self._daily_start_equity
+
+        # Trigger เมื่อขาดทุนลึกถึง -cap_amount (e.g., -$300)
+        if total_pnl_today <= -cap_amount:
+            self._daily_loss_locked = True
+            self._save_state()
+            closed_today = total_pnl_today - floating_pnl
+            print(f"🛑 [Risk Manager] Daily LOSS cap REACHED: "
+                  f"${total_pnl_today:+.2f} = "
+                  f"closed ${closed_today:+.2f} + floating ${floating_pnl:+.2f} "
+                  f"(cap -${cap_amount:.2f} = {self._config.DAILY_LOSS_CAP_PCT:.1%} ของ "
+                  f"initial ${self._initial_balance:,.2f}) — ปิดทุก position + หยุดเทรดวันนี้")
+            return True
+        return False
+
+    def is_daily_loss_locked(self) -> bool:
+        """ตอบว่าวันนี้ล็อกแล้วจาก daily loss cap หรือไม่"""
+        return self._daily_loss_locked
+
     def can_open_trade(
         self,
         symbol: str,
@@ -544,6 +597,12 @@ class RiskManager:
         if self._daily_profit_locked:
             cap_pct = self._config.DAILY_PROFIT_CAP_PCT
             return (False, f"🎯 Daily profit cap ถึง {cap_pct:.1%} แล้ววันนี้ — รอวันใหม่")
+
+        # === ตรวจสอบที่ 0b: Daily Loss Cap (v8.0.22 — Option D mirror) ===
+        # ถ้า loss cap ถึงแล้ววันนี้ → block เปิด trade ใหม่จนกว่าวันใหม่
+        if self._daily_loss_locked:
+            cap_pct = self._config.DAILY_LOSS_CAP_PCT
+            return (False, f"🛑 Daily loss cap ถึง -{cap_pct:.1%} แล้ววันนี้ — รอวันใหม่")
 
         # === ตรวจสอบที่ 0c: Pre-News Block (v8.0.21) ===
         # ก่อน v8.0.21: บอทเปิด trade ใกล้ข่าว → loop ถัดไป TradeManager.check_news_close
@@ -903,6 +962,8 @@ class RiskManager:
             "flip_lock": self._flip_lock,
             # --- v7 (v8.0.17): Daily Profit Cap (Option D) ---
             "daily_profit_locked": self._daily_profit_locked,
+            # --- v7 (v8.0.22): Daily Loss Cap (Option D mirror) ---
+            "daily_loss_locked": self._daily_loss_locked,
             "schema_version": 7,
             "last_updated": datetime.now().isoformat(),
         }
@@ -985,6 +1046,9 @@ class RiskManager:
 
             # --- v7 (v8.0.17): Daily Profit Cap state ---
             self._daily_profit_locked = bool(data.get("daily_profit_locked", False))
+
+            # --- v7 (v8.0.22): Daily Loss Cap state ---
+            self._daily_loss_locked = bool(data.get("daily_loss_locked", False))
 
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))
