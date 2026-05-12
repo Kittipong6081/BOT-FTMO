@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-11 | Scope: red flags, version log, migration notes (latest: **v8.0.19** — Monday Morning Delay (4 ชม.))
+> Last Updated: 2026-05-12 | Scope: red flags, version log, migration notes (latest: **v8.0.20** — Auto-detect filling mode (multi-broker support))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,32 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-12 — v8.0.20 Auto-detect filling mode (multi-broker support)
+
+**Problem** — User เริ่ม The5ers challenge → MT5 order_send รวบรวม error `retcode=10030 Unsupported filling mode`. บอท hardcode `ORDER_FILLING_IOC` แต่ The5ers broker รองรับเฉพาะ FOK (ต่างจาก FTMO ที่ใช้ IOC ได้). ทุก trade ใหม่ reject = บอท disabled
+
+**Fix** — เพิ่ม `MT5Connector._get_filling_type(symbol)` ใช้ `symbol_info.filling_mode` bitmask:
+
+```python
+fmask = symbol_info.filling_mode  # bit 0=FOK, bit 1=IOC
+if fmask & 2: return ORDER_FILLING_IOC   # preferred
+if fmask & 1: return ORDER_FILLING_FOK
+return ORDER_FILLING_RETURN              # fallback (rare)
+```
+
+ใช้ที่ 3 จุด:
+- `send_market_order` (main entry)
+- `close_position` (single close)
+- `TradeManager._partial_close_position` (50% partial)
+
+**Compatibility**:
+- FTMO → IOC (เดิม)
+- The5ers → FOK (auto-detected ✓)
+- FundedNext, MyForexFunds, ... → auto-detect ✓
+- Personal broker (XM, IC Markets, ...) → ปกติรองรับทั้ง FOK + IOC
+
+**Invariant** — order params (filling mode, deviation, magic) ต้อง symbol-aware ไม่ใช่ hardcoded — เพราะ broker ต่างกันรองรับต่างกัน
 
 ### 2026-05-11 — v8.0.19 Monday Morning Delay (4 ชม.)
 

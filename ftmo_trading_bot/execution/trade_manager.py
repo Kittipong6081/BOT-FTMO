@@ -475,6 +475,8 @@ class TradeManager:
             close_type = mt5.ORDER_TYPE_BUY
             price = price_info["ask"]
 
+        # v8.0.20: auto-detect filling mode ผ่าน connector
+        filling_type = self._connector._get_filling_type(symbol)
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -486,7 +488,7 @@ class TradeManager:
             "magic": 123456,
             "comment": "FTMO_PARTIAL_TP",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_type,
         }
 
         result = mt5.order_send(request)

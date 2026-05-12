@@ -544,6 +544,35 @@ class MT5Connector:
             return 100          # Indices: volatile, need wider tolerance
         return 30               # FX majors: ~3 pips at 5-digit broker
 
+    def _get_filling_type(self, symbol: str):
+        """
+        v8.0.20: Auto-detect filling mode ที่ broker symbol รองรับ.
+
+        Broker ต่างกัน (FTMO, The5ers, FundedNext, ...) รองรับ filling mode ต่างกัน.
+        ก่อน v8.0.20 hardcode IOC → broker ที่ไม่รองรับ จะ reject ด้วย retcode=10030.
+
+        บิตของ filling_mode:
+        - bit 0 (=1) = SYMBOL_FILLING_FOK (Fill or Kill)
+        - bit 1 (=2) = SYMBOL_FILLING_IOC (Immediate or Cancel)
+
+        Priority: IOC > FOK > Return (return = pending only, market = FOK fallback)
+        """
+        if not MT5_AVAILABLE:
+            return mt5.ORDER_FILLING_IOC
+
+        sym_info = mt5.symbol_info(symbol)
+        if sym_info is None:
+            return mt5.ORDER_FILLING_FOK   # safe default ส่วนใหญ่ broker รองรับ
+
+        fmask = getattr(sym_info, "filling_mode", 0)
+        if fmask & 2:    # IOC supported
+            return mt5.ORDER_FILLING_IOC
+        if fmask & 1:    # FOK supported
+            return mt5.ORDER_FILLING_FOK
+        # Fallback (rare) — บางโบรกเกอร์ไม่มี flag → ใช้ Return + log warning
+        print(f"⚠️ [MT5] {symbol}: filling_mode={fmask} ไม่ตรง FOK/IOC — ใช้ RETURN")
+        return mt5.ORDER_FILLING_RETURN
+
     def send_market_order(
         self,
         symbol: str,
@@ -603,6 +632,8 @@ class MT5Connector:
 
         # สร้างโครงสร้างคำสั่ง (deviation ปรับตาม symbol)
         deviation = self._get_deviation_points(symbol)
+        # v8.0.20: auto-detect filling mode (FTMO/The5ers/etc. ต่างกัน)
+        filling_type = self._get_filling_type(symbol)
         request = {
             "action": mt5.TRADE_ACTION_DEAL,     # Market Order
             "symbol": symbol,
@@ -615,7 +646,7 @@ class MT5Connector:
             "magic": magic,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_type,
         }
 
         print(f"📤 [MT5] กำลังส่งคำสั่ง {order_type} {symbol} (deviation={deviation})...")
@@ -700,6 +731,8 @@ class MT5Connector:
             
         close_price = price_info["bid"] if pos.type == 0 else price_info["ask"]
 
+        # v8.0.20: auto-detect filling mode (close order ก็ต้องตรง broker)
+        filling_type = self._get_filling_type(pos.symbol)
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": pos.symbol,
@@ -711,7 +744,7 @@ class MT5Connector:
             "magic": pos.magic,
             "comment": "FTMO_BOT_CLOSE",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_type,
         }
 
         result = mt5.order_send(request)
