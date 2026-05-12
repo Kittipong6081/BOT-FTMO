@@ -1,48 +1,108 @@
 {
   "state": "ACTIVE",
   "initial_balance": 10000.0,
-  "highest_balance": 100000.0,
-  "daily_start_equity": 100000.0,
-  "daily_start_balance": 100000.0,
-  "peak_daily_equity": 100000.0,
-  "current_day": "2026-05-07",
-  "daily_closed_pnl": 0.0,
-  "daily_trades_count": 0,
+  "highest_balance": 10095.06,
+  "daily_start_equity": 10000.0,
+  "daily_start_balance": 10000.0,
+  "peak_daily_equity": 10083.12,
+  "current_day": "2026-05-12",
+  "daily_closed_pnl": -138.8950607826379,
+  "daily_trades_count": 19,
   "last_loss_time_per_symbol": {
-    "EURUSD": "2026-04-27T20:19:35.005813+03:00",
-    "USDCAD": "2026-04-27T21:55:06.605166+03:00"
+    "USDCAD": "2026-05-12T14:02:38.207702+03:00",
+    "AUDUSD": "2026-05-12T09:20:57.972224+03:00",
+    "USDCHF": "2026-05-12T15:14:24.667473+03:00"
   },
-  "consecutive_losses": 0,
+  "consecutive_losses": 1,
   "halt_until": null,
-  "daily_pnl_history": {
-    "2026-04-27": 98.62000000000002
-  },
-  "mt5_login": 1513216845,
-  "challenge_start_date": "2026-04-26",
-  "last_tp_per_symbol_dir": {},
-  "flip_lock": {
-    "GBPUSD": {
-      "closed_direction": "BUY",
-      "close_price": 1.35472,
-      "atr_at_close": 0.0,
-      "unlock_threshold": 1.35472,
-      "min_unlock_time": "2026-04-27T18:27:06.886046+03:00"
+  "daily_pnl_history": {},
+  "mt5_login": 26337318,
+  "challenge_start_date": "2026-05-12",
+  "last_tp_per_symbol_dir": {
+    "XAUUSD|SELL": {
+      "tp_price": 4756.78,
+      "tp_time": "2026-05-12T03:23:37.366087+03:00"
     },
-    "EURUSD": {
+    "EURJPY|SELL": {
+      "tp_price": 185.269,
+      "tp_time": "2026-05-12T08:55:54.095198+03:00"
+    },
+    "USDJPY|BUY": {
+      "tp_price": 157.444,
+      "tp_time": "2026-05-12T09:21:14.669179+03:00"
+    },
+    "NZDUSD|BUY": {
+      "tp_price": 0.59455,
+      "tp_time": "2026-05-12T14:04:41.952041+03:00"
+    },
+    "XAUUSD|BUY": {
+      "tp_price": 4701.27,
+      "tp_time": "2026-05-12T14:30:21.413565+03:00"
+    },
+    "EURJPY|BUY": {
+      "tp_price": 184.987,
+      "tp_time": "2026-05-12T15:05:40.286372+03:00"
+    }
+  },
+  "flip_lock": {
+    "USDJPY": {
       "closed_direction": "BUY",
-      "close_price": 1.17208,
+      "close_price": 157.444,
       "atr_at_close": 0.0,
-      "unlock_threshold": 1.17208,
-      "min_unlock_time": "2026-04-27T20:24:35.006248+03:00"
+      "unlock_threshold": 157.444,
+      "min_unlock_time": "2026-05-12T09:26:14.669554+03:00",
+      "max_expiry_time": "2026-05-12T13:21:14.669554+03:00"
+    },
+    "AUDUSD": {
+      "closed_direction": "BUY",
+      "close_price": 0.72215,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 0.72215,
+      "min_unlock_time": "2026-05-12T09:25:57.972345+03:00",
+      "max_expiry_time": "2026-05-12T13:20:57.972345+03:00"
+    },
+    "XAUUSD": {
+      "closed_direction": "BUY",
+      "close_price": 4701.27,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 4701.27,
+      "min_unlock_time": "2026-05-12T14:35:21.414020+03:00",
+      "max_expiry_time": "2026-05-12T18:30:21.414020+03:00"
+    },
+    "USDCHF": {
+      "closed_direction": "SELL",
+      "close_price": 0.78122,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 0.78122,
+      "min_unlock_time": "2026-05-12T15:19:24.667535+03:00",
+      "max_expiry_time": "2026-05-12T19:14:24.667535+03:00"
     },
     "USDCAD": {
       "closed_direction": "SELL",
-      "close_price": 1.36275,
+      "close_price": 1.37122,
       "atr_at_close": 0.0,
-      "unlock_threshold": 1.36275,
-      "min_unlock_time": "2026-04-27T22:00:06.605393+03:00"
+      "unlock_threshold": 1.37122,
+      "min_unlock_time": "2026-05-12T14:07:38.207911+03:00",
+      "max_expiry_time": "2026-05-12T18:02:38.207911+03:00"
+    },
+    "NZDUSD": {
+      "closed_direction": "BUY",
+      "close_price": 0.59455,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 0.59455,
+      "min_unlock_time": "2026-05-12T14:09:41.952560+03:00",
+      "max_expiry_time": "2026-05-12T18:04:41.952560+03:00"
+    },
+    "EURJPY": {
+      "closed_direction": "BUY",
+      "close_price": 184.987,
+      "atr_at_close": 0.0,
+      "unlock_threshold": 184.987,
+      "min_unlock_time": "2026-05-12T15:10:40.286624+03:00",
+      "max_expiry_time": "2026-05-12T19:05:40.286624+03:00"
     }
   },
-  "schema_version": 6,
-  "last_updated": "2026-05-07T12:41:39.399177"
+  "daily_profit_locked": false,
+  "schema_version": 7,
+  "last_updated": "2026-05-12T19:14:26.801537"
 }
