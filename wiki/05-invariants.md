@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-12 | Scope: red flags, version log, migration notes (latest: **v8.0.20** — Auto-detect filling mode (multi-broker support))
+> Last Updated: 2026-05-12 | Scope: red flags, version log, migration notes (latest: **v8.0.21** — Pre-news block ใน can_open_trade (กัน open-then-close)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,41 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-12 — v8.0.21 Pre-news block ใน can_open_trade (กัน open-then-close)
+
+**Problem (จาก Excel จริงวันนี้)** — บอทเปิดออเดอร์ก่อนข่าว 15:30 EET แล้วโดน TradeManager.check_news_close ปิดทันทีภายใน 4-8 วินาที:
+
+| Ticket | Open → Close | นาน | P/L |
+|---|---|:---:|:---:|
+| T16 USDCHF | 15:12:04 → 15:12:12 | 8s | -$3.23 |
+| T17 EURUSD | 15:12:08 → 15:12:14 | 6s | -$1.94 |
+| T18 USDCHF | 15:14:17 → 15:14:24 | 7s | -$5.65 |
+| T19 EURUSD | 15:14:20 → 15:14:26 | 6s | -$0.97 |
+| T20 EURUSD | 15:21:31 → 15:21:35 | 4s | -$0.97 |
+| T21 EURUSD | 15:22:37 → 15:22:41 | 4s | +$0.97 |
+| **รวม** | | | **-$11.79** |
+
+→ ขาดทุน "ตอด" จาก spread ทุกครั้งที่บอทพยายามเปิด
+
+**Root cause** — `is_near_high_impact_news` ถูกใช้แค่ใน `TradeManager.check_news_close` (ปิด open positions). ไม่มี gate ที่ `can_open_trade` → trade ใหม่ผ่าน RM → ถูก close ทันทีในรอบ loop ถัดไป
+
+**Fix** — เพิ่ม news gate เป็น check แรกๆ ใน `RiskManager.can_open_trade`:
+
+```python
+is_news, news_reason = is_near_high_impact_news(
+    symbol, datetime.now(timezone.utc),
+    window_minutes_before=30, window_minutes_after=15,
+)
+if is_news:
+    return (False, f"📰 {news_reason}")
+```
+
+**Invariant** — news ป้องกัน 2 ทาง:
+1. `RiskManager.can_open_trade` block trade **ใหม่** (v8.0.21)
+2. `TradeManager.check_news_close` ปิด **open** positions (เดิม)
+
+Window symmetry สำคัญ — ทั้ง 2 ใช้ `no_trade_before_news_minutes=30` เหมือนกัน
 
 ### 2026-05-12 — v8.0.20 Auto-detect filling mode (multi-broker support)
 

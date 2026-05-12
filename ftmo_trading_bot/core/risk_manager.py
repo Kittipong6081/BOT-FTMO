@@ -545,6 +545,27 @@ class RiskManager:
             cap_pct = self._config.DAILY_PROFIT_CAP_PCT
             return (False, f"🎯 Daily profit cap ถึง {cap_pct:.1%} แล้ววันนี้ — รอวันใหม่")
 
+        # === ตรวจสอบที่ 0c: Pre-News Block (v8.0.21) ===
+        # ก่อน v8.0.21: บอทเปิด trade ใกล้ข่าว → loop ถัดไป TradeManager.check_news_close
+        # ปิดทันที (ภายใน 5-10 วินาที) → ขาดทุน spread $3-5/ครั้ง (ตอด)
+        # หลัก: news check ต้องอยู่ใน gate ก่อนเปิด ไม่ใช่หลังเปิด
+        try:
+            from config.news_events import is_near_high_impact_news
+            from datetime import datetime, timezone
+            window_before = getattr(bot_config.sessions, "no_trade_before_news_minutes", 30)
+            window_after = getattr(bot_config.sessions, "no_trade_after_news_minutes", 15)
+            is_news, news_reason = is_near_high_impact_news(
+                symbol,
+                datetime.now(timezone.utc),
+                window_minutes_before=window_before,
+                window_minutes_after=window_after,
+            )
+            if is_news:
+                return (False, f"📰 {news_reason}")
+        except Exception as e:
+            # ไม่ block ถ้า news lookup error (fail-open สำหรับ feature ใหม่)
+            pass
+
         # === ตรวจสอบที่ 1: สถานะ Bot ===
         if self._state != BotState.ACTIVE:
             return (False, f"❌ Bot ไม่พร้อมเทรด: สถานะ={self._state.value}")
