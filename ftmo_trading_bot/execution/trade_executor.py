@@ -862,7 +862,7 @@ class TradeExecutor:
                 volume=volume,
                 sl=sl,
                 tp=tp,
-                comment=f"FTMO_SMC_{order_type}",
+                comment="",  # v8.0.23: empty — bot identified by magic number
                 magic=self.MAGIC_NUMBER,
             )
 

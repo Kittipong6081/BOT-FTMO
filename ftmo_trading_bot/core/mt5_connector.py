@@ -580,7 +580,7 @@ class MT5Connector:
         volume: float,
         sl: float,
         tp: float,
-        comment: str = "FTMO_BOT",
+        comment: str = "",  # v8.0.23: empty default — bot identified by magic
         magic: int = 123456
     ) -> Optional[Dict]:
         """
@@ -742,7 +742,7 @@ class MT5Connector:
             "price": close_price,
             "deviation": 20,
             "magic": pos.magic,
-            "comment": "FTMO_BOT_CLOSE",
+            "comment": "",  # v8.0.23: empty — bot identified by magic
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,
         }

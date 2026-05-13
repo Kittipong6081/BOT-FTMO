@@ -486,7 +486,7 @@ class TradeManager:
             "price": price,
             "deviation": 20,
             "magic": 123456,
-            "comment": "FTMO_PARTIAL_TP",
+            "comment": "",  # v8.0.23: empty — bot identified by magic
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,
         }
