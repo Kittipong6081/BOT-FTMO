@@ -592,15 +592,17 @@ class RiskManager:
                 return (False, f"🌅 Monday delay: รอ {delay_end_hour:02d}:00 EET "
                         f"({delay_end_hour + 4:02d}:00 ICT) ก่อนเทรด")
 
-        # === ตรวจสอบที่ 0a.2: Weekday Asian Early Delay (v8.0.24) ===
-        # Tue-Fri 00:00-06:59 EET = ขาดทุน Asian early หนัก (non-XAU)
+        # === ตรวจสอบที่ 0a.2: Weekday Asian Early Delay (v8.0.24, extended v8.0.25) ===
+        # Mon-Fri 00:00-06:59 EET = ขาดทุน Asian early หนัก (non-XAU)
         # ยกเว้น XAUUSD (Gold เก่ง Asian early 80% WR)
+        # v8.0.25: ขยายให้รวม Monday — Mon non-XAU เริ่ม 07 EET (= 11 ICT) เหมือน Tue-Fri
+        # Mon XAU: ยัง block 00-04 EET โดย v8.0.19 Monday delay = เริ่ม 04 EET (= 08 ICT)
         if getattr(self._config, "WEEKDAY_DELAY_ENABLED", False):
             now = TimeManager.get_server_time()
             wd_end_hour = getattr(self._config, "WEEKDAY_DELAY_END_HOUR_EET", 7)
             except_syms = getattr(self._config, "WEEKDAY_DELAY_EXCEPT_SYMBOLS", ())
-            # Tue=1, Wed=2, Thu=3, Fri=4
-            if (now.weekday() in (1, 2, 3, 4)
+            # Mon=0, Tue=1, Wed=2, Thu=3, Fri=4
+            if (now.weekday() in (0, 1, 2, 3, 4)
                     and now.hour < wd_end_hour
                     and symbol.upper() not in except_syms):
                 return (False, f"🌅 Weekday delay: {symbol} ห้ามเทรด "

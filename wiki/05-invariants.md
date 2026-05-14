@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-13 | Scope: red flags, version log, migration notes (latest: **v8.0.24** — Weekday Asian Early Delay (Tue-Fri block, XAU exception))
+> Last Updated: 2026-05-13 | Scope: red flags, version log, migration notes (latest: **v8.0.25** — Weekday Delay extended to Mon-Fri (Mon non-XAU now starts 11 ICT))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,26 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-13 — v8.0.25 Weekday Delay extended to Mon (Mon non-XAU now starts 11 ICT)
+
+**Request** — User asked to extend the Tue-Fri 11-ICT-start rule to Monday too, while keeping the existing Mon XAU 08-ICT-start (v8.0.19) intact.
+
+**Change** — In `RiskManager.can_open_trade` v8.0.24 block, swap weekday filter from `(1, 2, 3, 4)` to `(0, 1, 2, 3, 4)` so Monday non-XAU goes through the Asian-early gate as well. v8.0.19 Monday delay (4-hour post-weekend block, all symbols) is unchanged.
+
+**Effective schedule**:
+
+| Day | XAU starts | Non-XAU starts | Layer |
+|---|:---:|:---:|---|
+| Mon | 08:00 ICT (04 EET) | **11:00 ICT (07 EET)** | v8.0.19 + v8.0.25 |
+| Tue-Fri | anytime | 11:00 ICT (07 EET) | v8.0.24 |
+| Sat-Sun | market closed | market closed | — |
+
+**Why** — Mon Asian early 04-07 EET (= 08-11 ICT) was unprotected for non-XAU after v8.0.19's 4-hour buffer ended. v8.0.25 patches that gap with a symbol-aware filter so Mon non-XAU follows the same 11-ICT-start rule that data supports for Tue-Fri. Mon XAU keeps its 08-ICT-start because Gold has shown an Asian-early edge across all weekdays.
+
+**Smoke test** — 11 scenarios passed (Mon/Tue/Wed/Thu/Fri × XAU/non-XAU at boundary hours, plus weekend N/A).
+
+**Invariant** — symbol-aware time gates use `symbol.upper() not in EXCEPT_SYMBOLS` so per-symbol exceptions stay consistent. Adding a symbol to `WEEKDAY_DELAY_EXCEPT_SYMBOLS` opts it out of the entire Mon-Fri block; removing it puts it back under the 11-ICT-start rule.
 
 ### 2026-05-13 — v8.0.24 Weekday Asian Early Delay (Tue-Fri block, XAU exception)
 
