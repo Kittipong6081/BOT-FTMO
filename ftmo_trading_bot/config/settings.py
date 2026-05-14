@@ -86,6 +86,15 @@ class FTMOConfig:
     
     # === จำนวน Position สูงสุดที่เปิดได้พร้อมกัน ===
     MAX_OPEN_POSITIONS: int = 3
+
+    # === Min Seconds Between Opens (v8.0.26 — anti bulk-trading) ===
+    # The5ers ห้าม "bulk trading" = เปิดหลายไม้พร้อมกันในวินาทีเดียว
+    # → flag ว่าเป็นบอท (rationale: "not behind the strategy")
+    # บอทเราเปิดทีละไม้ทุก 5s scan อยู่แล้ว แต่ถ้า 2 symbol เข้า signal
+    # พร้อมกัน อาจเปิดห่างกัน <1s ได้ (เคยเจอ EURUSD pre-news 12 พ.ค. 2 ไม้ห่าง 0.01s)
+    # Gate นี้บังคับช่องว่างขั้นต่ำระหว่างการเปิด — กัน flag จาก The5ers
+    MIN_SECONDS_BETWEEN_OPENS_ENABLED: bool = True
+    MIN_SECONDS_BETWEEN_OPENS_SEC: int = 60  # 60s = 1 นาที (safe margin)
     
     # === ระดับกำไรเป้าหมาย (FTMO Challenge) ===
     # FTMO Challenge ต้องทำกำไร 10% ใน 30 วัน

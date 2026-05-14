@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-13 | Scope: red flags, version log, migration notes (latest: **v8.0.25** — Weekday Delay extended to Mon-Fri (Mon non-XAU now starts 11 ICT))
+> Last Updated: 2026-05-14 | Scope: red flags, version log, migration notes (latest: **v8.0.26** — Bulk-trading guard (anti The5ers flag, min 60s between opens))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,25 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-14 — v8.0.26 Bulk-trading guard (anti The5ers flag, min 60s between opens)
+
+**Trigger** — Excel log audit found 2 trades opened **0.00s / 0.01s** apart on 2026-05-12 (EURUSD BUY pair from pre-news bug, since fixed in v8.0.21). The5ers `prohibited-trading-practices` page explicitly flags "bulk trading = multiple trades open simultaneously" as a bot fingerprint that can trigger account review at withdrawal time.
+
+**Change** — `RiskManager.can_open_trade` now has a top-priority gate that returns reject if the elapsed time since the last successful open is less than `FTMOConfig.MIN_SECONDS_BETWEEN_OPENS_SEC` (default 60s). Implementation:
+
+- New config: `MIN_SECONDS_BETWEEN_OPENS_ENABLED=True`, `MIN_SECONDS_BETWEEN_OPENS_SEC=60`
+- New RM state: `_last_open_time_iso` (broker EET ISO string, persisted in `bot_state.json`)
+- New method: `RiskManager.record_trade_open()` — called from `main.py` right after `executor.execute_signal` succeeds
+- Gate placement: before all other gates (Monday delay, weekday delay, news, etc.) so the cheapest check runs first
+
+**Effect** — bot can still open up to 3 concurrent positions (MAX_OPEN_POSITIONS unchanged), but each open is at least 60 seconds apart. Live median gap is already 18.4 min, so the gate is a backstop, not a behavior change. Eliminates "<5s pair" pattern that compliance reviewers look for.
+
+**Why 60s** — short enough to keep MR signals fresh (M15 entry, signals valid for several minutes), long enough that no human-vs-bot heuristic could call it bulk trading. The5ers Trustpilot reviews mention withdrawal disputes when trade pattern looks automated, so the buffer protects payout integrity.
+
+**Persistence** — `_last_open_time_iso` survives restart via `_save_state`/`_load_state` (schema v7, additive — no migration needed). On bot restart mid-gap, the guard remains active until the elapsed time crosses 60s.
+
+**No retrain needed** — pure execution-path gate, no obs / reward / GBM / pool change.
 
 ### 2026-05-13 — v8.0.25 Weekday Delay extended to Mon (Mon non-XAU now starts 11 ICT)
 

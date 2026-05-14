@@ -89,6 +89,11 @@ class RiskManager:
         # Buffer to FTMO 4% Daily DD: 1% = $100 (กัน slippage + spread)
         self._daily_loss_locked: bool = False
 
+        # v8.0.26: Min Seconds Between Opens (anti bulk-trading) — The5ers compliance
+        # บันทึกเวลาเปิดออเดอร์ล่าสุด (ISO string, broker EET) — global, ทุก symbol
+        # ใช้ใน can_open_trade กัน 2 ไม้เปิดในวินาทีเดียว (= flag bot)
+        self._last_open_time_iso: Optional[str] = None
+
         # === Cooldown / Anti-Revenge-Trading State (v2) ===
         # เวลาที่โดน SL ล่าสุดของแต่ละ symbol (ISO string)
         self._last_loss_time_per_symbol: Dict[str, str] = {}
@@ -554,6 +559,13 @@ class RiskManager:
         """ตอบว่าวันนี้ล็อกแล้วจาก daily loss cap หรือไม่"""
         return self._daily_loss_locked
 
+    def record_trade_open(self) -> None:
+        """v8.0.26: บันทึกเวลาเปิดออเดอร์ล่าสุด (สำหรับ bulk-trading guard).
+        เรียกหลัง executor.execute_signal() สำเร็จ"""
+        now = TimeManager.get_server_time().replace(tzinfo=None)
+        self._last_open_time_iso = now.isoformat()
+        self._save_state()
+
     def can_open_trade(
         self,
         symbol: str,
@@ -582,6 +594,26 @@ class RiskManager:
         Returns:
             Tuple[bool, str]: (อนุญาตหรือไม่, เหตุผล)
         """
+        # === ตรวจสอบที่ 0-pre: Min Seconds Between Opens (v8.0.26 — anti bulk-trading) ===
+        # The5ers ห้าม "bulk trading" = 2+ ไม้เปิดในวินาทีเดียว → flag bot
+        # Gate นี้บังคับช่องว่างขั้นต่ำระหว่างการเปิดทุก symbol (global)
+        if getattr(self._config, "MIN_SECONDS_BETWEEN_OPENS_ENABLED", False):
+            min_gap = getattr(self._config, "MIN_SECONDS_BETWEEN_OPENS_SEC", 60)
+            if self._last_open_time_iso and min_gap > 0:
+                try:
+                    last_t = datetime.fromisoformat(self._last_open_time_iso)
+                    now_t = TimeManager.get_server_time().replace(tzinfo=None)
+                    if last_t.tzinfo is not None:
+                        last_t = last_t.replace(tzinfo=None)
+                    elapsed = (now_t - last_t).total_seconds()
+                    if 0 <= elapsed < min_gap:
+                        remaining = min_gap - elapsed
+                        return (False, f"⏱️ Bulk-trading guard: เพิ่งเปิดไม้ก่อนหน้า "
+                                f"{elapsed:.0f}s ที่แล้ว — รออีก {remaining:.0f}s "
+                                f"(min gap {min_gap}s, The5ers compliance)")
+                except (ValueError, TypeError):
+                    pass
+
         # === ตรวจสอบที่ 0a: Monday Morning Delay (v8.0.19) ===
         # ข้ามช่วงผันผวนหลัง weekend (Monday 00:00-03:59 EET)
         # ข้อมูลจริง 11 พ.ค.: 3 ไม้แรก Monday เสีย $300 ก่อนตลาดสงบ
@@ -981,6 +1013,8 @@ class RiskManager:
             "daily_profit_locked": self._daily_profit_locked,
             # --- v7 (v8.0.22): Daily Loss Cap (Option D mirror) ---
             "daily_loss_locked": self._daily_loss_locked,
+            # --- v7 (v8.0.26): Bulk-trading guard (last open time, EET ISO) ---
+            "last_open_time_iso": self._last_open_time_iso,
             "schema_version": 7,
             "last_updated": datetime.now().isoformat(),
         }
@@ -1066,6 +1100,9 @@ class RiskManager:
 
             # --- v7 (v8.0.22): Daily Loss Cap state ---
             self._daily_loss_locked = bool(data.get("daily_loss_locked", False))
+
+            # --- v7 (v8.0.26): Bulk-trading guard (last open time, ISO EET) ---
+            self._last_open_time_iso = data.get("last_open_time_iso", None)
 
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))

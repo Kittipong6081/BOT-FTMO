@@ -1258,6 +1258,8 @@ class FTMOTradingBot:
                             if executed:
                                 print(f"✅ [Bot] เปิดเทรดสำเร็จ: Ticket {executed.ticket}")
                                 self._log_signal_scan(sig, live_context, result="AGENT_TAKE")
+                                # v8.0.26: record last open time → bulk-trading guard
+                                self._risk_manager.record_trade_open()
                                 # v6.9: บันทึก trade open history สำหรับ overtrading detection
                                 # v6.10b: ใช้ broker time (EEST) — ตรงกับ executed.open_time
                                 self._trade_open_history.append(
