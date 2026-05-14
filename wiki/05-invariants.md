@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-12 | Scope: red flags, version log, migration notes (latest: **v8.0.22** — Daily Loss Cap -3% (Option D mirror, symmetric protection))
+> Last Updated: 2026-05-13 | Scope: red flags, version log, migration notes (latest: **v8.0.24** — Weekday Asian Early Delay (Tue-Fri block, XAU exception))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,47 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-13 — v8.0.24 Weekday Asian Early Delay (Tue-Fri block, XAU exception)
+
+**Data evidence (3 days live, 42 trades)**:
+
+| Session (EET) | ICT | Trades | WR | Net P/L |
+|---|---|:---:|:---:|:---:|
+| Asian early non-XAU (00-07) | 04-11 | 10 | low | **-$300** ❌ |
+| **Asian early XAUUSD (00-07)** | 04-11 | **5** | **80%** | **+$159** ✅ |
+| Asian late (07-10) | 11-14 | 6 | 83% | +$242 ✨ |
+| Mid-day (14-18) | 18-22 | 16 | 56% | +$58 |
+| NY/Late (18+) | 22+ | 5 | 40% | +$93 |
+
+→ Non-XAU losses concentrated in 00-07 EET. XAUUSD reverses the pattern (80% WR Asian early).
+
+**Fix** — add weekday delay with symbol exception in `RiskManager.can_open_trade`:
+
+```python
+if WEEKDAY_DELAY_ENABLED:
+    now = TimeManager.get_server_time()
+    if (now.weekday() in (1, 2, 3, 4)        # Tue-Fri (Mon handled by v8.0.19)
+            and now.hour < WEEKDAY_DELAY_END_HOUR_EET  # < 07:00 EET
+            and symbol.upper() not in WEEKDAY_DELAY_EXCEPT_SYMBOLS):  # XAUUSD allowed
+        return (False, "🌅 Weekday delay until 07:00 EET (11:00 ICT)")
+```
+
+**Config**:
+
+- `WEEKDAY_DELAY_ENABLED = True`
+- `WEEKDAY_DELAY_END_HOUR_EET = 7`
+- `WEEKDAY_DELAY_EXCEPT_SYMBOLS = ("XAUUSD",)`
+
+**Layered with v8.0.19 Monday Delay**:
+
+- Monday 00:00-03:59 EET → blocked by v8.0.19 (4 hr post-weekend buffer)
+- Tue-Fri 00:00-06:59 EET → blocked by v8.0.24 (Asian early non-XAU)
+- XAUUSD Tue-Fri 00:00-06:59 EET → allowed (Gold edge in Asian)
+
+**Expected impact** — save ~$300/3 days from non-XAU Asian early losses while preserving XAUUSD +$159 wins.
+
+**Invariant** — time-gate filters in `can_open_trade` must use broker EET (`TimeManager.get_server_time()`), never UTC or local time, to stay aligned with broker session boundaries across DST.
 
 ### 2026-05-12 — v8.0.22 Daily Loss Cap -3% (Option D mirror, symmetric protection)
 

@@ -99,6 +99,18 @@ class FTMOConfig:
     MONDAY_DELAY_ENABLED: bool = True
     MONDAY_DELAY_END_HOUR_EET: int = 4   # ห้ามเทรด Monday 00:00-03:59 EET (= 04:00-07:59 ICT)
 
+    # === Weekday Asian Early Delay (v8.0.24) — กัน Asian early Tue-Fri ===
+    # ข้อมูลจริง 12-14 พ.ค. (3 วัน):
+    #   Asian early (00-07 EET) non-XAU: -$300 (ขาดทุนหนัก)
+    #   Asian late (07-10 EET): +$242 (sweet spot — WR 83%)
+    #   XAUUSD Asian early: +$159 (WR 80% — เก่ง!)
+    # → ดังนั้น: block trade Tue-Fri 00:00-06:59 EET (= 04:00-10:59 ICT)
+    #   ยกเว้น XAUUSD (Gold เก่ง Asian early)
+    # Mon ใช้ MONDAY_DELAY แยก (block ครบ 04 ชม.)
+    WEEKDAY_DELAY_ENABLED: bool = True
+    WEEKDAY_DELAY_END_HOUR_EET: int = 7  # ห้าม Tue-Fri 00:00-06:59 EET (= 04:00-10:59 ICT)
+    WEEKDAY_DELAY_EXCEPT_SYMBOLS: tuple = ("XAUUSD",)  # ทอง = exception (เก่ง Asian)
+
     # === Flip-Lock TTL (v8.0.18 — fix lock ค้างข้าม weekend) ===
     # FLIP_LOCK_MIN_MINUTES = MIN wait (เวลาเร็วสุดที่ unlock ได้)
     # FLIP_LOCK_MAX_MINUTES = MAX TTL — หลังจากนี้ unlock อัตโนมัติ (ไม่ต้องรอ retrace)
