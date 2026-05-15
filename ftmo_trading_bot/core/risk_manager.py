@@ -659,7 +659,7 @@ class RiskManager:
         # หลัก: news check ต้องอยู่ใน gate ก่อนเปิด ไม่ใช่หลังเปิด
         try:
             from config.news_events import is_near_high_impact_news
-            from datetime import datetime, timezone
+            from datetime import timezone
             window_before = getattr(bot_config.sessions, "no_trade_before_news_minutes", 30)
             window_after = getattr(bot_config.sessions, "no_trade_after_news_minutes", 15)
             is_news, news_reason = is_near_high_impact_news(
