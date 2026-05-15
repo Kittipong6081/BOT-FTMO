@@ -467,6 +467,13 @@ class MeanReversionConfig:
     # ตั้ง 27 → block เฉพาะไม้ที่แพ้แน่นอน (จากประวัติ 14 ไม้: 1 ไม้ถูก block, เป็นไม้ที่แพ้)
     adx_trend_block_xau: float = 27.0
 
+    # v8.0.28: Confluence quality floor (live filter — analysis 48 trades 2026-05-12..15)
+    # Data showed: < 70 = WR 33-50% loss, ≥ 70 = WR 76% +$425.
+    # Block 23/48 trades, net +$425, lose 2 winning XAU trades but gain 3 losses prevented.
+    # FTMOConfig.MIN_CONFLUENCE_SCORE = 70 ตั้งไว้นานแล้วแต่ไม่ enforce (legacy unused)
+    # v8.0.28 ทำให้ live strategy ใช้ค่านี้จริง (override class default 30 → 70)
+    min_confluence_score: float = 70.0
+
     # SL / TP
     sl_atr_mult: float = 1.0     # tight SL — capital preservation
     rr_ratio: float = 1.0        # 1:1 quick-TP target

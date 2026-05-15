@@ -212,7 +212,7 @@ class MeanReversionStrategy:
     SL_ATR_MULT: float = 1.0          # tight SL — capital preservation
     RR_RATIO: float = 1.0             # 1:1 quick-TP target
     MIN_REVERSAL_WICK_RATIO: float = 0.4  # was 1.2 — RL learns to filter weak wicks
-    MIN_CONFLUENCE_SCORE: float = 30.0    # was 50 — wider acceptance, RL filters
+    MIN_CONFLUENCE_SCORE: float = 70.0    # v8.0.28 — was 30 (RL filter only); live data shows clear edge ≥ 70 (WR 76% vs 41% below)
 
     def __init__(self, indicators: Optional[TechnicalIndicators] = None):
         self._indicators = indicators or TechnicalIndicators()
@@ -227,6 +227,7 @@ class MeanReversionStrategy:
             self.BB_OVERBOUGHT = float(getattr(mr_cfg, "bb_overbought", self.BB_OVERBOUGHT))
             self.ADX_TREND_BLOCK = float(getattr(mr_cfg, "adx_trend_block", self.ADX_TREND_BLOCK))
             self.ADX_TREND_BLOCK_XAU = float(getattr(mr_cfg, "adx_trend_block_xau", self.ADX_TREND_BLOCK_XAU))
+            self.MIN_CONFLUENCE_SCORE = float(getattr(mr_cfg, "min_confluence_score", self.MIN_CONFLUENCE_SCORE))
             self.SL_ATR_MULT = float(getattr(mr_cfg, "sl_atr_mult", self.SL_ATR_MULT))
             self.RR_RATIO = float(getattr(mr_cfg, "rr_ratio", self.RR_RATIO))
             self.MIN_REVERSAL_WICK_RATIO = float(

@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-15 | Scope: red flags, version log, migration notes (latest: **v8.0.27** — Per-symbol ADX threshold for XAUUSD (27 vs default 30))
+> Last Updated: 2026-05-15 | Scope: red flags, version log, migration notes (latest: **v8.0.28** — Confluence floor enforced 70 (live strategy was using 30 → now 70))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,30 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-15 — v8.0.28 Confluence floor enforced 70 (was unused — live strategy used 30)
+
+**Trigger** — User audit 48 live trades (2026-05-12 to 2026-05-15) shows clear quality cliff at confluence 70:
+
+| Bucket | N | WR | P/L |
+|---|---|---|---|
+| < 70 | 23 | 41% | **-$428** |
+| ≥ 70 | 25 | **76%** | **+$425** ⭐ |
+
+**Discovered inconsistency** — `FTMOConfig.MIN_CONFLUENCE_SCORE = 70.0` was set long ago (intended as the floor) but no code path actually used it as a gate. The real block lived inside `MeanReversionStrategy.MIN_CONFLUENCE_SCORE = 30.0`, so every trade with score ≥ 30 reached the ML/RL stack. Live data confirms the loose floor was the cause of -$428 in low-quality trades.
+
+**Change** — new config + raise the strategy default + wire override:
+
+- `MRConfig.min_confluence_score: float = 70.0` (new)
+- `MeanReversionStrategy.MIN_CONFLUENCE_SCORE: float = 70.0` (was 30.0)
+- `MeanReversionStrategy.__init__` pulls `mr_cfg.min_confluence_score` like every other tunable
+- `MeanReversionBacktester` (training-side) left at 30 intentionally — wider training pool stays diverse; the live filter narrows it, mirroring how ML/RL filters layer on top of strategy gating
+
+**Expected effect on this week's pattern** — 25 / 48 trades pass (about half), WR jumps 58% → 76%, P/L swings -$3.74 → +$425 on the same days. XAU specifically: 9 / 14 kept (78% WR), 2 winning XAU lost (-$95) vs 3 losing XAU prevented (+$309) = net +$214 on XAU alone.
+
+**No retrain needed** — strategy-level filter executes before the model sees a signal. Observation, reward, GBM features, RL policy all unchanged. Pool data is unaffected.
+
+**Invariant** — `MeanReversionStrategy.MIN_CONFLUENCE_SCORE` is the single live floor. `FTMOConfig.MIN_CONFLUENCE_SCORE` mirrors the same value for legacy display (`main._print_startup_summary` and Discord notifier); keep them in sync. Tightening in the future = bump `MRConfig.min_confluence_score` only.
 
 ### 2026-05-15 — v8.0.27 Per-symbol ADX threshold for XAUUSD (27 vs default 30)
 
