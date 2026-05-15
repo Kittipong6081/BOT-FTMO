@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-14 | Scope: red flags, version log, migration notes (latest: **v8.0.26** — Bulk-trading guard (anti The5ers flag, min 60s between opens))
+> Last Updated: 2026-05-15 | Scope: red flags, version log, migration notes (latest: **v8.0.27** — Per-symbol ADX threshold for XAUUSD (27 vs default 30))
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,36 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-15 — v8.0.27 Per-symbol ADX threshold for XAUUSD (27 vs default 30)
+
+**Trigger** — 2026-05-15 (Fri): 2 XAUUSD BUY trades both SL hit (-$211.87 daily). Trade #2 (05:45 EET) had ADX H1 = 28.5 — would have been blocked at threshold 27 but passed at default 30.
+
+**Data review** — 14 historical XAUUSD trades (2026-05-12 to 2026-05-15):
+
+| ADX threshold | Trades blocked | Blocked were wins | Blocked were losses |
+|---|---|---|---|
+| > 25 | 2 / 14 | 1 (+$73) | 1 (-$103) |
+| **> 27** | **1 / 14** | **0** | **1 (-$103)** ⭐ |
+| > 28 | 1 / 14 | 0 | 1 (-$103) |
+| > 30 (current) | 0 / 14 | 0 | 0 |
+
+→ Threshold 27 = sweet spot. Blocks only the verified bad trade, keeps every winning trade.
+
+**Change** — In `MeanReversionStrategy.scan_signal`, the existing ADX H1 trend block now routes per-symbol:
+
+- XAUUSD (any `"XAU" in symbol`) → `ADX_TREND_BLOCK_XAU = 27.0`
+- All other symbols → `ADX_TREND_BLOCK = 30.0` (unchanged)
+
+New config field `MRConfig.adx_trend_block_xau` (default 27.0) flows into `MeanReversionStrategy.ADX_TREND_BLOCK_XAU` at init.
+
+**Why XAU-specific** — Gold is more volatile than FX pairs, but live data shows it loses MR setup at lower ADX values than majors. Default 30 is calibrated for FX; XAU needs a tighter gate.
+
+**No retrain needed** — strategy-level filter executes before signal generation; observation/reward unchanged.
+
+**Vol regime filter (proposal B) was rejected** — live data showed 14/14 XAUUSD trades had `volatility_regime = "high"` (XAU's natural state, not an outlier). A vol-based block would have killed all gold trading.
+
+**Invariant** — `MeanReversionStrategy.scan_signal` is the single point of ADX gating. Do not add a duplicate ADX check in `RiskManager.can_open_trade` or `TradeExecutor.execute_signal`; per-symbol constants in `MRConfig` are the extension point.
 
 ### 2026-05-14 — v8.0.26 Bulk-trading guard (anti The5ers flag, min 60s between opens)
 

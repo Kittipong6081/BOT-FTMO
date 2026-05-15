@@ -462,6 +462,10 @@ class MeanReversionConfig:
 
     # Trend filter (ADX H1) — > threshold blocks MR entries
     adx_trend_block: float = 30.0    # was 25 — only block extreme trends
+    # v8.0.27: per-symbol ADX threshold for XAUUSD (tighter than default)
+    # Reason: live data 14 ไม้ พบ Trade ADX>27 = -$103 (15 พ.ค.), ADX>25-27 = mixed
+    # ตั้ง 27 → block เฉพาะไม้ที่แพ้แน่นอน (จากประวัติ 14 ไม้: 1 ไม้ถูก block, เป็นไม้ที่แพ้)
+    adx_trend_block_xau: float = 27.0
 
     # SL / TP
     sl_atr_mult: float = 1.0     # tight SL — capital preservation

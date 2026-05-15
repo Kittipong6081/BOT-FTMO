@@ -208,6 +208,7 @@ class MeanReversionStrategy:
     BB_OVERSOLD: float = 0.30         # was 0.10 — entry on lower-half pullback
     BB_OVERBOUGHT: float = 0.70       # was 0.90 — entry on upper-half pullback
     ADX_TREND_BLOCK: float = 30.0     # was 25 — only block extreme trends
+    ADX_TREND_BLOCK_XAU: float = 27.0 # v8.0.27 — per-symbol tighter threshold for XAUUSD
     SL_ATR_MULT: float = 1.0          # tight SL — capital preservation
     RR_RATIO: float = 1.0             # 1:1 quick-TP target
     MIN_REVERSAL_WICK_RATIO: float = 0.4  # was 1.2 — RL learns to filter weak wicks
@@ -225,6 +226,7 @@ class MeanReversionStrategy:
             self.BB_OVERSOLD = float(getattr(mr_cfg, "bb_oversold", self.BB_OVERSOLD))
             self.BB_OVERBOUGHT = float(getattr(mr_cfg, "bb_overbought", self.BB_OVERBOUGHT))
             self.ADX_TREND_BLOCK = float(getattr(mr_cfg, "adx_trend_block", self.ADX_TREND_BLOCK))
+            self.ADX_TREND_BLOCK_XAU = float(getattr(mr_cfg, "adx_trend_block_xau", self.ADX_TREND_BLOCK_XAU))
             self.SL_ATR_MULT = float(getattr(mr_cfg, "sl_atr_mult", self.SL_ATR_MULT))
             self.RR_RATIO = float(getattr(mr_cfg, "rr_ratio", self.RR_RATIO))
             self.MIN_REVERSAL_WICK_RATIO = float(
@@ -332,11 +334,13 @@ class MeanReversionStrategy:
             if "adx" not in h1_df.columns:
                 h1_df = self._indicators.calculate_adx(h1_df.copy())
             adx_h1 = float(h1_df["adx"].iloc[-1] or 0.0)
-        adx_block = adx_h1 > self.ADX_TREND_BLOCK
+        # v8.0.27: per-symbol ADX threshold — XAUUSD ใช้ 27 (เข้มกว่า default 30)
+        adx_threshold = self.ADX_TREND_BLOCK_XAU if "XAU" in symbol.upper() else self.ADX_TREND_BLOCK
+        adx_block = adx_h1 > adx_threshold
         if adx_block:
             return self._no_signal(
                 symbol, atr_value,
-                [f"ADX H1 {adx_h1:.1f} > {self.ADX_TREND_BLOCK} → trend block"],
+                [f"ADX H1 {adx_h1:.1f} > {adx_threshold} → trend block"],
             )
 
         # 3. BB %B + 4. RSI — pick direction
