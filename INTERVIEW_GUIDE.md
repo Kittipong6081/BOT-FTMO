@@ -2,6 +2,7 @@
 
 > เอกสารเตรียมสอบสัมภาษณ์กับ Prop Firm (FTMO / The5ers / etc.)
 > สรุประบบเทรดอัตโนมัติของผม ครบถ้วนทุกประเด็นที่อาจถูกถาม
+> Last updated: 2026-05-15 (v8.0.29 — confluence floor enforced + training/live config split)
 
 ---
 
@@ -58,19 +59,20 @@ atr_pips >= per-symbol floor
    → กรองตลาด "ตาย" ที่ไม่มี volatility
 ```
 
-#### Layer 2: ADX H1 Trend Block
+#### Layer 2: ADX H1 Trend Block (v8.0.27 — per-symbol)
 
 ```
-ADX H1 ≤ 30
-   → ห้ามเทรดเมื่อตลาด trend แรง
+FX:     ADX H1 ≤ 30  → entry allowed
+XAUUSD: ADX H1 ≤ 27  → entry allowed (tighter; v8.0.27)
    → MR strategy ทำงานดีในตลาด range-bound
+   → ทอง trending แรงเร็วกว่า FX → ต้องเข้มงวดกว่า
 ```
 
 #### Layer 3: Bollinger Bands %B (Statistical Extreme)
 
 ```
-SELL: %B ≥ 0.90  (ราคาแตะ upper band — "แพงเกิน")
-BUY:  %B ≤ 0.10  (ราคาแตะ lower band — "ถูกเกิน")
+SELL: %B ≥ 0.70  (ราคาแตะ upper band — "แพงเกิน")
+BUY:  %B ≤ 0.30  (ราคาแตะ lower band — "ถูกเกิน")
 ```
 
 #### Layer 4: RSI Confirmation
@@ -88,12 +90,22 @@ BUY:  bullish-rejection wick (lower wick > body × 0.4)
    → ยืนยันราคา reverse จริง ไม่ใช่ break out
 ```
 
-### Confluence Score
+### Confluence Score (v8.0.28 — quality floor enforced)
 
 ```
 Score = 40 (base) + 30×BB extremity + 20×RSI extremity + 10×Wick strength
 Range: 0-100
-ใช้ปกติ: Conf ≥ 40 จึงสร้าง signal
+
+LIVE filter:    Conf ≥ 70 → สัญญาณผ่านไปยัง ML/RL stack
+TRAINING pool:  Conf ≥ 30 → เก็บข้อมูลกว้างให้โมเดลเรียนรู้
+
+Why split (v8.0.29):
+- โมเดล train จาก pool กว้าง = เรียนรู้แยกแยะคุณภาพ
+- Live narrows = เปิดเฉพาะ A-grade signals
+
+ข้อมูลจริง 48 trades (2026-05-12..15):
+- Conf < 70: WR 41%, P/L -$428
+- Conf ≥ 70: WR 76%, P/L +$425
 ```
 
 ---
@@ -220,21 +232,27 @@ MFE = 0.5R: ✂️ ปิด 50% เก็บกำไรครึ่ง + 🔒 
 
 ---
 
-## 🛡️ 6. Safety Layers (10 Layers)
+## 🛡️ 6. Safety Layers (12 Layers — updated 2026-05-15)
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Layer 1: Monday Morning Delay (4 hr post-weekend)        │
-│ Layer 2: Weekday Asian Early Delay (Tue-Fri non-XAU)     │
-│ Layer 3: Daily Profit Cap (+1.6% lock + halt)            │
-│ Layer 4: Daily Loss Cap (-3.0% stop + halt)              │
-│ Layer 5: News Block (T-30 / T+15 around high-impact)     │
-│ Layer 6: Unrealized DD Breaker (-1.5% floating)          │
-│ Layer 7: Consecutive Loss Pause (3 in a row, 60 min)     │
-│ Layer 8: Consecutive Loss Halt (4 in a row, all day)     │
-│ Layer 9: FTMO Daily DD Halt (4%)                          │
-│ Layer 10: FTMO Max DD Halt (8%)                           │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Layer 0: Bulk-Trading Guard (60s between opens, v8.0.26)  │
+│          — The5ers compliance: no simultaneous opens      │
+│ Layer 1: Monday Morning Delay (4 hr post-weekend)         │
+│ Layer 2: Weekday Asian Early Delay (Mon-Fri non-XAU,      │
+│          v8.0.24+25 — block 00-07 EET, ICT 04-11)         │
+│ Layer 3: Confluence Quality Floor ≥ 70 (v8.0.28)          │
+│          — only A-grade signals reach the model           │
+│ Layer 4: Daily Profit Cap (+1.6% lock + halt)             │
+│ Layer 5: Daily Loss Cap (-3.0% stop + halt)               │
+│ Layer 6: News Block (T-30 / T+15 around high-impact)      │
+│ Layer 7: Unrealized DD Breaker (-1.5% floating)           │
+│ Layer 8: Consecutive Loss Pause (3 in a row, 60 min)      │
+│ Layer 9: Consecutive Loss Halt (4 in a row, all day)      │
+│ Layer 10: Correlation Guard (USD theme + group limits)    │
+│ Layer 11: FTMO Daily DD Halt (4%)                          │
+│ Layer 12: FTMO Max DD Halt (8%)                            │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Per-Symbol Filters
@@ -280,9 +298,34 @@ Holdout result (unseen data):
 Overfit gap: ~5.25pp Pass Rate (MILD — borderline HEALTHY)
 ```
 
-### Live Trading Stats (3 days, real money)
+### Live Trading Stats (4 days, real money — 2026-05-12 to 2026-05-15)
 
 ```
+=== Without v8.0.27/28 filters (actual baseline) ===
+Total trades: 48
+Win Rate: 58.3%
+P/L: -$3.74 (effectively breakeven)
+
+=== If v8.0.27 + v8.0.28 + v8.0.29 had been live from the start ===
+Trades kept: 25 (52% pass conf≥70)
+Win Rate: 76.0%
+P/L: +$424.67 (+4.25% of $10k)
+Δ from baseline: +$428.41 — confluence floor alone responsible
+
+Per-symbol after-filter P/L (4 days):
+   USDJPY  +$295   USDCAD  -$88
+   XAUUSD  +$228   USDCHF  -$96
+   EURJPY  +$152   AUDUSD  -$109
+   NZDUSD  +$33    GBPJPY    $0  (filtered out)
+   EURUSD  +$9
+   
+=== Filter validation ===
+Total blocked: 23 / 48 trades
+  - Losses prevented: $759 saved (14 losing trades)
+  - Wins missed: $331 forgone (9 winning trades)
+  - Net: +$428 ✅
+
+=== Original live stats (for reference) ===
 Total trades: 46
 Win Rate: 60.9%
 Profit Factor: 1.20
@@ -501,9 +544,19 @@ Monthly:
 
 ```
 Repository: github.com/Kittipong6081/BOT-FTMO
-Versions:   v8.0.24 (latest), 24+ documented version updates
+Versions:   v8.0.29 (latest, 2026-05-15), 29+ documented version updates
 Wiki:       Complete architecture in wiki/*.md
 Changelog:  wiki/05-invariants.md (every change documented)
+
+Recent improvements (since live deployment 2026-05-12):
+  v8.0.21 — Pre-news block in can_open_trade (compliance)
+  v8.0.22 — Daily Loss Cap -3% (symmetric with profit cap)
+  v8.0.24 — Weekday Asian Early Delay (Tue-Fri non-XAU)
+  v8.0.25 — Extended to Monday too (Mon-Fri non-XAU)
+  v8.0.26 — Bulk-trading guard 60s (anti-The5ers flag)
+  v8.0.27 — Per-symbol ADX threshold (XAU=27, FX=30)
+  v8.0.28 — Confluence floor enforced 70 (was unused before)
+  v8.0.29 — Split training/live config (preserve pool diversity)
 ```
 
 ### Audit Trail
