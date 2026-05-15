@@ -467,12 +467,19 @@ class MeanReversionConfig:
     # ตั้ง 27 → block เฉพาะไม้ที่แพ้แน่นอน (จากประวัติ 14 ไม้: 1 ไม้ถูก block, เป็นไม้ที่แพ้)
     adx_trend_block_xau: float = 27.0
 
-    # v8.0.28: Confluence quality floor (live filter — analysis 48 trades 2026-05-12..15)
+    # v8.0.28: Confluence quality floor — LIVE filter (analysis 48 trades 2026-05-12..15)
     # Data showed: < 70 = WR 33-50% loss, ≥ 70 = WR 76% +$425.
     # Block 23/48 trades, net +$425, lose 2 winning XAU trades but gain 3 losses prevented.
-    # FTMOConfig.MIN_CONFLUENCE_SCORE = 70 ตั้งไว้นานแล้วแต่ไม่ enforce (legacy unused)
-    # v8.0.28 ทำให้ live strategy ใช้ค่านี้จริง (override class default 30 → 70)
-    min_confluence_score: float = 70.0
+    # v8.0.29: split training/live — training keeps wide pool for diverse signal exposure,
+    # live narrows down to only A-grade signals (model already learned to like them).
+    min_confluence_score: float = 70.0          # live (used in main.py path)
+    min_confluence_score_training: float = 30.0  # training pool (kept wide for diversity)
+
+    # v8.0.29: ADX threshold split (live tighter than training)
+    # Training: default 30/30 (any-symbol, wide pool)
+    # Live: 30 FX / 27 XAU (tighter on XAU based on 14-trade analysis 2026-05-15)
+    adx_trend_block_training: float = 30.0       # training pool (both XAU + FX)
+    adx_trend_block_xau_training: float = 30.0   # training pool — XAU same as FX
 
     # SL / TP
     sl_atr_mult: float = 1.0     # tight SL — capital preservation

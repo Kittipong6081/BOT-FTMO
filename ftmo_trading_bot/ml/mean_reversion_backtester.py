@@ -61,9 +61,29 @@ class MeanReversionBacktester(StrategyBacktester):
         # Replace the SMC strategy slot with MR strategy
         from strategy.mean_reversion_strategy import MeanReversionStrategy
         from strategy.indicators import TechnicalIndicators
+        from config.settings import bot_config as _bc
         self._mr_strategy = MeanReversionStrategy(
             indicators=getattr(self, "_indicators", TechnicalIndicators())
         )
+        # v8.0.29: override live thresholds with TRAINING values — keep pool wide
+        # for diverse signal exposure. Live narrows via the same class but reads
+        # the non-_training fields. Without this override, retraining would inherit
+        # the tighter live filters and shrink the pool by ~48% (confluence) or
+        # ~10% (XAU ADX).
+        _mr_cfg = getattr(_bc, "mr", None)
+        if _mr_cfg is not None:
+            self._mr_strategy.MIN_CONFLUENCE_SCORE = float(
+                getattr(_mr_cfg, "min_confluence_score_training",
+                        self._mr_strategy.MIN_CONFLUENCE_SCORE)
+            )
+            self._mr_strategy.ADX_TREND_BLOCK = float(
+                getattr(_mr_cfg, "adx_trend_block_training",
+                        self._mr_strategy.ADX_TREND_BLOCK)
+            )
+            self._mr_strategy.ADX_TREND_BLOCK_XAU = float(
+                getattr(_mr_cfg, "adx_trend_block_xau_training",
+                        self._mr_strategy.ADX_TREND_BLOCK_XAU)
+            )
 
     # ─── Override pool generator ─────────────────────────────────────────
 

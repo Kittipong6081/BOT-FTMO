@@ -1,5 +1,5 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-15 | Scope: red flags, version log, migration notes (latest: **v8.0.28** — Confluence floor enforced 70 (live strategy was using 30 → now 70))
+> Last Updated: 2026-05-15 | Scope: red flags, version log, migration notes (latest: **v8.0.29** — Split training/live config for confluence + ADX thresholds)
 
 ## TL;DR (30-second scan)
 
@@ -212,6 +212,42 @@ Inside `TradeExecutor._check_correlation`:
 ---
 
 ## 📚 Version Log (reverse chronological)
+
+### 2026-05-15 — v8.0.29 Split training/live config for confluence + ADX thresholds
+
+**Trigger** — v8.0.27 + v8.0.28 set `MeanReversionStrategy.MIN_CONFLUENCE_SCORE = 70` and `ADX_TREND_BLOCK_XAU = 27` at the class default + via `MRConfig`. Both backtester (training) and live use the same strategy class, so the next retrain would inherit the live filters → pool shrinks ~48% (confluence) + ~10% (XAU ADX). User flagged it before retrain happened.
+
+**Change** — split each tightened live setting into a `_training` variant in `MRConfig`:
+
+| Setting | Live (live filter) | Training (pool diversity) |
+|---|---|---|
+| `min_confluence_score` | **70** | `min_confluence_score_training = 30` |
+| `adx_trend_block` | 30 (FX) | `adx_trend_block_training = 30` |
+| `adx_trend_block_xau` | **27** | `adx_trend_block_xau_training = 30` |
+
+`MeanReversionBacktester.__init__` now overrides the three live values on `self._mr_strategy` with the `_training` values right after instantiation. Live (`main.py` → `LiveMRScanner` → `MeanReversionStrategy.__init__`) reads the unchanged `min_confluence_score`/`adx_trend_block*` fields and gets the tight filters.
+
+**Why the asymmetry is correct** — RL/ML benefit from a diverse training pool because the agent must learn to *recognize* low-quality signals and learn to skip them. If the pool only contains A-grade signals (score ≥ 70), the agent never sees the bad ones and cannot learn the contrast. Live then narrows down to A-grade only, which is what user wants for capital preservation.
+
+**No retrain needed right now** — current model was trained on the wide pool. The change only matters for the *next* retrain (which will keep the wide pool). Live behavior unchanged.
+
+**Invariant** — three pairs must stay split (live + `_training`). Never collapse them back into a single value. When tightening a filter for live, only bump the non-`_training` field; bump the `_training` field only if you intentionally want to shrink the pool (rare — usually done to remove leak hazards, not tighten quality).
+
+**Verification (mandatory if these are touched)**:
+
+```bash
+.venv/bin/python -c "
+import sys; sys.path.insert(0, 'ftmo_trading_bot')
+from config.settings import bot_config
+from strategy.mean_reversion_strategy import MeanReversionStrategy
+from ml.mean_reversion_backtester import MeanReversionBacktester
+live = MeanReversionStrategy()
+bt = MeanReversionBacktester(data_dir='data')
+assert live.MIN_CONFLUENCE_SCORE == 70 and bt._mr_strategy.MIN_CONFLUENCE_SCORE == 30
+assert live.ADX_TREND_BLOCK_XAU == 27 and bt._mr_strategy.ADX_TREND_BLOCK_XAU == 30
+print('live vs training filter split: OK')
+"
+```
 
 ### 2026-05-15 — v8.0.28 Confluence floor enforced 70 (was unused — live strategy used 30)
 
