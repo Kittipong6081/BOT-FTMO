@@ -181,8 +181,8 @@ class PositionSizer:
             "balance": balance,
         }
 
-        # แสดงผลการคำนวณ
-        if bot_config.debug_mode:
+        # แสดงผลการคำนวณ (v8.0.30: gated by verbose_level >= 2)
+        if getattr(bot_config, 'verbose_level', 1) >= 2:
             print(f"\n📐 [Position Sizer] ผลการคำนวณ {symbol}:")
             print(f"   💰 Balance:       ${balance:,.2f}")
             print(f"   🎯 Risk:          {actual_risk_pct:.2%} (${actual_risk_amount:,.2f})")

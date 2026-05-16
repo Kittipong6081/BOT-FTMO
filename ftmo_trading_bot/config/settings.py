@@ -564,8 +564,13 @@ class BotConfig:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     
-    # === โหมดดีบัก ===
-    debug_mode: bool = True             # แสดงข้อมูลละเอียดใน Console
+    # === โหมดดีบัก / Verbose ===
+    # v8.0.30: console verbose level (Option A — quiet mode)
+    # 0 = SILENT  (errors + critical only — สำหรับ VPS หลังบ้าน)
+    # 1 = NORMAL  (trade events + warnings + daily summary — default ใช้จริง)
+    # 2 = DEBUG   (เห็นทุกอย่าง รวม scan/calc detail — สำหรับ dev)
+    verbose_level: int = 1
+    debug_mode: bool = True             # legacy flag (true เพื่อ backward compat)
     
     # === ช่วงเวลาตรวจสอบ (วินาที) ===
     main_loop_interval: int = 5         # ตรวจสอบทุก 5 วินาที

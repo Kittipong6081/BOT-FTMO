@@ -1316,8 +1316,14 @@ class FTMOTradingBot:
                 except Exception as e:
                     print(f"⚠️ [Bot] Trade Manager error: {e}")
                 
-                # แสดงสถานะทุก 60 loops (~5 นาที)
-                if self._loop_count % 60 == 0:
+                # แสดงสถานะตาม verbose level (v8.0.30)
+                # 0=silent: ไม่ print เลย
+                # 1=normal: ทุก 720 loops (~1 ชม.) print สั้น
+                # 2=debug: ทุก 60 loops (~5 นาที) print เต็ม
+                _vl = getattr(bot_config, 'verbose_level', 1)
+                if _vl >= 2 and self._loop_count % 60 == 0:
+                    self._print_periodic_status()
+                elif _vl == 1 and self._loop_count % 720 == 0 and self._loop_count > 0:
                     self._print_periodic_status()
 
                 # v7.1 — GBM drift monitor ทุก 720 loops (~1 ชม.)
