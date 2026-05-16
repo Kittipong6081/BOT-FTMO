@@ -1358,14 +1358,10 @@ class FTMOTradingBot:
             hours = int(uptime.total_seconds() // 3600)
             minutes = int((uptime.total_seconds() % 3600) // 60)
             print(f"   ⏱️ Uptime:    {hours}h {minutes}m")
-            uptime_str = f"{hours}h {minutes}m"
-        else:
-            uptime_str = "0h 0m"
         print(f"{'─' * 50}\n")
-        
-        # ส่งแจ้งเตือนทุกชั่วโมง (720 loop * 5s = 3600s = 1 ชั่วโมง)
-        if self._loop_count % 720 == 0 or self._loop_count == 1:
-            self._notifier.send_periodic_status(risk_status, self._loop_count, uptime_str)
+        # v8.0.31: ลบ Discord periodic status notification (เคยส่งทุก 1 ชม.)
+        # User feedback: ไม่ต้องการ status alert ใน Discord
+        # Trade open/close + breach warnings ยังส่งปกติผ่าน notifier event hooks
 
     def _check_gbm_drift(self) -> None:
         """
