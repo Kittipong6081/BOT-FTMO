@@ -10,7 +10,6 @@ FTMO Trading Bot — จุดเริ่มต้นของโปรแก�
 การใช้งาน:
     python main.py                # รันปกติ (live trading)
     python main.py --status       # แสดงสถานะปัจจุบัน
-    python main.py --train-rl     # โหมดฝึก RL agent จาก Excel log
 ===============================================================================
 """
 
@@ -1470,28 +1469,9 @@ if __name__ == "__main__":
     # จัดการ Arguments
     parser = argparse.ArgumentParser(description="FTMO Trading Bot")
     parser.add_argument("--status", action="store_true", help="แสดงสถานะปัจจุบัน")
-    parser.add_argument("--train-rl", action="store_true", help="สั่ง AI วิเคราะห์ Excel และเรียนรู้อัพเดทพารามิเตอร์")
     args = parser.parse_args()
 
-    if args.train_rl:
-        # โหมดฝึกสมอง AI (แนะนำให้รันก่อนเปิดโปรแกรมใหม่รายวัน)
-        print("======================================================")
-        print("🧠 โหมดฝึกสมองปัญญาประดิษฐ์ (Continuous Learning)")
-        print("======================================================")
-        try:
-            from ml.rl_agent import SelfLearningAgent
-            agent = SelfLearningAgent(
-                excel_path=bot_config.paths.trade_log_file,
-                model_dir=bot_config.paths.model_dir,
-                verbose=1
-            )
-            # ฝึก 5,000 steps ควบคุมความทรงจำใหม่
-            agent.train_on_historical(timesteps=5000)
-            print("🌟 จบการเรียนรู้ ยินดีด้วย สมองของบอทอัพเกรดแล้ว!")
-        except Exception as e:
-            print(f"❌ [RL Error] เกิดข้อผิดพลาดในการฝึก: {e}")
-
-    elif args.status:
+    if args.status:
         # โหมดแสดงสถานะ
         connector = MT5Connector()
         connector.connect()
