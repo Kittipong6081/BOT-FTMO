@@ -462,10 +462,11 @@ class MeanReversionConfig:
 
     # Trend filter (ADX H1) — > threshold blocks MR entries
     adx_trend_block: float = 30.0    # was 25 — only block extreme trends
-    # v8.0.27: per-symbol ADX threshold for XAUUSD (tighter than default)
-    # Reason: live data 14 ไม้ พบ Trade ADX>27 = -$103 (15 พ.ค.), ADX>25-27 = mixed
-    # ตั้ง 27 → block เฉพาะไม้ที่แพ้แน่นอน (จากประวัติ 14 ไม้: 1 ไม้ถูก block, เป็นไม้ที่แพ้)
-    adx_trend_block_xau: float = 27.0
+    # v8.0.27: per-symbol ADX threshold for XAUUSD (tighter than default) — REVERTED v8.0.34
+    # v8.0.34 (2026-05-18): 27 → 30 (กลับ default) — v8.0.28 conf floor 70 = safety net ชั้น 2
+    # Analysis 14 XAU trades: ไม้แพ้ -$103 (5/15) Conf=48 → ถูก v8.0.28 block อยู่แล้ว.
+    # Conf ≥ 70 group: 7W/2L, WR 78%, Net +$245. ADX 27 block ทำให้ XAU = 0 signals 3 วัน.
+    adx_trend_block_xau: float = 30.0
 
     # v8.0.28: Confluence quality floor — LIVE filter (analysis 48 trades 2026-05-12..15)
     # Data showed: < 70 = WR 33-50% loss, ≥ 70 = WR 76% +$425.
