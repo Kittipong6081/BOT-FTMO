@@ -473,7 +473,11 @@ class MeanReversionConfig:
     # Block 23/48 trades, net +$425, lose 2 winning XAU trades but gain 3 losses prevented.
     # v8.0.29: split training/live — training keeps wide pool for diverse signal exposure,
     # live narrows down to only A-grade signals (model already learned to like them).
-    min_confluence_score: float = 70.0          # live (used in main.py path)
+    # v8.0.35 (2026-05-19): 70 → 75 — analysis 6 days / 44 trades (5/12-5/19):
+    #   Conf 70-74.99: 24 trades, Net +$12 (avg +$0.51) — break-even with high variance
+    #   Conf ≥75: 20 trades, Net +$539 (avg +$26.94) — ALL profit from this zone
+    #   Cut 70-74.99 = same Net, half DD, smoother daily returns
+    min_confluence_score: float = 75.0          # live (used in main.py path)
     min_confluence_score_training: float = 30.0  # training pool (kept wide for diversity)
 
     # v8.0.29: ADX threshold split (live tighter than training)
