@@ -1428,7 +1428,7 @@ class RiskManager:
         """
         try:
             count = max(period * 3, 60)
-            df = self._connector.get_historical_data(symbol, "M15", count)
+            df = self._connector.get_ohlcv(symbol, "M15", count)
             if df is None or len(df) < period + 1:
                 return None
             high = df["high"]
@@ -1460,7 +1460,7 @@ class RiskManager:
         # ต้องการ bars พอสำหรับ EMA warm-up + lookback
         count = max(period * 3, 60)
 
-        df = self._connector.get_historical_data(symbol, tf, count)
+        df = self._connector.get_ohlcv(symbol, tf, count)
         if df is None or len(df) < period + lookback:
             return False  # ดึงไม่ได้ → ไม่ปลดล็อก (fail-safe)
 
