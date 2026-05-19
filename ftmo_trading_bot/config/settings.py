@@ -355,8 +355,11 @@ class SessionConfig:
 
     # === ห้ามเทรดช่วงข่าวสำคัญ ===
     # ก่อนข่าวสำคัญ (NFP, FOMC, CPI) — ต้อง implement แยก
-    no_trade_before_news_minutes: int = 30   # หยุดเทรด 30 นาที ก่อนข่าว
-    no_trade_after_news_minutes: int = 15    # หยุดเทรด 15 นาที หลังข่าว
+    # v8.0.38 (2026-05-19): ขยาย news blackout window (Path A: Entry precision)
+    #   เดิม 30/15 → ใหม่ 60/45 — หลีกเลี่ยง volatility spike + aftermath
+    #   NFP/FOMC: ผลกระทบจริง ~2-3 ชม. ปกติเดิม 45 min ครอบไม่พอ
+    no_trade_before_news_minutes: int = 60   # หยุดเทรด 60 นาที ก่อนข่าว (เดิม 30)
+    no_trade_after_news_minutes: int = 45    # หยุดเทรด 45 นาที หลังข่าว (เดิม 15)
     
     # === FTMO Friday Rule (บังคับปิดออเดอร์วันศุกร์) ===
     # กฎ FTMO: ห้ามถือออเดอร์ข้ามสัปดาห์ในสุดสัปดาห์
@@ -484,7 +487,10 @@ class MeanReversionConfig:
     #   Conf 70-74.99: 24 trades, Net +$12 (avg +$0.51) — break-even with high variance
     #   Conf ≥75: 20 trades, Net +$539 (avg +$26.94) — ALL profit from this zone
     #   Cut 70-74.99 = same Net, half DD, smoother daily returns
-    min_confluence_score: float = 75.0          # live (used in main.py path)
+    # v8.0.38 (2026-05-19): 75 → 80 — Path A entry precision improvement
+    #   75-79.99: 14 trades WR 78.6% avg +$15.98
+    #   80+: 5 trades WR 80% avg +$70.84 (4× better per trade)
+    min_confluence_score: float = 80.0          # live (used in main.py path)
     min_confluence_score_training: float = 30.0  # training pool (kept wide for diversity)
 
     # v8.0.29: ADX threshold split (live tighter than training)

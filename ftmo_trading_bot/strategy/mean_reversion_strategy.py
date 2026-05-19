@@ -375,6 +375,47 @@ class MeanReversionStrategy:
                 [f"Reversal wick {wick_ratio:.2f} < {self.MIN_REVERSAL_WICK_RATIO}"],
             )
 
+        # 6. MTF Confirmation — H1 alignment (v8.0.38 Path A: Entry precision)
+        # For MR (contrarian): confirm M15 extreme IS a real extreme
+        # - BUY: price extended below H1 EMA20 + H1 not super-bullish (RSI < 60)
+        # - SELL: price extended above H1 EMA20 + H1 not super-bearish (RSI > 40)
+        # If H1 doesn't confirm extreme → M15 might be noise → skip
+        if h1_df is not None and len(h1_df) >= 20:
+            try:
+                h1_close_last = float(h1_df["close"].iloc[-1])
+                h1_ema20 = float(h1_df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
+                if "rsi" in h1_df.columns:
+                    h1_rsi = float(h1_df["rsi"].iloc[-1] or 50.0)
+                else:
+                    h1_with_rsi = self._indicators.calculate_rsi(h1_df.copy())
+                    h1_rsi = float(h1_with_rsi["rsi"].iloc[-1] or 50.0)
+
+                if direction == "BUY":
+                    if h1_close_last > h1_ema20:
+                        return self._no_signal(
+                            symbol, atr_value,
+                            [f"MTF: BUY but price > H1 EMA20 ({h1_close_last:.5f} > {h1_ema20:.5f}) — not extended below"],
+                        )
+                    if h1_rsi > 60.0:
+                        return self._no_signal(
+                            symbol, atr_value,
+                            [f"MTF: BUY but H1 RSI {h1_rsi:.1f} > 60 — too bullish on H1"],
+                        )
+                elif direction == "SELL":
+                    if h1_close_last < h1_ema20:
+                        return self._no_signal(
+                            symbol, atr_value,
+                            [f"MTF: SELL but price < H1 EMA20 ({h1_close_last:.5f} < {h1_ema20:.5f}) — not extended above"],
+                        )
+                    if h1_rsi < 40.0:
+                        return self._no_signal(
+                            symbol, atr_value,
+                            [f"MTF: SELL but H1 RSI {h1_rsi:.1f} < 40 — too bearish on H1"],
+                        )
+            except Exception:
+                # H1 calc fail — don't block (fail-open)
+                pass
+
         # ─── Build entry / SL / TP ─────────────────────────────────────
         sl_atr_mult = float(get_symbol_config(
             symbol, "mr_sl_atr_multiplier", self.SL_ATR_MULT
