@@ -207,12 +207,22 @@ class StrategyBacktester:
         self, signal, sl_dist: float, tp_dist: float,
         future_df: pd.DataFrame, risk_amount: float,
         pip_size: float, rng: np.random.Generator,
+        enable_trail_after_tp: bool = False,
+        trail_sl_behind_r: float = 0.5,
+        trail_tp_ahead_r: float = 1.0,
     ) -> float:
         """Simulate trade outcome against future bars.
 
         Bar-color heuristic when SL+TP both touched in same bar (no tick data):
           green candle → up-first, red → down-first, doji → 50/50.
         Friction ~0.5% major-pair realistic.
+
+        v8.0.43 Option X (Plan B Trick):
+          enable_trail_after_tp=True → หลัง TP hit, switch to trail mode
+            SL = best - 0.5R (BUY) / best + 0.5R (SELL) — lock profit
+            TP = best + 1R (BUY) / best - 1R (SELL) — chase trend
+            Exit when bar hits trail SL (lock-in level)
+          Match live trade_manager.py trail logic exactly.
         """
         entry = signal.entry_price
         is_buy = signal.signal_type.value == "BUY"
@@ -223,6 +233,12 @@ class StrategyBacktester:
         else:
             sl_price = entry + sl_dist
             tp_price = entry - tp_dist
+
+        # v8.0.43: Trail state (activate after first TP hit)
+        trail_active = False
+        best_price = entry
+        trail_sl_dist = sl_dist * trail_sl_behind_r  # 0.5R
+        trail_tp_dist = sl_dist * trail_tp_ahead_r   # 1R
 
         # Daily / Friday close simulation (FTMO zero-overnight rule)
         from config.settings import bot_config
@@ -255,7 +271,7 @@ class StrategyBacktester:
                 except (KeyError, IndexError):
                     bar_time = None
 
-            # Force-close at EOD / Friday
+            # Force-close at EOD / Friday (works in both phases)
             if bar_time is not None and _is_force_close_bar(bar_time):
                 if is_buy:
                     pnl_pips = (bar_open - entry) / pip_size
@@ -265,21 +281,74 @@ class StrategyBacktester:
                 slippage = float(rng.uniform(0.998, 1.002))
                 return risk_amount * pnl_ratio * slippage
 
+            # ═══ TRAIL MODE (Option X — after first TP hit) ═══
+            if trail_active:
+                # Update best_price (invariant 3: only forward)
+                if is_buy and bar_high > best_price:
+                    best_price = bar_high
+                    new_sl = best_price - trail_sl_dist
+                    new_tp = best_price + trail_tp_dist
+                    # Invariant 1: SL only moves up
+                    if new_sl > sl_price:
+                        sl_price = new_sl
+                    # Invariant 2: TP only moves up (further)
+                    if new_tp > tp_price:
+                        tp_price = new_tp
+                elif (not is_buy) and bar_low < best_price:
+                    best_price = bar_low
+                    new_sl = best_price + trail_sl_dist
+                    new_tp = best_price - trail_tp_dist
+                    if new_sl < sl_price:
+                        sl_price = new_sl
+                    if new_tp < tp_price:
+                        tp_price = new_tp
+
+                # Check trail SL hit (TP never hits in trail — always 1R ahead of best)
+                if is_buy:
+                    if bar_low <= sl_price:
+                        # Exit at trail SL
+                        profit_dist = sl_price - entry
+                        profit_ratio = profit_dist / max(sl_dist, pip_size)
+                        return risk_amount * profit_ratio
+                else:
+                    if bar_high >= sl_price:
+                        profit_dist = entry - sl_price
+                        profit_ratio = profit_dist / max(sl_dist, pip_size)
+                        return risk_amount * profit_ratio
+
+                # Bar didn't hit trail SL — continue to next bar
+                continue
+
+            # ═══ NORMAL MODE (pre-trail) ═══
+
             # Gap check — bar opens past SL/TP (weekend / news)
             if is_buy:
                 if bar_open <= sl_price:
                     slippage = float(rng.uniform(1.0, 1.005))
                     return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * slippage
                 if bar_open >= tp_price:
-                    spread_cost = float(rng.uniform(0.995, 1.0))
-                    return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * spread_cost
+                    if not enable_trail_after_tp:
+                        spread_cost = float(rng.uniform(0.995, 1.0))
+                        return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * spread_cost
+                    # Trail activates at bar_open (which is past TP)
+                    trail_active = True
+                    best_price = bar_open
+                    sl_price = best_price - trail_sl_dist
+                    tp_price = best_price + trail_tp_dist
+                    continue
             else:
                 if bar_open >= sl_price:
                     slippage = float(rng.uniform(1.0, 1.005))
                     return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * slippage
                 if bar_open <= tp_price:
-                    spread_cost = float(rng.uniform(0.995, 1.0))
-                    return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * spread_cost
+                    if not enable_trail_after_tp:
+                        spread_cost = float(rng.uniform(0.995, 1.0))
+                        return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * spread_cost
+                    trail_active = True
+                    best_price = bar_open
+                    sl_price = best_price + trail_sl_dist
+                    tp_price = best_price - trail_tp_dist
+                    continue
 
             # Intra-bar SL / TP
             if is_buy:
@@ -312,9 +381,21 @@ class StrategyBacktester:
                 return -risk_amount * slippage
 
             if hit_tp:
-                actual_rr = tp_dist / max(sl_dist, pip_size)
-                spread_cost = float(rng.uniform(0.995, 1.0))
-                return risk_amount * actual_rr * spread_cost
+                if not enable_trail_after_tp:
+                    actual_rr = tp_dist / max(sl_dist, pip_size)
+                    spread_cost = float(rng.uniform(0.995, 1.0))
+                    return risk_amount * actual_rr * spread_cost
+                # v8.0.43 Option X: activate trail at TP hit
+                trail_active = True
+                # Best price = TP level (we know price reached at least there)
+                best_price = tp_price if is_buy else tp_price  # same value (TP price)
+                if is_buy:
+                    sl_price = best_price - trail_sl_dist  # 0.5R behind TP
+                    tp_price = best_price + trail_tp_dist  # 1R ahead of TP
+                else:
+                    sl_price = best_price + trail_sl_dist
+                    tp_price = best_price - trail_tp_dist
+                # Continue to next bar — trail mode active
 
         # Timeout — close at last bar
         last_close = float(future_df["close"].iloc[-1])

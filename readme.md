@@ -461,7 +461,7 @@ orchestrator จะรัน 3 step ด้านล่างให้เอง +
 .venv/bin/python ftmo_trading_bot/scripts/train_mr_signal_filter.py --fresh \
     --pool_size 3000 \
     --ml_threshold 0.30 \
-    --risk_per_trade 0.0099 \
+    --risk_per_trade 0.007 \
     --n_envs 8 \
     --outcome_noise 0.05 \
     --timesteps_p1 5000000 \
@@ -494,7 +494,7 @@ orchestrator จะรัน 3 step ด้านล่างให้เอง +
     --eval_only \
     --pool_size 3000 \
     --ml_threshold 0.30 \
-    --risk_per_trade 0.0099
+    --risk_per_trade 0.007
 ```
 
 ---
@@ -616,7 +616,7 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
 
 | Field | Value | คำอธิบาย |
 |-------|-------|---------|
-| `DEFAULT_RISK_PER_TRADE_PCT` | 0.0099 | 0.99% (FTMO 1% rule) |
+| `DEFAULT_RISK_PER_TRADE_PCT` | 0.007 | 0.7% (v8.0.43 — paired with Option X trail) |
 | `ML_FILTER_THRESHOLD` (v8.0.3) | 0.30 | live ↔ training sync — signals ที่ ML score < 0.30 ถูก reject ก่อน agent |
 | `MAX_DRAWDOWN_HARD_STOP_PCT` | 0.08 | 8% (buffer 2% จาก FTMO 10%) |
 | `DAILY_LOSS_HARD_STOP_PCT` | 0.04 | 4% (buffer 1% จาก FTMO 5%) |

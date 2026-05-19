@@ -1,12 +1,12 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-07 (v8.0.8) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-19 (v8.0.43 — Option X trail + Risk 0.7%) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
 - Entry: `python main.py` — builds `FTMOTradingBot` and loops every 5 s. Strategy = **MR (Mean Reversion)** via `LiveMRScanner` (v8.0+).
 - FTMO program = **2-step Standard** → `CONSISTENCY_RULE_THRESHOLD = 1.0` (check disabled).
 - Risk hard stops: **4 % daily DD**, **8 % total DD** (buffer vs FTMO 5 %/10 %), target **10 % profit**.
-- Default risk per trade = **0.99 %** (sync กับ RL training).
+- Default risk per trade = **0.7 %** (v8.0.43 Option X — paired with trail).
 - **ML threshold = 0.30** (v8.0.3, sync `bot_config.ftmo.ML_FILTER_THRESHOLD` ↔ trainer ↔ HyperParams).
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
 - **No session block** (v8.0.6 SessionConfig cleanup) — bot trades 24/5 except: rollover (23:55-01:05 EET), daily close (Mon-Thu 23:30-23:55 EET), Friday >= 20:45 EET, weekend, news blackout.
@@ -22,7 +22,7 @@
 | Daily DD stop | 4 % | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | Total DD stop | 8 % | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
-| Default risk / trade | 0.99 % | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
+| Default risk / trade | 0.7 % | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | ML threshold | 0.30 | `FTMOConfig.ML_FILTER_THRESHOLD` |
 | Cooldown after loss | 60 min | `FTMOConfig.COOLDOWN_AFTER_LOSS_MIN` |

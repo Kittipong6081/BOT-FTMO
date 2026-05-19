@@ -1,5 +1,5 @@
 # 03 — RL Training (Obs 32 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-07 (v8.0.10 — anti-overfit retrain in progress) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-05-19 (v8.0.43 — Risk 0.7% + Option X trail in pool sim) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
 
 ## TL;DR (30-second scan)
 

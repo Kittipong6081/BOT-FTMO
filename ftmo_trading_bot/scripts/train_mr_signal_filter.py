@@ -423,10 +423,20 @@ def main():
     vec_env_p2.clip_reward = 20.0
 
     model_p2 = AuxAwarePPO.load(model_path_p1, env=vec_env_p2)
-    model_p2.learning_rate = args.lr_p2
-    model_p2.lr_schedule = FloatSchedule(args.lr_p2)
+    # v8.0.43c: LR cosine decay from lr_p2 → lr_p2 × 0.2 (settle Phase 2)
+    # ลด std oscillation, ช่วย converge ช่วงท้าย (เห็น STD ขึ้น 1.16→1.76 ใน v8.0.43b)
+    import math as _math
+    _lr_start = float(args.lr_p2)
+    _lr_end = float(args.lr_p2) * 0.2  # 5e-5 → 1e-5
+    def _cosine_lr(progress_remaining: float) -> float:
+        # progress_remaining: 1.0 (start) → 0.0 (end)
+        progress = 1.0 - progress_remaining
+        cos_factor = 0.5 * (1.0 + _math.cos(_math.pi * progress))
+        return _lr_end + (_lr_start - _lr_end) * cos_factor
+    model_p2.learning_rate = _lr_start
+    model_p2.lr_schedule = _cosine_lr
     for _pg in model_p2.policy.optimizer.param_groups:
-        _pg["lr"] = args.lr_p2
+        _pg["lr"] = _lr_start
     model_p2.ent_coef = 0.02
     model_p2.gamma = 0.99
     model_p2.tensorboard_log = tb_log_dir

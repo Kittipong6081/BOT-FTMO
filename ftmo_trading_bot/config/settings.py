@@ -69,12 +69,13 @@ class FTMOConfig:
     
     # === ความเสี่ยงต่อการเทรดแต่ละครั้ง ===
     # v7.1.9 (2026-05-05): bump 0.7% → 0.99% — sync กับ RL training (--risk_per_trade 0.0099)
-    # FTMO 1% rule: strictly < 1% per trade. 0.99% = max allowed under rule.
-    # Eval: Pass 6.1%, Profit +2.58%, DD max 5.30%/8% (66% buffer), Daily DD 3.04%/4% (76% buffer).
-    # Daily worst-case = 4 losing trades × 0.99% = 3.96% (under FTMO 4% Daily limit).
+    # v8.0.43 Option X (2026-05-19): 0.99% → 0.7% — Plan B Trick (trail) ชดเชย EV
+    # v8.0.43c (2026-05-19): 0.7% → 0.85% — สายกลาง (Pass 49% → คาด 51-54%)
+    # FTMO Safety: 4 SL × 0.85% = 3.4% daily (vs 4% limit, 15% buffer)
+    #             8 SL × 0.85% = 6.8% total (vs 8% limit, 15% buffer)
     MIN_RISK_PER_TRADE_PCT: float = 0.005   # 0.5% ขั้นต่ำ (floor ปลอดภัย)
-    MAX_RISK_PER_TRADE_PCT: float = 0.0099  # 0.99% สูงสุด (FTMO < 1% rule)
-    DEFAULT_RISK_PER_TRADE_PCT: float = 0.0099  # 0.99% — sync กับ RL training v7.1.9
+    MAX_RISK_PER_TRADE_PCT: float = 0.0085  # 0.85% สูงสุด (v8.0.43c)
+    DEFAULT_RISK_PER_TRADE_PCT: float = 0.0085  # 0.85% — sync กับ RL training v8.0.43c
     
     # === อัตราส่วน Risk:Reward ขั้นต่ำ ===
     # v8.0.9 (2026-05-07): ลด 1.5 → 1.0 เพื่อรองรับ MR strategy ที่ใช้ RR 1:1

@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-15 (v8.0.29 — Split training/live config for confluence + ADX) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-19 (v8.0.43 — Option X TP-Chase Trail + Risk 0.7%) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
@@ -139,7 +139,8 @@
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
 | FTMO Daily DD limit | 5 % (we cap at 4%) | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | FTMO Total DD limit | 10 % (we cap at 8%) | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
-| Default risk per trade | **0.99 %** | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
+| Default risk per trade | **0.7 %** (v8.0.43 — paired with Option X trail) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
+| Option X (v8.0.43) | Trail TP+SL after 1R hit — SL 0.5R behind best, TP 1R ahead | `TradeManager.TRAIL_*` |
 | ML threshold (v8.0.3) | **0.30** (was 0.36 SMC era) | `FTMOConfig.ML_FILTER_THRESHOLD` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | **Env DAILY_DD_GUARD (v8.0.4)** | **3.0 %** (was 4.0 %) | `FTMOSignalFilterEnv.DAILY_DD_GUARD` |

@@ -199,10 +199,14 @@ class MeanReversionBacktester(StrategyBacktester):
                 if len(future) == 0:
                     continue
 
-                # Resolve PnL using SMC backtester's machinery — same SL/TP rules
+                # Resolve PnL using base backtester's machinery — same SL/TP rules
+                # v8.0.43 Option X: enable trail after TP hit (Plan B Trick)
                 risk_amount = 1.0
                 trade_pnl = self._resolve_trade(
-                    signal, actual_sl, actual_tp, future, risk_amount, pip_size, rng
+                    signal, actual_sl, actual_tp, future, risk_amount, pip_size, rng,
+                    enable_trail_after_tp=True,
+                    trail_sl_behind_r=0.5,
+                    trail_tp_ahead_r=1.0,
                 )
 
                 # Detect quick TP: figure out how many bars it took to hit TP

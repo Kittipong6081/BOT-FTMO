@@ -60,9 +60,10 @@ class FTMOSignalFilterEnv(gym.Env):
     INITIAL_BALANCE: float = 100_000.0
     CHALLENGE_DAYS: int = 45
     # v6.13: 0.003 → 0.007 (sync กับ live)
-    # v7.1.9 (2026-05-05): 0.007 → 0.0099 — sync กับ live `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT = 0.0099`
-    # กัน silent regression ถ้าลืมใส่ `--risk_per_trade 0.0099` ตอน train
-    RISK_PER_TRADE: float = 0.0099
+    # v7.1.9 (2026-05-05): 0.007 → 0.0099 — sync กับ live
+    # v8.0.43 (2026-05-19): 0.0099 → 0.007 — Option X (trail) ชดเชย EV
+    # v8.0.43c (2026-05-19): 0.007 → 0.0085 — สายกลาง balance
+    RISK_PER_TRADE: float = 0.0085
     DAILY_DD_LIMIT: float = 0.05
     TOTAL_DD_LIMIT: float = 0.10
     TARGET_PCT: float = 0.10

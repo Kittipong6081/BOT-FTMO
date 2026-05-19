@@ -1,5 +1,27 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-15 | Scope: red flags, version log, migration notes (latest: **v8.0.29** — Split training/live config for confluence + ADX thresholds)
+> Last Updated: 2026-05-19 | Scope: red flags, version log, migration notes (latest: **v8.0.43** — Option X TP-Chase Trail + Risk 0.7%)
+
+## 📝 Version Log Entry — v8.0.43 (2026-05-19)
+
+**Option X: TP-Chase Trail (Plan B Trick) + Risk 0.99% → 0.7%**
+
+Code changes:
+- `execution/trade_manager.py` — Trail enabled: `TRAIL_ACTIVATION_RR: 99→1.0`, new `TRAIL_SL_BEHIND_R=0.5`, `TRAIL_TP_AHEAD_R=1.0`, `TRAIL_MIN_STEP_PIPS=1.0`. `_update_trailing_stop()` rewritten — both SL+TP chase after price reaches 1R. 5 invariants enforced (SL/TP no backward, best_price no backward, min step pip).
+- `ml/strategy_backtester.py` — `_resolve_trade()` gains `enable_trail_after_tp` param. After TP hit, switch to trail mode: best_price tracking, SL=best-0.5R (BUY) / best+0.5R (SELL), TP=best+1R (BUY) / best-1R (SELL). Match live exactly.
+- `ml/mean_reversion_backtester.py` — Pass `enable_trail_after_tp=True`, `trail_sl_behind_r=0.5`, `trail_tp_ahead_r=1.0`.
+- `config/settings.py` — Risk default 0.0099 → 0.007 (FTMO buffer 30%), MAX 0.0099 → 0.007.
+- `ml/signal_filter_env.py` — RISK_PER_TRADE 0.0099 → 0.007 (env class default).
+
+Rationale:
+- Option X trail catches trend continuation after TP 1R → expected win avg 1R → 1.3-1.5R.
+- EV/trade approx 2× → ลด risk 0.99 → 0.7% ได้โดย EV รวมไม่ตก.
+- FTMO safety buffer doubles (4 SL × 0.7% = 2.8% vs 4% limit = 30% buffer).
+
+Eval gate (before deploy):
+- Pass Rate ≥ 50% (vs v8.0.42 baseline 55.1%)
+- Total DD ≤ 6.5%, Daily DD ≤ 3.5%, Breach 0%, WR ≥ 58%
+
+---
 
 ## TL;DR (30-second scan)
 

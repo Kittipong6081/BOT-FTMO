@@ -76,8 +76,17 @@ class TradeManager:
     BE_OFFSET_PIPS: float = 0.0         # เลื่อน SL มา Entry พอดี (ไม่มี offset)
     PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ Partial Trigger Hit
     PARTIAL_TRIGGER_RR: float = 0.5     # ปิด 50% ที่ best_rr ≥ 0.5R (เท่า BE — Partial เรียกก่อน BE)
-    TRAIL_ACTIVATION_RR: float = 99.0   # DISABLED — MR RR=1:1 ปิดที่ 1.0R ก่อน trail ทำงาน
-    TRAIL_ATR_MULTIPLIER: float = 1.0   # Trail SL ห่างจาก Best Price = ATR × 1.0 (unused)
+
+    # === v8.0.43 Option X — TP-Chase Trail (Plan B Trick) ===
+    # หลังราคาเลย TP 1R → trail activate, TP+SL ขยับตามราคา
+    # BUY:  SL = best - 0.5R (lock), TP = best + 1.0R (chase)
+    # SELL: SL = best + 0.5R (lock), TP = best - 1.0R (chase)
+    # ราคาเด้งกลับ → SL hit → exit ที่ระดับ trail (lock กำไร)
+    TRAIL_ACTIVATION_RR: float = 1.0    # Enable หลัง TP 1R hit
+    TRAIL_SL_BEHIND_R: float = 0.5      # SL ห่างจาก best 0.5R (lock)
+    TRAIL_TP_AHEAD_R: float = 1.0       # TP chase 1R ข้างหน้า best
+    TRAIL_MIN_STEP_PIPS: float = 1.0    # ไม่ modify ถ้าระยะ < 1 pip (กัน excessive orders)
+    TRAIL_ATR_MULTIPLIER: float = 1.0   # legacy — unused (compat with old TrailingState init)
 
     def __init__(
         self,
@@ -509,51 +518,85 @@ class TradeManager:
         current_price: float
     ):
         """
-        อัพเดท Trailing Stop — เลื่อน SL ตามราคาที่ดีขึ้น
+        v8.0.43 Option X: TP-Chase Trail (Plan B Trick)
 
-        หลักการ:
-        - BUY: ถ้าราคาขึ้น → SL ขึ้นตาม (ห่างจาก Best Price = ATR × multiplier)
-        - SELL: ถ้าราคาลง → SL ลงตาม (ห่างจาก Best Price = ATR × multiplier)
-        - SL จะเลื่อนทิศทางเดียวเท่านั้น (ไม่เลื่อนถอยหลัง)
+        หลังราคาเลย TP 1R → trail activate:
+        - SL ตามราคา (lock = best - 0.5R for BUY)
+        - TP หนีราคา (chase = best + 1R for BUY)
 
-        Args:
-            trade: ข้อมูลเทรด
-            state: สถานะ Trailing
-            current_price: ราคาปัจจุบัน
+        Mirror สำหรับ SELL (signs ตรงข้าม).
+
+        Critical invariants (ห้ามผิด):
+        1. SL ห้ามถอยหลัง — BUY: new_sl > current_sl, SELL: new_sl < current_sl
+        2. TP ห้ามถอยใกล้ — BUY: new_tp > current_tp, SELL: new_tp < current_tp
+        3. Best price ห้ามถอย — BUY: max(best, current), SELL: min(best, current)
+        4. Min step — skip ถ้า change < 1 pip
         """
-        trail_dist = state.trail_distance
+        # คำนวณ SL distance จาก initial setup (1R = distance from entry to initial SL)
+        sl_distance = abs(trade.entry_price - state.initial_sl)
+        if sl_distance <= 0:
+            return  # invalid setup — fail-safe
+
+        trail_sl_behind = sl_distance * self.TRAIL_SL_BEHIND_R    # 0.5R
+        trail_tp_ahead = sl_distance * self.TRAIL_TP_AHEAD_R      # 1.0R
+        min_step = self.TRAIL_MIN_STEP_PIPS * state.pip_size
 
         if trade.trade_type == "BUY":
-            # อัพเดท Best Price (สูงสุด)
+            # Invariant 3: best_price = max(best, current)
             if current_price > state.best_price:
                 state.best_price = current_price
 
-            # คำนวณ SL ใหม่
-            new_sl = state.best_price - trail_dist
+            # คำนวณ trail SL + TP จาก best_price
+            new_sl = state.best_price - trail_sl_behind  # 0.5R behind
+            new_tp = state.best_price + trail_tp_ahead   # 1R ahead
 
-            # SL ต้องสูงกว่าเดิมเท่านั้น (ไม่เลื่อนลง)
-            if new_sl > state.current_sl:
-                if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
+            # Invariant 1+4: SL ขยับขึ้นเท่านั้น + ต้องเกิน min_step
+            sl_better = new_sl > state.current_sl
+            sl_significant = (new_sl - state.current_sl) >= min_step
+
+            # Invariant 2: TP ขยับขึ้นเท่านั้น (BUY)
+            tp_better = new_tp > trade.tp_price
+
+            if sl_better and sl_significant:
+                # Choose final TP — better one if improved, else keep
+                final_tp = new_tp if tp_better else trade.tp_price
+
+                if self._modify_sl(trade.ticket, trade.symbol, new_sl, final_tp):
                     state.current_sl = new_sl
-                    trade.final_sl_at_close = new_sl  # v6.9 mirror
+                    trade.final_sl_at_close = new_sl
+                    if tp_better:
+                        trade.tp_price = final_tp
                     if bot_config.debug_mode:
-                        print(f"📏 [Trail] Ticket {trade.ticket} BUY: SL↑ {new_sl:.5f} "
+                        tp_str = f" TP↑{final_tp:.5f}" if tp_better else ""
+                        print(f"📏 [Trail-v2] {trade.ticket} BUY: SL↑{new_sl:.5f}{tp_str} "
                               f"(Best={state.best_price:.5f})")
 
         elif trade.trade_type == "SELL":
-            # อัพเดท Best Price (ต่ำสุด)
+            # Invariant 3 (SELL): best_price = min(best, current)
             if current_price < state.best_price:
                 state.best_price = current_price
 
-            new_sl = state.best_price + trail_dist
+            new_sl = state.best_price + trail_sl_behind  # 0.5R above (worse for us = lock)
+            new_tp = state.best_price - trail_tp_ahead   # 1R below (chase further)
 
-            # SL ต้องต่ำกว่าเดิมเท่านั้น (ไม่เลื่อนขึ้น)
-            if new_sl < state.current_sl:
-                if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
+            # Invariant 1 (SELL): SL ขยับลงเท่านั้น (closer to entry = lock more)
+            sl_better = new_sl < state.current_sl
+            sl_significant = (state.current_sl - new_sl) >= min_step
+
+            # Invariant 2 (SELL): TP ขยับลงเท่านั้น
+            tp_better = new_tp < trade.tp_price
+
+            if sl_better and sl_significant:
+                final_tp = new_tp if tp_better else trade.tp_price
+
+                if self._modify_sl(trade.ticket, trade.symbol, new_sl, final_tp):
                     state.current_sl = new_sl
-                    trade.final_sl_at_close = new_sl  # v6.9 mirror
+                    trade.final_sl_at_close = new_sl
+                    if tp_better:
+                        trade.tp_price = final_tp
                     if bot_config.debug_mode:
-                        print(f"📏 [Trail] Ticket {trade.ticket} SELL: SL↓ {new_sl:.5f} "
+                        tp_str = f" TP↓{final_tp:.5f}" if tp_better else ""
+                        print(f"📏 [Trail-v2] {trade.ticket} SELL: SL↓{new_sl:.5f}{tp_str} "
                               f"(Best={state.best_price:.5f})")
 
     # =========================================================================
