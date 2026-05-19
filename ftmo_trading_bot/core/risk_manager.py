@@ -641,6 +641,18 @@ class RiskManager:
                         f"00:00-{wd_end_hour:02d}:00 EET "
                         f"(04:00-{wd_end_hour + 4:02d}:00 ICT) — รอ Asian late")
 
+        # === ตรวจสอบที่ 0a.3: XAU Mon-Fri Delay (v8.0.36, extended v8.0.37) ===
+        # XAU เริ่ม 05:05 ICT ตลาดยังไม่มีทิศทาง → หน่วงไป 09 ICT (= 05 EET) Mon-Fri
+        # v8.0.37: ขยายเป็น Mon ด้วย (เดิม Mon ใช้ MONDAY_DELAY 04 EET = 08 ICT)
+        if getattr(self._config, "XAU_WEEKDAY_DELAY_ENABLED", False):
+            now = TimeManager.get_server_time()
+            xau_end = getattr(self._config, "XAU_WEEKDAY_DELAY_END_HOUR_EET", 5)
+            if (symbol.upper() == "XAUUSD"
+                    and now.weekday() in (0, 1, 2, 3, 4)  # Mon-Fri
+                    and now.hour < xau_end):
+                return (False, f"🥇 XAU weekday delay: รอ {xau_end:02d}:00 EET "
+                        f"({xau_end + 4:02d}:00 ICT) Mon-Fri ก่อนเทรด XAU")
+
         # === ตรวจสอบที่ 0: Daily Profit Cap (v8.0.17 — Option D) ===
         # ถ้า cap ถึงแล้ววันนี้ → block เปิด trade ใหม่จนกว่าวันใหม่
         if self._daily_profit_locked:
