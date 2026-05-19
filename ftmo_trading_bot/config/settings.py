@@ -487,10 +487,9 @@ class MeanReversionConfig:
     #   Conf 70-74.99: 24 trades, Net +$12 (avg +$0.51) — break-even with high variance
     #   Conf ≥75: 20 trades, Net +$539 (avg +$26.94) — ALL profit from this zone
     #   Cut 70-74.99 = same Net, half DD, smoother daily returns
-    # v8.0.38 (2026-05-19): 75 → 80 — Path A entry precision improvement
-    #   75-79.99: 14 trades WR 78.6% avg +$15.98
-    #   80+: 5 trades WR 80% avg +$70.84 (4× better per trade)
-    min_confluence_score: float = 80.0          # live (used in main.py path)
+    # v8.0.38 (2026-05-19): ทดลอง 75 → 80 (Path A1) — ห้าม! user prefers 75
+    # v8.0.40 (2026-05-19): revert 80 → 75 — user request, keep 75 for live volume
+    min_confluence_score: float = 75.0          # live (used in main.py path)
     min_confluence_score_training: float = 30.0  # training pool (kept wide for diversity)
 
     # v8.0.29: ADX threshold split (live tighter than training)
