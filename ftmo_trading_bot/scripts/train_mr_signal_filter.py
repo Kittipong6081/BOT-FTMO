@@ -272,7 +272,7 @@ def main():
     parser.add_argument("--pool_workers", type=int, default=8)
     parser.add_argument("--outcome_noise", type=float, default=0.05)
     parser.add_argument("--ml_threshold", type=float, default=0.30)
-    parser.add_argument("--risk_per_trade", type=float, default=0.0099)
+    parser.add_argument("--risk_per_trade", type=float, default=0.0085)  # v8.0.43c sync
     # MR-tunable shaping (auto_train_pipeline can override)
     parser.add_argument("--quick_tp_bonus", type=float, default=None)
     parser.add_argument("--slow_win_bonus", type=float, default=None)

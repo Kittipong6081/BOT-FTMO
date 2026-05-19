@@ -79,7 +79,7 @@ class HyperParams:
     # v8.0.3: lowered 0.40 → 0.30 after iter 1+2 showed agent under-trading
     # (WR 90% but only ~10 trades/ep at 0.40, not enough to hit 10% target).
     ml_threshold: float = 0.30
-    risk_per_trade: float = 0.0099
+    risk_per_trade: float = 0.0085  # v8.0.43c sync (was 0.0099)
     lr_p1: float = 3e-4
     lr_p2: float = 5e-5
     # MR reward shaping (forwarded to env via train script flags)
@@ -472,7 +472,7 @@ def main():
     parser.add_argument("--timesteps_p2", type=int, default=2_000_000)
     parser.add_argument("--n_envs", type=int, default=8)
     parser.add_argument("--ml_threshold", type=float, default=0.40)
-    parser.add_argument("--risk_per_trade", type=float, default=0.0099)
+    parser.add_argument("--risk_per_trade", type=float, default=0.0085)  # v8.0.43c sync
     parser.add_argument("--outcome_noise", type=float, default=0.05,
                         help="Outcome PnL noise std (regularization, anti-overfit). "
                              "Default 0.05; v8.0.10 retrain uses 0.08")

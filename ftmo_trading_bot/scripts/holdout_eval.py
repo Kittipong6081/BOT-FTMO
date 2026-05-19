@@ -126,7 +126,7 @@ def main():
     parser.add_argument("--holdout_pool", default=os.path.join(ROOT, "data/mr_signal_pool_holdout.pkl"))
     parser.add_argument("--n_episodes", type=int, default=2000)
     parser.add_argument("--ml_threshold", type=float, default=0.30)
-    parser.add_argument("--risk_per_trade", type=float, default=0.0099)
+    parser.add_argument("--risk_per_trade", type=float, default=0.0085)  # v8.0.43c sync
     args = parser.parse_args()
 
     if not os.path.exists(args.model):
