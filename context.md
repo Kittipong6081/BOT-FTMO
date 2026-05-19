@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-19 (v8.0.43 — Option X TP-Chase Trail + Risk 0.7%) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-19 (v8.0.43e — Cap trail reward variance + Phase 1 extended) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 

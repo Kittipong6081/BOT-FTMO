@@ -1,5 +1,29 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-19 | Scope: red flags, version log, migration notes (latest: **v8.0.43** — Option X TP-Chase Trail + Risk 0.7%)
+> Last Updated: 2026-05-19 | Scope: red flags, version log, migration notes (latest: **v8.0.43e** — Cap trail reward + Phase 1 extended)
+
+## 📝 Version Log Entry — v8.0.43e (2026-05-19, in test)
+
+**Root cause fix for high STD (1.88) in v8.0.43c**
+
+Hypothesis: Trail outcomes (1R, 1.5R, 2R, 3R+) → high reward variance → agent confused → STD ขึ้น.
+
+Code changes:
+- `ml/signal_filter_env.py` step() — Cap trail extension reward:
+  ```python
+  if outcome > 1.5:
+      excess = outcome - 1.5
+      outcome = 1.5 + excess * 0.5  # decay extension
+  ```
+  Effect: TP@1R = +1R (เท่าเดิม), Trail 2R = +1.75R (was 2R), 3R = +2.25R (was 3R)
+- Phase 1 timesteps: 5M → 8M (CLI arg) — foundation stable ก่อน Phase 2
+
+Gate (vs v8.0.43c baseline):
+- Pass Rate ≥ 61.8% → commit + push as v8.0.43e
+- Pass Rate < 61.8% → revert env code, restore v8.0.43c models from backup
+
+Models backup: `models/mr/*.bak_v8043c_*` saved before train start.
+
+---
 
 ## 📝 Version Log Entry — v8.0.43 (2026-05-19)
 
