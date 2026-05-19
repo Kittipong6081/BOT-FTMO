@@ -121,12 +121,12 @@ class FTMOConfig:
     WEEKDAY_DELAY_END_HOUR_EET: int = 7  # ห้าม Mon-Fri 00:00-06:59 EET (= 04:00-10:59 ICT)
     WEEKDAY_DELAY_EXCEPT_SYMBOLS: tuple = ("XAUUSD",)  # ทอง = exception
 
-    # === XAU Tue-Fri Delay (v8.0.36) ===
+    # === XAU Mon-Fri Delay (v8.0.36, extended v8.0.37) ===
     # XAU เริ่มเทรดได้ตอน 05:05 ICT หลัง rollover (ก่อน v8.0.36)
-    # แต่ตลาดยังไม่มีทิศทางที่แน่นอน — หน่วงไปเริ่ม 05 EET (= 09 ICT) Tue-Fri
-    # Mon XAU ยังใช้ MONDAY_DELAY = 04 EET (= 08 ICT)
+    # ตลาดยังไม่มีทิศทางที่แน่นอน — หน่วงไปเริ่ม 05 EET (= 09 ICT) ทุกวัน Mon-Fri
+    # v8.0.37: ขยาย Tue-Fri → Mon-Fri (เดิม Mon XAU เริ่ม 08 ICT จาก MONDAY_DELAY)
     XAU_WEEKDAY_DELAY_ENABLED: bool = True
-    XAU_WEEKDAY_DELAY_END_HOUR_EET: int = 5  # XAU Tue-Fri เริ่ม 05 EET (= 09 ICT)
+    XAU_WEEKDAY_DELAY_END_HOUR_EET: int = 5  # XAU Mon-Fri เริ่ม 05 EET (= 09 ICT)
 
     # === Flip-Lock TTL (v8.0.18 — fix lock ค้างข้าม weekend) ===
     # FLIP_LOCK_MIN_MINUTES = MIN wait (เวลาเร็วสุดที่ unlock ได้)
