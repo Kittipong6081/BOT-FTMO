@@ -1330,8 +1330,34 @@ class FTMOTradingBot:
                 if self._loop_count % 720 == 0 and self._loop_count > 0:
                     self._check_gbm_drift()
 
+                # v8.0.46: Adaptive loop interval — fast poll ตอน position ใกล้ TP
+                # ถ้ามี position กำไร ≥ 0.5R → ใช้ 1s (กัน TP hit ก่อน trail modify)
+                # ปกติ 5s
+                sleep_interval = bot_config.main_loop_interval
+                try:
+                    open_positions = self._connector.get_open_positions()
+                    if open_positions:
+                        for pos in open_positions:
+                            entry = pos.get("price_open", 0)
+                            current = pos.get("price_current", entry)
+                            sl = pos.get("sl", 0)
+                            if entry > 0 and sl > 0:
+                                sl_dist = abs(entry - sl)
+                                if sl_dist > 0:
+                                    pos_type = pos.get("type")  # 0=BUY, 1=SELL
+                                    if pos_type == 0:  # BUY
+                                        profit_r = (current - entry) / sl_dist
+                                    else:  # SELL
+                                        profit_r = (entry - current) / sl_dist
+                                    # ใกล้ TP → fast poll
+                                    if profit_r >= 0.5:
+                                        sleep_interval = 1  # fast 1s
+                                        break
+                except Exception:
+                    pass  # fail-safe: use default interval
+
                 # รอก่อน Loop ถัดไป
-                time_module.sleep(bot_config.main_loop_interval)
+                time_module.sleep(sleep_interval)
 
             except Exception as e:
                 print(f"❌ [Bot] เกิดข้อผิดพลาดใน Main Loop: {e}")
