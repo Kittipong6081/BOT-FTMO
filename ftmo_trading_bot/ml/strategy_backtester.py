@@ -210,6 +210,7 @@ class StrategyBacktester:
         enable_trail_after_tp: bool = False,
         trail_sl_behind_r: float = 0.5,
         trail_tp_ahead_r: float = 1.0,
+        trail_activation_r: float = 0.8,  # v8.0.45 pre-emptive (จาก 1.0)
     ) -> float:
         """Simulate trade outcome against future bars.
 
@@ -234,11 +235,13 @@ class StrategyBacktester:
             sl_price = entry + sl_dist
             tp_price = entry - tp_dist
 
-        # v8.0.43: Trail state (activate after first TP hit)
+        # v8.0.43: Trail state (activate after price reaches activation level)
+        # v8.0.45: activate at 0.8R (pre-emptive — bot ขยับ TP ก่อน TP เดิม hit)
         trail_active = False
         best_price = entry
         trail_sl_dist = sl_dist * trail_sl_behind_r  # 0.5R
         trail_tp_dist = sl_dist * trail_tp_ahead_r   # 1R
+        trail_activation_dist = sl_dist * trail_activation_r  # 0.8R
 
         # Daily / Friday close simulation (FTMO zero-overnight rule)
         from config.settings import bot_config
@@ -321,42 +324,66 @@ class StrategyBacktester:
 
             # ═══ NORMAL MODE (pre-trail) ═══
 
+            # v8.0.45: Trail activation level (0.8R) — pre-empt TP hit
+            if is_buy:
+                trail_activation_price = entry + trail_activation_dist
+            else:
+                trail_activation_price = entry - trail_activation_dist
+
             # Gap check — bar opens past SL/TP (weekend / news)
             if is_buy:
                 if bar_open <= sl_price:
                     slippage = float(rng.uniform(1.0, 1.005))
                     return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * slippage
-                if bar_open >= tp_price:
-                    if not enable_trail_after_tp:
-                        spread_cost = float(rng.uniform(0.995, 1.0))
-                        return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * spread_cost
-                    # Trail activates at bar_open (which is past TP)
+                # v8.0.45: activate trail when bar_open >= activation (not TP)
+                if enable_trail_after_tp and bar_open >= trail_activation_price:
                     trail_active = True
                     best_price = bar_open
                     sl_price = best_price - trail_sl_dist
                     tp_price = best_price + trail_tp_dist
                     continue
+                if bar_open >= tp_price:
+                    spread_cost = float(rng.uniform(0.995, 1.0))
+                    return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * spread_cost
             else:
                 if bar_open >= sl_price:
                     slippage = float(rng.uniform(1.0, 1.005))
                     return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * slippage
-                if bar_open <= tp_price:
-                    if not enable_trail_after_tp:
-                        spread_cost = float(rng.uniform(0.995, 1.0))
-                        return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * spread_cost
+                # v8.0.45: activate trail when bar_open <= activation (not TP)
+                if enable_trail_after_tp and bar_open <= trail_activation_price:
                     trail_active = True
                     best_price = bar_open
                     sl_price = best_price + trail_sl_dist
                     tp_price = best_price - trail_tp_dist
                     continue
+                if bar_open <= tp_price:
+                    spread_cost = float(rng.uniform(0.995, 1.0))
+                    return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * spread_cost
 
-            # Intra-bar SL / TP
+            # Intra-bar SL / TP / Trail Activation
             if is_buy:
                 hit_sl = bar_low <= sl_price
+                hit_activation = bar_high >= trail_activation_price  # v8.0.45
                 hit_tp = bar_high >= tp_price
             else:
                 hit_sl = bar_high >= sl_price
+                hit_activation = bar_low <= trail_activation_price  # v8.0.45
                 hit_tp = bar_low <= tp_price
+
+            # v8.0.45: If trail enabled AND hit activation level → activate trail
+            # (before checking TP exit)
+            if enable_trail_after_tp and hit_activation and not hit_sl:
+                trail_active = True
+                # Best price = activation level (we know price reached at least there)
+                if is_buy:
+                    best_price = trail_activation_price
+                    sl_price = best_price - trail_sl_dist
+                    tp_price = best_price + trail_tp_dist
+                else:
+                    best_price = trail_activation_price
+                    sl_price = best_price + trail_sl_dist
+                    tp_price = best_price - trail_tp_dist
+                continue  # trail mode starts next iteration
 
             if hit_sl and hit_tp:
                 # Bar-color heuristic

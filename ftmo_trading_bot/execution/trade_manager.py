@@ -78,11 +78,13 @@ class TradeManager:
     PARTIAL_TRIGGER_RR: float = 0.5     # ปิด 50% ที่ best_rr ≥ 0.5R (เท่า BE — Partial เรียกก่อน BE)
 
     # === v8.0.43 Option X — TP-Chase Trail (Plan B Trick) ===
-    # หลังราคาเลย TP 1R → trail activate, TP+SL ขยับตามราคา
+    # v8.0.45 Pre-emptive Fix: activate at 0.8R (ก่อน TP เดิม 1R hit)
+    # เหตุผล: RR 1:1 → TP hit เร็วมาก (~1ms) — bot loop 5s ไม่ทัน modify
+    # แก้: เริ่ม trail ที่ 0.8R → bot ขยับ TP→1.8R ก่อน TP เดิมจะ hit
     # BUY:  SL = best - 0.5R (lock), TP = best + 1.0R (chase)
     # SELL: SL = best + 0.5R (lock), TP = best - 1.0R (chase)
     # ราคาเด้งกลับ → SL hit → exit ที่ระดับ trail (lock กำไร)
-    TRAIL_ACTIVATION_RR: float = 1.0    # Enable หลัง TP 1R hit
+    TRAIL_ACTIVATION_RR: float = 0.8    # v8.0.45: 1.0 → 0.8 (pre-emptive)
     TRAIL_SL_BEHIND_R: float = 0.5      # SL ห่างจาก best 0.5R (lock)
     TRAIL_TP_AHEAD_R: float = 1.0       # TP chase 1R ข้างหน้า best
     TRAIL_MIN_STEP_PIPS: float = 1.0    # ไม่ modify ถ้าระยะ < 1 pip (กัน excessive orders)
