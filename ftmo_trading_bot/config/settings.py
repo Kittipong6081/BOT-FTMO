@@ -121,6 +121,10 @@ class FTMOConfig:
     WEEKDAY_DELAY_ENABLED: bool = True
     WEEKDAY_DELAY_END_HOUR_EET: int = 7  # ห้าม Mon-Fri 00:00-06:59 EET (= 04:00-10:59 ICT)
     WEEKDAY_DELAY_EXCEPT_SYMBOLS: tuple = ("XAUUSD",)  # ทอง = exception
+    # v8.0.44 (2026-05-20): Conf ≥ 90 ผ่านได้ใน Asian late (premium quality exception)
+    # data 6 วัน: 19 signals conf ≥90, RL อยาก TAKE 9 (47%) — quality สูง
+    # ปลอดภัย: rare event, ไม่ลด FTMO buffer มาก
+    WEEKDAY_DELAY_CONF_EXCEPTION: float = 90.0
 
     # === XAU Mon-Fri Delay (v8.0.36, extended v8.0.37) ===
     # XAU เริ่มเทรดได้ตอน 05:05 ICT หลัง rollover (ก่อน v8.0.36)

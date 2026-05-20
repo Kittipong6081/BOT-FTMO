@@ -574,6 +574,7 @@ class RiskManager:
         rr_ratio: float,
         direction: Optional[str] = None,
         atr: Optional[float] = None,
+        confluence_score: float = 0.0,
     ) -> Tuple[bool, str]:
         """
         ตรวจสอบว่าสามารถเปิดออเดอร์ใหม่ได้หรือไม่
@@ -633,13 +634,20 @@ class RiskManager:
             now = TimeManager.get_server_time()
             wd_end_hour = getattr(self._config, "WEEKDAY_DELAY_END_HOUR_EET", 7)
             except_syms = getattr(self._config, "WEEKDAY_DELAY_EXCEPT_SYMBOLS", ())
+            # v8.0.44: Asian late exception — Conf ≥ 90 ผ่านได้ (premium quality)
+            # ปกติ FX Asian early = ขาดทุนหนัก (-$300 historical)
+            # แต่ Conf 90+ ผ่าน strict quality gate (data: 19 signals/6days, RL TAKE 9)
+            # → ลอง exception แบบ conservative — Asian conf 90+ trade ได้
+            conf_exception_threshold = getattr(self._config, "WEEKDAY_DELAY_CONF_EXCEPTION", 90.0)
             # Mon=0, Tue=1, Wed=2, Thu=3, Fri=4
             if (now.weekday() in (0, 1, 2, 3, 4)
                     and now.hour < wd_end_hour
-                    and symbol.upper() not in except_syms):
+                    and symbol.upper() not in except_syms
+                    and confluence_score < conf_exception_threshold):
                 return (False, f"🌅 Weekday delay: {symbol} ห้ามเทรด "
                         f"00:00-{wd_end_hour:02d}:00 EET "
-                        f"(04:00-{wd_end_hour + 4:02d}:00 ICT) — รอ Asian late")
+                        f"(04:00-{wd_end_hour + 4:02d}:00 ICT) — รอ Asian late "
+                        f"(conf {confluence_score:.0f} < {conf_exception_threshold:.0f})")
 
         # === ตรวจสอบที่ 0a.3: XAU Mon-Fri Delay (v8.0.36, extended v8.0.37) ===
         # XAU เริ่ม 05:05 ICT ตลาดยังไม่มีทิศทาง → หน่วงไป 09 ICT (= 05 EET) Mon-Fri

@@ -489,6 +489,7 @@ class TradeExecutor:
             rr_ratio=signal.rr_ratio,
             direction=signal.signal_type.value,
             atr=signal.atr_value,
+            confluence_score=signal.confluence_score,  # v8.0.44: Asian conf exception
         )
 
         if not allowed:

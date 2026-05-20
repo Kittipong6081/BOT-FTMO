@@ -1,7 +1,29 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-19 | Scope: red flags, version log, migration notes (latest: **v8.0.43e** — Cap trail reward + Phase 1 extended)
+> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.44** — Conf ≥ 90 exception for Asian late delay)
 
-## 📝 Version Log Entry — v8.0.43e (2026-05-19, in test)
+## 📝 Version Log Entry — v8.0.44 (2026-05-20)
+
+**Conf ≥ 90 exception for Asian late delay (premium quality bypass)**
+
+Data analysis (6 days):
+- 100 Asian late FX signals with Conf ≥ 85 (RL TAKE 46, SKIP 44)
+- 19 Asian late FX signals with Conf ≥ 90 (RL TAKE 9 = 47%) — premium quality
+- → RL agrees these are worth taking but session block prevents
+
+Code changes:
+- `config/settings.py` — new `WEEKDAY_DELAY_CONF_EXCEPTION: float = 90.0`
+- `core/risk_manager.py` — `can_open_trade()` accepts `confluence_score` param; Asian late check skips block if conf ≥ 90
+- `execution/trade_executor.py` — passes `signal.confluence_score` to `can_open_trade`
+
+Safety:
+- Threshold 90 = rare event (0.5% of signals)
+- ~3 trades/week extra (estimated)
+- Buffer ห่าง FTMO DD limit ไม่กระทบ
+- ปลอดภัยกว่า conf 85 (which had RL split 46/44)
+
+---
+
+## 📝 Version Log Entry — v8.0.43e (2026-05-19)
 
 **Root cause fix for high STD (1.88) in v8.0.43c**
 
