@@ -1,5 +1,20 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.48b** — Stepwise Trail + sim hit_sl fix + caps simplified, Pass 68.8%)
+> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.49** — Throttle Daily Loss spam)
+
+## 📝 Version Log Entry — v8.0.49 (2026-05-20)
+
+**Throttle Daily Loss approach-limit warning (anti-spam)**
+
+Bug: `RiskManager.check_daily_loss()` printed `⚠️ Daily Loss: X% (ขีดจำกัด: 4%)` every 5s when `daily_loss_pct > 3%` → spam (hundreds of lines per minute during drawdown days).
+
+Fix mirrors v8.0.16 Give-back throttle:
+- New state field `_last_daily_loss_alert_pct: float` in `RiskManager.__init__`
+- Reset on new day in `_on_new_day` (alongside `_last_give_back_alert_pct`)
+- Print only when crossing 0.5pp milestone: 3.0%, 3.5%, 4.0% (≤3 prints between warning threshold and Hard Stop)
+
+No retrain needed — print-throttle only.
+
+---
 
 ## 📝 Version Log Entry — v8.0.48b (2026-05-20) — DEPLOYED Pass 68.8%
 

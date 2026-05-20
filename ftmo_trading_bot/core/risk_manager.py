@@ -80,6 +80,9 @@ class RiskManager:
         # v8.0.16: throttle "Give-back from peak" alert — print เฉพาะข้าม 1% milestone ใหม่
         # (เดิม print ทุก 5s = spam; reset วันใหม่ + ทุกครั้งที่ peak ใหม่)
         self._last_give_back_alert_pct: float = 0.0
+        # v8.0.49: throttle "Daily Loss approach limit" alert — print เฉพาะข้าม 0.5pp milestone ใหม่
+        # (เดิม print ทุก 5s ตอน loss > 3% = spam; reset วันใหม่)
+        self._last_daily_loss_alert_pct: float = 0.0
         # v8.0.17: Daily profit cap (Option D Hard Stop) — เมื่อ trigger จะปิดทุก
         # position + block new trades จนกว่าวันใหม่. Anchor ใช้ initial_balance
         # ของ challenge (ไม่ใช่ daily start) → cap คงที่ตลอด challenge.
@@ -253,6 +256,7 @@ class RiskManager:
         self._daily_closed_pnl = 0.0
         self._daily_trades_count = 0
         self._last_give_back_alert_pct = 0.0   # v8.0.16: clean slate วันใหม่
+        self._last_daily_loss_alert_pct = 0.0  # v8.0.49: reset throttle วันใหม่
         self._daily_profit_locked = False      # v8.0.17: reset daily profit cap
         self._daily_loss_locked = False        # v8.0.22: reset daily loss cap
 
@@ -431,9 +435,13 @@ class RiskManager:
         # ค่าขีดจำกัด
         daily_limit = self._config.DAILY_LOSS_HARD_STOP_PCT  # 4%
         
-        # แสดงคำเตือนเมื่อเข้าใกล้ขีดจำกัด (เกิน 3%)
+        # v8.0.49: throttle Daily Loss warning — print เฉพาะข้าม 0.5pp milestone ใหม่
+        # (เดิม print ทุก 5s ตอน loss > 3% = spam; reset วันใหม่)
         if daily_loss_pct > 0.03 and self._state == BotState.ACTIVE:
-            print(f"⚠️ [Risk Manager] คำเตือน! Daily Loss: {daily_loss_pct:.2%} (ขีดจำกัด: {daily_limit:.0%})")
+            milestone = int(daily_loss_pct * 200) / 200  # 0.5% buckets (3.0, 3.5, 4.0...)
+            if milestone > self._last_daily_loss_alert_pct:
+                print(f"⚠️ [Risk Manager] คำเตือน! Daily Loss: {daily_loss_pct:.2%} (ขีดจำกัด: {daily_limit:.0%})")
+                self._last_daily_loss_alert_pct = milestone
         
         # ตรวจสอบว่าเกินขีดจำกัดหรือยัง
         if daily_loss_pct >= daily_limit:
