@@ -1,5 +1,7 @@
 # 03 — RL Training (Obs 32 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-19 (v8.0.43e — Cap trail reward variance, Phase 1 = 8M) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-05-20 (v8.0.47 — Removed trail reward cap, Phase 1 = 8M) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+>
+> **v8.0.47 change** — Removed the `outcome > 1.5 → 1.5 + excess*0.5` cap added in v8.0.43e. Background: v8.0.45 (which kept the cap + trail @ 0.8R) eval Pass = 52% vs v8.0.43e 65.7% baseline. Cap suppressed big-runner reward → agent learned to skip trail trades. v8.0.47 lets raw `outcome` flow → agent re-incentivized to chase runners. Paired with `TRAIL_ACTIVATION_RR = 0.9` (was 0.8) in `execution/trade_manager.py` and `ml/strategy_backtester.py`.
 
 ## TL;DR (30-second scan)
 

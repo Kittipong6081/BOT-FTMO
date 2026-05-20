@@ -1,8 +1,10 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-20 (v8.0.44 — Asian conf ≥90 exception) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-20 (v8.0.47 — Trail 0.9R balance + removed reward cap) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
+- **v8.0.47 (2026-05-20) — 🔁 Trail 0.9R + removed reward cap (fallback from v8.0.45 Pass 52%)**: v8.0.45 trail @ 0.8R + reward cap eval Pass **52%** (regression -13.7pp from v8.0.43e 65.7%). Hypothesis: 0.8R too aggressive → SL trail catches retrace early, cap suppresses big-runner reward → agent stops chasing. Fix: `TRAIL_ACTIVATION_RR` 0.8→**0.9** (compromise) + removed `outcome > 1.5` cap in `signal_filter_env.py` step(). Live: restored v8.0.43e models from `.bak_1779255651` (Pass 65.7%) during retrain. v8.0.46 adaptive 1s loop kept (orthogonal). Gate: Pass ≥ 60% → push, else fallback Option A. ดู [`wiki/05-invariants.md` v8.0.47](wiki/05-invariants.md#-version-log-entry--v8047-2026-05-20).
+- **v8.0.45/46 (DEPRECATED)**: v8.0.45 pre-emptive 0.8R failed (Pass 52%). v8.0.46 adaptive loop interval kept (live TP race fix).
 - **v8.0.29 (2026-05-15) — 🔀 แยก training/live config (กัน retrain ทำให้ pool หด)**: v8.0.27 (XAU ADX 27) + v8.0.28 (confluence 70) เป็น live filter แต่ class-level `MeanReversionStrategy` ใช้ค่าเดียวกันทั้ง live + training → ถ้า retrain pool จะหดเหลือครึ่ง. Fix: เพิ่ม `MRConfig.min_confluence_score_training=30.0` + `adx_trend_block_training=30.0` + `adx_trend_block_xau_training=30.0` + `MeanReversionBacktester.__init__` override 3 ค่า. ผล: Live = 70/30/27, Training = 30/30/30 (กว้างเท่าเดิม). ไม่ต้อง retrain. ดู [`wiki/05-invariants.md` v8.0.29](wiki/05-invariants.md#-version-log-reverse-chronological).
 - **v8.0.28 (2026-05-15) — 🎯 Confluence floor enforced 70 (was unused, strategy used 30)**: Audit 48 live trades พบ confluence < 70 = WR 33-50% loss -$428, ≥ 70 = WR 76% +$425. `FTMOConfig.MIN_CONFLUENCE_SCORE=70` ตั้งไว้นานแต่ไม่ enforce — strategy class default 30 ทำให้ไม้คุณภาพต่ำผ่าน. Fix: เพิ่ม `MRConfig.min_confluence_score=70.0` + bump `MeanReversionStrategy.MIN_CONFLUENCE_SCORE` 30→70 + wire ผ่าน `__init__`. ผลคาดการณ์: 25/48 ไม้ผ่าน (block 48%), WR 58%→76%, P/L -$4→+$425. ไม่ต้อง retrain. ดู [`wiki/05-invariants.md` v8.0.28](wiki/05-invariants.md#-version-log-reverse-chronological).
 - **v8.0.27 (2026-05-15) — 🎯 Per-symbol ADX threshold for XAUUSD (27 vs default 30)**: วันนี้ทอง 2 ไม้ SL hit -$212 (Trade #2 ADX H1=28.5). Live data 14 XAU trades — block threshold ADX>27 จะ block แค่ 1/14 ไม้ (เป็นไม้แพ้ของวันนี้) ไม่ตัดไม้กำไรเลย. เพิ่ม `MRConfig.adx_trend_block_xau=27.0` + `MeanReversionStrategy.ADX_TREND_BLOCK_XAU=27.0` + per-symbol routing ใน `scan_signal()` (XAU=27, อื่นๆ=30). Default ADX block 30 ของ symbol อื่นไม่กระทบ. ไม่ต้อง retrain (strategy-level filter). ดู [`wiki/05-invariants.md` v8.0.27](wiki/05-invariants.md#-version-log-reverse-chronological).
@@ -140,7 +142,9 @@
 | FTMO Daily DD limit | 5 % (we cap at 4%) | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | FTMO Total DD limit | 10 % (we cap at 8%) | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
 | Default risk per trade | **0.7 %** (v8.0.43 — paired with Option X trail) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
-| Option X (v8.0.43) | Trail TP+SL after 1R hit — SL 0.5R behind best, TP 1R ahead | `TradeManager.TRAIL_*` |
+| Option X (v8.0.47) | Trail TP+SL after **0.9R** hit — SL 0.5R behind best, TP 1R ahead | `TradeManager.TRAIL_*` |
+| Main loop interval (v8.0.46) | 5s default, **1s** when any position profit ≥ 0.5R | `bot_config.main_loop_interval`, adaptive in `FTMOTradingBot.run` |
+| Trail reward (v8.0.47) | Raw outcome (no cap — let big runners flow) | `FTMOSignalFilterEnv.step()` |
 | ML threshold (v8.0.3) | **0.30** (was 0.36 SMC era) | `FTMOConfig.ML_FILTER_THRESHOLD` |
 | Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | **Env DAILY_DD_GUARD (v8.0.4)** | **3.0 %** (was 4.0 %) | `FTMOSignalFilterEnv.DAILY_DD_GUARD` |

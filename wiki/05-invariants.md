@@ -1,5 +1,36 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.44** — Conf ≥ 90 exception for Asian late delay)
+> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.47** — Trail 0.9R balance + removed reward cap)
+
+## 📝 Version Log Entry — v8.0.47 (2026-05-20)
+
+**Trail activation 0.8R → 0.9R + removed trail reward cap (fallback from v8.0.45 Pass 52%)**
+
+Background:
+- v8.0.45 set `TRAIL_ACTIVATION_RR = 0.8` (pre-emptive — avoid live RR 1:1 TP race) + reward cap @1.5R+0.5x decay
+- v8.0.45 final eval = **Pass 52%** (vs v8.0.43e baseline 65.7% = **-13.7pp regression**)
+- Hypothesis: 0.8R too aggressive → SL trail catches retrace too early, agent stops chasing big runners
+
+Code changes (v8.0.47):
+- `execution/trade_manager.py` — `TRAIL_ACTIVATION_RR: 0.8 → 0.9` (compromise)
+- `ml/strategy_backtester.py` — `trail_activation_r` default `0.8 → 0.9`
+- `ml/signal_filter_env.py` — Removed trail reward cap (was: `outcome > 1.5 → 1.5 + excess*0.5`). Let raw outcome flow → agent learns to chase big runners.
+
+Live continuity:
+- Restored v8.0.43e model files from `.bak_1779255651` (Pass 65.7%) while retraining
+- v8.0.46 adaptive 1s loop (when position profit ≥ 0.5R) still active → mitigates TP race risk at 0.9R
+
+Gate (vs v8.0.43e baseline 65.7%):
+- Pass ≥ 60% → commit + push v8.0.47
+- Pass < 60% → fallback Option A (revert code to v8.0.43e: trail 1.0R + reward cap)
+
+---
+
+## 📝 Version Log Entry — v8.0.45/46 (2026-05-20) — DEPRECATED
+
+**v8.0.45**: Pre-emptive trail @ 0.8R — **failed** (Pass 52%, -13.7pp). Reverted in v8.0.47.
+**v8.0.46**: Adaptive main loop interval (5s default → 1s when position profit ≥ 0.5R) — **kept** (orthogonal bug fix for TP race condition reported in live).
+
+---
 
 ## 📝 Version Log Entry — v8.0.44 (2026-05-20)
 

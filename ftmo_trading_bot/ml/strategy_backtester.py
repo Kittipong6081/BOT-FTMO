@@ -210,7 +210,7 @@ class StrategyBacktester:
         enable_trail_after_tp: bool = False,
         trail_sl_behind_r: float = 0.5,
         trail_tp_ahead_r: float = 1.0,
-        trail_activation_r: float = 0.8,  # v8.0.45 pre-emptive (จาก 1.0)
+        trail_activation_r: float = 0.9,  # v8.0.47: 0.8→0.9 (balance pre-emptive vs runners)
     ) -> float:
         """Simulate trade outcome against future bars.
 
@@ -236,12 +236,12 @@ class StrategyBacktester:
             tp_price = entry - tp_dist
 
         # v8.0.43: Trail state (activate after price reaches activation level)
-        # v8.0.45: activate at 0.8R (pre-emptive — bot ขยับ TP ก่อน TP เดิม hit)
+        # v8.0.47: activate at 0.9R (balance pre-emptive vs runners; live uses adaptive 1s loop)
         trail_active = False
         best_price = entry
         trail_sl_dist = sl_dist * trail_sl_behind_r  # 0.5R
         trail_tp_dist = sl_dist * trail_tp_ahead_r   # 1R
-        trail_activation_dist = sl_dist * trail_activation_r  # 0.8R
+        trail_activation_dist = sl_dist * trail_activation_r  # 0.9R
 
         # Daily / Friday close simulation (FTMO zero-overnight rule)
         from config.settings import bot_config

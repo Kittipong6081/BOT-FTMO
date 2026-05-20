@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-20 (v8.0.44 — Asian conf ≥90 exception) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-20 (v8.0.47 — Trail 0.9R + reward cap removed; v8.0.46 adaptive loop) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -17,7 +17,8 @@
 
 | Item | Value | Source (symbol) |
 |------|-------|-----------------|
-| Main loop interval | 5 s (default) | `bot_config.main_loop_interval` |
+| Main loop interval | 5 s default, **1 s when position profit ≥ 0.5R** (v8.0.46 adaptive — gives bot time to react before TP race) | `bot_config.main_loop_interval`, adaptive code in `FTMOTradingBot.run` |
+| Trail activation | **0.9R** (v8.0.47 — balance pre-emptive vs runners) | `TradeManager.TRAIL_ACTIVATION_RR` |
 | Symbols | 10 (incl. XAUUSD) | `SymbolConfig.symbols` |
 | Daily DD stop | 4 % | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | Total DD stop | 8 % | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |

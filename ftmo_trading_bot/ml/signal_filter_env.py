@@ -581,14 +581,9 @@ class FTMOSignalFilterEnv(gym.Env):
             self._correlation_forced_skips += 1
 
         outcome = float(sig.get('outcome_pnl_ratio', 0.0))
-        # v8.0.43e (Option X variance fix): cap trail extension reward
-        # Pool มี outcome > 1R (trail catches) ที่ variance สูง → agent confused → STD ขึ้น
-        # Solution: เก็บกำไรเต็มสำหรับ first 1.5R, ลด magnitude สำหรับ extension
-        # Effect: TP@1R = +1R (เท่าเดิม), Trail catch 2R = +1.75R (เดิม 2R), 3R = +2.25R (เดิม 3R)
-        # → variance ลด, agent stable, ผลกำไรยังคงดี
-        if outcome > 1.5:
-            excess = outcome - 1.5
-            outcome = 1.5 + excess * 0.5  # decay extension
+        # v8.0.47: removed trail reward cap — let runners flow naturally
+        # v8.0.45 capped @1.5R+0.5x decay → agent ฝึก "พอใจ 1.5R" → no big winners → Pass 52%
+        # คืน raw outcome → big runners 2R+/3R+ ให้ reward เต็ม → agent ไล่ trail trades
 
         # ML quality score (จาก GBM) — ตัวทำนาย win ที่แม่นกว่า confluence
         # ใช้เป็น primary signal สำหรับ reward shaping (แทน confluence ที่ uninformative)
