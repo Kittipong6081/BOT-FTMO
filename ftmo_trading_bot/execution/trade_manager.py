@@ -48,6 +48,7 @@ class TrailingState:
     trailing_active: bool       # Trailing Stop กำลังทำงานหรือไม่
     trail_distance: float       # ระยะ Trailing (ราคา)
     pip_size: float = 0.0001    # cache pip_size → กันเรียก get_symbol_info ทุก tick
+    tp_step_done: bool = False  # v8.0.48 Stage 2: TP shift to 1.5R + SL to 0.5R triggered แล้วหรือยัง
 
 
 class TradeManager:
@@ -77,15 +78,17 @@ class TradeManager:
     PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ Partial Trigger Hit
     PARTIAL_TRIGGER_RR: float = 0.5     # ปิด 50% ที่ best_rr ≥ 0.5R (เท่า BE — Partial เรียกก่อน BE)
 
-    # === v8.0.43 Option X — TP-Chase Trail (Plan B Trick) ===
-    # v8.0.47: activate at 0.9R (middle ground 0.8 too aggressive, 1.0 too late)
-    # เหตุผล: 0.8R → trail หนีเร็วเกิน big runners ถูกกดที่ 1.5R-2R (Pass 52%)
-    #         1.0R → TP เดิม hit ก่อน bot react (live bug, Pass 65.7% baseline)
-    # แก้: 0.9R compromise + v8.0.46 adaptive 1s loop ช่วย bot react ทัน
-    # BUY:  SL = best - 0.5R (lock), TP = best + 1.0R (chase)
-    # SELL: SL = best + 0.5R (lock), TP = best - 1.0R (chase)
-    TRAIL_ACTIVATION_RR: float = 0.9    # v8.0.47: 0.8 → 0.9 (balance pre-emptive vs runners)
-    TRAIL_SL_BEHIND_R: float = 0.5      # SL ห่างจาก best 0.5R (lock)
+    # === v8.0.48 Stepwise Trail (user-requested) ===
+    # Stage 1 @ 0.5R: Partial 50% + BE (เดิม v8.0.14)
+    # Stage 2 @ 0.8R: TP shift 1.0R → 1.5R, SL shift BE → 0.5R (lock partial price)
+    # Stage 3 @ 1.0R: SL shift 0.5R → 1.0R + Trail activate (chase)
+    # Trail mode: SL = max(1.0R floor, best - 0.5R), TP = best + 1R
+    TP_STEP_TRIGGER_RR: float = 0.8     # Stage 2 trigger
+    TP_STEP_NEW_TP_RR: float = 1.5      # Stage 2: TP shift to 1.5R from entry
+    TP_STEP_NEW_SL_RR: float = 0.5      # Stage 2: SL shift to 0.5R from entry (lock partial price)
+    TRAIL_ACTIVATION_RR: float = 1.0    # v8.0.48: Stage 3 trigger (จาก 0.9)
+    TRAIL_SL_FLOOR_RR: float = 1.0      # v8.0.48: SL floor หลัง trail active (never below 1.0R from entry)
+    TRAIL_SL_BEHIND_R: float = 0.5      # SL ห่างจาก best 0.5R (lock — trail phase)
     TRAIL_TP_AHEAD_R: float = 1.0       # TP chase 1R ข้างหน้า best
     TRAIL_MIN_STEP_PIPS: float = 1.0    # ไม่ modify ถ้าระยะ < 1 pip (กัน excessive orders)
     TRAIL_ATR_MULTIPLIER: float = 1.0   # legacy — unused (compat with old TrailingState init)
@@ -232,6 +235,7 @@ class TradeManager:
                 trailing_active=False,
                 trail_distance=trade.atr_value * self.TRAIL_ATR_MULTIPLIER,
                 pip_size=pip_sz,
+                tp_step_done=False,  # v8.0.48
             )
 
         state = self._trail_states[trade.ticket]
@@ -276,21 +280,23 @@ class TradeManager:
             best_profit = trade.entry_price - state.best_price
         best_rr = best_profit / sl_distance if sl_distance > 0 else 0
 
-        # === ขั้นตอนที่ 1: Partial Close (ใช้ best_rr) — v8.0.14: ทำก่อน BE ===
+        # === Stage 1a: Partial Close (ใช้ best_rr) — v8.0.14: ทำก่อน BE ===
         # เหตุผล: ถ้า MFE peak ที่ trigger threshold แล้ว revert ทันที
         # → Partial ปิด 50% เก็บกำไร, BE lock entry → revert มาได้ +0.25R แน่
-        # ถ้า BE ทำก่อน → Partial อาจไม่ทันยิงเลย (revert ก่อนถึง partial trigger)
         if not state.partial_closed and best_rr >= self.PARTIAL_TRIGGER_RR:
             self._partial_close(trade, state)
 
-        # === ขั้นตอนที่ 2: Break-Even Move (หลัง Partial — กัน spike-then-revert) ===
+        # === Stage 1b: Break-Even Move (หลัง Partial — กัน spike-then-revert) ===
         if not state.breakeven_moved and best_rr >= self.BE_TRIGGER_RR:
             self._move_to_breakeven(trade, state, price_info)
 
-        # === ขั้นตอนที่ 3: Trailing Stop (ยังใช้ current_rr — ต้อง confirm trend ต่อ) ===
+        # === Stage 2 (v8.0.48): TP shift 1.0R→1.5R + SL shift BE→0.5R @ 0.8R ===
+        if not state.tp_step_done and best_rr >= self.TP_STEP_TRIGGER_RR:
+            self._tp_step(trade, state)
+
+        # === Stage 3 (v8.0.48): Trail activation @ 1.0R — SL floor at 1.0R + trail chase ===
         if current_rr >= self.TRAIL_ACTIVATION_RR:
             state.trailing_active = True
-            # v6.9: mirror to ExecutedTrade for logging
             trade.trailing_active = True
             self._update_trailing_stop(trade, state, current_price)
 
@@ -510,6 +516,49 @@ class TradeManager:
         return fill_price
 
     # =========================================================================
+    # 🎯 TP Step (v8.0.48 Stage 2) — Shift TP+SL ที่ 0.8R
+    # =========================================================================
+
+    def _tp_step(self, trade: ExecutedTrade, state: TrailingState):
+        """
+        v8.0.48 Stage 2: เมื่อกำไรถึง 0.8R
+        - TP: 1.0R → 1.5R (extend chase)
+        - SL: BE (entry) → 0.5R (lock partial close price)
+
+        Mirror สำหรับ BUY/SELL (signs ตรงข้าม). One-time trigger.
+        """
+        sl_distance = abs(trade.entry_price - state.initial_sl)
+        if sl_distance <= 0:
+            return
+
+        new_tp_dist = sl_distance * self.TP_STEP_NEW_TP_RR  # 1.5R from entry
+        new_sl_dist = sl_distance * self.TP_STEP_NEW_SL_RR  # 0.5R from entry
+
+        if trade.trade_type == "BUY":
+            new_tp = trade.entry_price + new_tp_dist
+            new_sl = trade.entry_price + new_sl_dist
+            # Invariants: SL up, TP up
+            if new_sl <= state.current_sl or new_tp <= trade.tp_price:
+                state.tp_step_done = True  # mark done even if no improvement (don't retry)
+                return
+        else:  # SELL
+            new_tp = trade.entry_price - new_tp_dist
+            new_sl = trade.entry_price - new_sl_dist
+            if new_sl >= state.current_sl or new_tp >= trade.tp_price:
+                state.tp_step_done = True
+                return
+
+        if self._modify_sl(trade.ticket, trade.symbol, new_sl, new_tp):
+            state.current_sl = new_sl
+            trade.tp_price = new_tp
+            trade.final_sl_at_close = new_sl
+            state.tp_step_done = True
+            digits = 5 if state.pip_size <= 0.0001 else 3
+            print(f"🎯 [Trade Manager] Stage 2 TP-Step: Ticket {trade.ticket} "
+                  f"SL→{new_sl:.{digits}f} (0.5R) TP→{new_tp:.{digits}f} (1.5R)")
+            self._save_trail_states()
+
+    # =========================================================================
     # 📏 Trailing Stop (เลื่อน SL ตามราคา)
     # =========================================================================
 
@@ -541,6 +590,7 @@ class TradeManager:
 
         trail_sl_behind = sl_distance * self.TRAIL_SL_BEHIND_R    # 0.5R
         trail_tp_ahead = sl_distance * self.TRAIL_TP_AHEAD_R      # 1.0R
+        sl_floor_dist = sl_distance * self.TRAIL_SL_FLOOR_RR      # v8.0.48: 1.0R floor
         min_step = self.TRAIL_MIN_STEP_PIPS * state.pip_size
 
         if trade.trade_type == "BUY":
@@ -549,7 +599,8 @@ class TradeManager:
                 state.best_price = current_price
 
             # คำนวณ trail SL + TP จาก best_price
-            new_sl = state.best_price - trail_sl_behind  # 0.5R behind
+            sl_floor_price = trade.entry_price + sl_floor_dist  # v8.0.48: SL never below entry+1R
+            new_sl = max(state.best_price - trail_sl_behind, sl_floor_price)  # 0.5R behind, floor 1R
             new_tp = state.best_price + trail_tp_ahead   # 1R ahead
 
             # Invariant 1+4: SL ขยับขึ้นเท่านั้น + ต้องเกิน min_step
@@ -578,7 +629,8 @@ class TradeManager:
             if current_price < state.best_price:
                 state.best_price = current_price
 
-            new_sl = state.best_price + trail_sl_behind  # 0.5R above (worse for us = lock)
+            sl_floor_price = trade.entry_price - sl_floor_dist  # v8.0.48: SL never above entry-1R
+            new_sl = min(state.best_price + trail_sl_behind, sl_floor_price)  # 0.5R above, floor 1R
             new_tp = state.best_price - trail_tp_ahead   # 1R below (chase further)
 
             # Invariant 1 (SELL): SL ขยับลงเท่านั้น (closer to entry = lock more)

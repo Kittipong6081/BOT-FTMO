@@ -210,7 +210,11 @@ class StrategyBacktester:
         enable_trail_after_tp: bool = False,
         trail_sl_behind_r: float = 0.5,
         trail_tp_ahead_r: float = 1.0,
-        trail_activation_r: float = 0.9,  # v8.0.47: 0.8→0.9 (balance pre-emptive vs runners)
+        trail_activation_r: float = 1.0,  # v8.0.48: Stage 3 trigger (จาก 0.9R)
+        tp_step_trigger_r: float = 0.8,   # v8.0.48 Stage 2 trigger
+        tp_step_new_tp_r: float = 1.5,    # v8.0.48 Stage 2: TP→1.5R from entry
+        tp_step_new_sl_r: float = 0.5,    # v8.0.48 Stage 2: SL→0.5R from entry
+        trail_sl_floor_r: float = 1.0,    # v8.0.48 Stage 3: SL floor at entry+1R
     ) -> float:
         """Simulate trade outcome against future bars.
 
@@ -218,12 +222,11 @@ class StrategyBacktester:
           green candle → up-first, red → down-first, doji → 50/50.
         Friction ~0.5% major-pair realistic.
 
-        v8.0.43 Option X (Plan B Trick):
-          enable_trail_after_tp=True → หลัง TP hit, switch to trail mode
-            SL = best - 0.5R (BUY) / best + 0.5R (SELL) — lock profit
-            TP = best + 1R (BUY) / best - 1R (SELL) — chase trend
-            Exit when bar hits trail SL (lock-in level)
-          Match live trade_manager.py trail logic exactly.
+        v8.0.48 Stepwise Trail (mirror live TradeManager exactly):
+          Stage 1 @ 0.5R: Partial 50% + BE (sim ไม่ track partial — outcome = full R)
+          Stage 2 @ 0.8R: SL → entry+0.5R, TP → entry+1.5R (one-time, lock partial price)
+          Stage 3 @ 1.0R: SL → entry+1R, activate trail
+            Trail: SL = max(entry+1R, best - 0.5R), TP = best + 1R (chase)
         """
         entry = signal.entry_price
         is_buy = signal.signal_type.value == "BUY"
@@ -235,13 +238,17 @@ class StrategyBacktester:
             sl_price = entry + sl_dist
             tp_price = entry - tp_dist
 
-        # v8.0.43: Trail state (activate after price reaches activation level)
-        # v8.0.47: activate at 0.9R (balance pre-emptive vs runners; live uses adaptive 1s loop)
+        # v8.0.48 Stepwise Trail state
         trail_active = False
+        tp_step_done = False  # v8.0.48 Stage 2 flag (one-time)
         best_price = entry
-        trail_sl_dist = sl_dist * trail_sl_behind_r  # 0.5R
-        trail_tp_dist = sl_dist * trail_tp_ahead_r   # 1R
-        trail_activation_dist = sl_dist * trail_activation_r  # 0.9R
+        trail_sl_dist = sl_dist * trail_sl_behind_r           # 0.5R
+        trail_tp_dist = sl_dist * trail_tp_ahead_r            # 1R
+        trail_activation_dist = sl_dist * trail_activation_r  # 1.0R (Stage 3 trigger)
+        tp_step_trigger_dist = sl_dist * tp_step_trigger_r    # 0.8R (Stage 2 trigger)
+        tp_step_new_tp_dist = sl_dist * tp_step_new_tp_r      # 1.5R from entry (Stage 2 TP)
+        tp_step_new_sl_dist = sl_dist * tp_step_new_sl_r      # 0.5R from entry (Stage 2 SL)
+        sl_floor_dist = sl_dist * trail_sl_floor_r            # 1.0R (Stage 3 SL floor)
 
         # Daily / Friday close simulation (FTMO zero-overnight rule)
         from config.settings import bot_config
@@ -284,32 +291,32 @@ class StrategyBacktester:
                 slippage = float(rng.uniform(0.998, 1.002))
                 return risk_amount * pnl_ratio * slippage
 
-            # ═══ TRAIL MODE (Option X — after first TP hit) ═══
+            # ═══ TRAIL MODE (v8.0.48 Stage 3 — after price hit 1.0R) ═══
             if trail_active:
+                # SL floor: never below entry+1R (BUY) / above entry-1R (SELL)
+                sl_floor_price = (entry + sl_floor_dist) if is_buy else (entry - sl_floor_dist)
+
                 # Update best_price (invariant 3: only forward)
                 if is_buy and bar_high > best_price:
                     best_price = bar_high
-                    new_sl = best_price - trail_sl_dist
+                    new_sl = max(best_price - trail_sl_dist, sl_floor_price)  # 0.5R behind, 1R floor
                     new_tp = best_price + trail_tp_dist
-                    # Invariant 1: SL only moves up
                     if new_sl > sl_price:
                         sl_price = new_sl
-                    # Invariant 2: TP only moves up (further)
                     if new_tp > tp_price:
                         tp_price = new_tp
                 elif (not is_buy) and bar_low < best_price:
                     best_price = bar_low
-                    new_sl = best_price + trail_sl_dist
+                    new_sl = min(best_price + trail_sl_dist, sl_floor_price)  # 0.5R above, 1R floor
                     new_tp = best_price - trail_tp_dist
                     if new_sl < sl_price:
                         sl_price = new_sl
                     if new_tp < tp_price:
                         tp_price = new_tp
 
-                # Check trail SL hit (TP never hits in trail — always 1R ahead of best)
+                # Check trail SL hit
                 if is_buy:
                     if bar_low <= sl_price:
-                        # Exit at trail SL
                         profit_dist = sl_price - entry
                         profit_ratio = profit_dist / max(sl_dist, pip_size)
                         return risk_amount * profit_ratio
@@ -319,29 +326,36 @@ class StrategyBacktester:
                         profit_ratio = profit_dist / max(sl_dist, pip_size)
                         return risk_amount * profit_ratio
 
-                # Bar didn't hit trail SL — continue to next bar
                 continue
 
-            # ═══ NORMAL MODE (pre-trail) ═══
+            # ═══ NORMAL MODE (pre-trail) — v8.0.48 Stage 1 + Stage 2 + Stage 3 trigger ═══
 
-            # v8.0.45: Trail activation level (0.8R) — pre-empt TP hit
+            # Stage 2 + Stage 3 trigger levels
             if is_buy:
-                trail_activation_price = entry + trail_activation_dist
+                stage2_price = entry + tp_step_trigger_dist        # 0.8R
+                stage3_price = entry + trail_activation_dist       # 1.0R
             else:
-                trail_activation_price = entry - trail_activation_dist
+                stage2_price = entry - tp_step_trigger_dist
+                stage3_price = entry - trail_activation_dist
 
-            # Gap check — bar opens past SL/TP (weekend / news)
+            # === Gap check on bar_open ===
             if is_buy:
                 if bar_open <= sl_price:
                     slippage = float(rng.uniform(1.0, 1.005))
                     return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * slippage
-                # v8.0.45: activate trail when bar_open >= activation (not TP)
-                if enable_trail_after_tp and bar_open >= trail_activation_price:
+                # Stage 3 trigger on open (1.0R) — overrides Stage 2 (1.0R > 0.8R)
+                if enable_trail_after_tp and bar_open >= stage3_price:
                     trail_active = True
                     best_price = bar_open
-                    sl_price = best_price - trail_sl_dist
-                    tp_price = best_price + trail_tp_dist
+                    sl_price = entry + sl_floor_dist                # SL floor 1.0R
+                    tp_price = best_price + trail_tp_dist           # TP = best + 1R
                     continue
+                # Stage 2 trigger on open (0.8R) — shift SL→0.5R, TP→1.5R
+                if enable_trail_after_tp and (not tp_step_done) and bar_open >= stage2_price:
+                    sl_price = entry + tp_step_new_sl_dist          # 0.5R
+                    tp_price = entry + tp_step_new_tp_dist          # 1.5R
+                    tp_step_done = True
+                    # fall through — check if bar_open exceeded new TP too
                 if bar_open >= tp_price:
                     spread_cost = float(rng.uniform(0.995, 1.0))
                     return risk_amount * (bar_open - entry) / max(sl_dist, pip_size) * spread_cost
@@ -349,41 +363,63 @@ class StrategyBacktester:
                 if bar_open >= sl_price:
                     slippage = float(rng.uniform(1.0, 1.005))
                     return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * slippage
-                # v8.0.45: activate trail when bar_open <= activation (not TP)
-                if enable_trail_after_tp and bar_open <= trail_activation_price:
+                if enable_trail_after_tp and bar_open <= stage3_price:
                     trail_active = True
                     best_price = bar_open
-                    sl_price = best_price + trail_sl_dist
+                    sl_price = entry - sl_floor_dist
                     tp_price = best_price - trail_tp_dist
                     continue
+                if enable_trail_after_tp and (not tp_step_done) and bar_open <= stage2_price:
+                    sl_price = entry - tp_step_new_sl_dist
+                    tp_price = entry - tp_step_new_tp_dist
+                    tp_step_done = True
                 if bar_open <= tp_price:
                     spread_cost = float(rng.uniform(0.995, 1.0))
                     return risk_amount * (entry - bar_open) / max(sl_dist, pip_size) * spread_cost
 
-            # Intra-bar SL / TP / Trail Activation
+            # === Intra-bar checks ===
             if is_buy:
                 hit_sl = bar_low <= sl_price
-                hit_activation = bar_high >= trail_activation_price  # v8.0.45
+                hit_stage2 = (not tp_step_done) and (bar_high >= stage2_price)
+                hit_stage3 = bar_high >= stage3_price
                 hit_tp = bar_high >= tp_price
             else:
                 hit_sl = bar_high >= sl_price
-                hit_activation = bar_low <= trail_activation_price  # v8.0.45
+                hit_stage2 = (not tp_step_done) and (bar_low <= stage2_price)
+                hit_stage3 = bar_low <= stage3_price
                 hit_tp = bar_low <= tp_price
 
-            # v8.0.45: If trail enabled AND hit activation level → activate trail
-            # (before checking TP exit)
-            if enable_trail_after_tp and hit_activation and not hit_sl:
+            # Stage 3 trumps Stage 2 (if both hit in same bar, price reached 1.0R)
+            if enable_trail_after_tp and hit_stage3 and not hit_sl:
                 trail_active = True
-                # Best price = activation level (we know price reached at least there)
                 if is_buy:
-                    best_price = trail_activation_price
-                    sl_price = best_price - trail_sl_dist
+                    best_price = stage3_price
+                    sl_price = entry + sl_floor_dist
                     tp_price = best_price + trail_tp_dist
                 else:
-                    best_price = trail_activation_price
-                    sl_price = best_price + trail_sl_dist
+                    best_price = stage3_price
+                    sl_price = entry - sl_floor_dist
                     tp_price = best_price - trail_tp_dist
-                continue  # trail mode starts next iteration
+                continue
+
+            # Stage 2 only: shift SL/TP, then check if new TP hit intra-bar
+            if enable_trail_after_tp and hit_stage2 and not hit_sl:
+                if is_buy:
+                    sl_price = entry + tp_step_new_sl_dist
+                    tp_price = entry + tp_step_new_tp_dist
+                    tp_step_done = True
+                    # check if bar reached new TP (1.5R)
+                    if bar_high >= tp_price:
+                        spread_cost = float(rng.uniform(0.995, 1.0))
+                        return risk_amount * tp_step_new_tp_r * spread_cost
+                else:
+                    sl_price = entry - tp_step_new_sl_dist
+                    tp_price = entry - tp_step_new_tp_dist
+                    tp_step_done = True
+                    if bar_low <= tp_price:
+                        spread_cost = float(rng.uniform(0.995, 1.0))
+                        return risk_amount * tp_step_new_tp_r * spread_cost
+                continue  # bar done, next bar may activate Stage 3
 
             if hit_sl and hit_tp:
                 # Bar-color heuristic
@@ -404,8 +440,16 @@ class StrategyBacktester:
                         hit_tp = False
 
             if hit_sl:
+                # v8.0.48 fix: after Stage 2/3, sl_price may be above entry (BUY) → exit at sl is profit
+                # Original SL = entry - 1R → loss. Post-stage SL = entry + 0.5R or 1.0R → profit.
                 slippage = float(rng.uniform(1.0, 1.005))
-                return -risk_amount * slippage
+                if is_buy:
+                    profit_dist = sl_price - entry
+                else:
+                    profit_dist = entry - sl_price
+                profit_ratio = profit_dist / max(sl_dist, pip_size)
+                # Slippage hurts on losses, helps on profits — preserve old behavior on -1R
+                return risk_amount * profit_ratio * (slippage if profit_ratio < 0 else (2.0 - slippage))
 
             if hit_tp:
                 if not enable_trail_after_tp:

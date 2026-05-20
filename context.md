@@ -1,8 +1,10 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-20 (v8.0.47 — Trail 0.9R balance + removed reward cap) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-20 (v8.0.48b — Stepwise Trail + sim fix + caps simplified, Pass 68.8% best ever) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
+- **v8.0.48b (2026-05-20) — 🏆 Pass 68.8% (best ever), Profitable 94.3%, Profit avg $8,454**: Stepwise Trail (Stage 2 @ 0.8R: TP→1.5R, SL→0.5R; Stage 3 @ 1.0R: SL→1.0R + trail floor) + sim hit_sl bug fix (was hardcoded -1R, now computes from sl_price) + caps simplified (disabled DAILY_PROFIT_CAP 1.6% + DAILY_LOSS_CAP 3% — overlap with HARD_STOP 4%). Mean outcome pool +0.0070 (first time positive). GBM AUC 0.6134 best ever. value explained_variance 0.409 (+68% vs v8.0.47). ดู [`wiki/05-invariants.md` v8.0.48b](wiki/05-invariants.md#-version-log-entry--v8048b-2026-05-20--deployed-pass-688).
+- **v8.0.48 (2026-05-20) — 🪜 Stepwise Trail (user-requested: Stage 2 @ 0.8R + Stage 3 @ 1.0R with SL floor)**: User-proposed 3-stage logic to lock more profit at clear thresholds. Stage 1 @ 0.5R (existing partial + BE), Stage 2 @ 0.8R (NEW: TP→1.5R, SL→0.5R), Stage 3 @ 1.0R (NEW: SL→1.0R + trail chase with `max(entry+1R, best-0.5R)` floor). Mirrored in `_resolve_trade()` sim. Gate: Pass ≥ v8.0.47 (61.5%) → push, else revert. **Status: training in progress.** ดู [`wiki/05-invariants.md` v8.0.48](wiki/05-invariants.md#-version-log-entry--v8048-2026-05-20--in-training).
 - **v8.0.47 (2026-05-20) — 🔁 Trail 0.9R + removed reward cap (fallback from v8.0.45 Pass 52%)**: v8.0.45 trail @ 0.8R + reward cap eval Pass **52%** (regression -13.7pp from v8.0.43e 65.7%). Hypothesis: 0.8R too aggressive → SL trail catches retrace early, cap suppresses big-runner reward → agent stops chasing. Fix: `TRAIL_ACTIVATION_RR` 0.8→**0.9** (compromise) + removed `outcome > 1.5` cap in `signal_filter_env.py` step(). Live: restored v8.0.43e models from `.bak_1779255651` (Pass 65.7%) during retrain. v8.0.46 adaptive 1s loop kept (orthogonal). Gate: Pass ≥ 60% → push, else fallback Option A. ดู [`wiki/05-invariants.md` v8.0.47](wiki/05-invariants.md#-version-log-entry--v8047-2026-05-20).
 - **v8.0.45/46 (DEPRECATED)**: v8.0.45 pre-emptive 0.8R failed (Pass 52%). v8.0.46 adaptive loop interval kept (live TP race fix).
 - **v8.0.29 (2026-05-15) — 🔀 แยก training/live config (กัน retrain ทำให้ pool หด)**: v8.0.27 (XAU ADX 27) + v8.0.28 (confluence 70) เป็น live filter แต่ class-level `MeanReversionStrategy` ใช้ค่าเดียวกันทั้ง live + training → ถ้า retrain pool จะหดเหลือครึ่ง. Fix: เพิ่ม `MRConfig.min_confluence_score_training=30.0` + `adx_trend_block_training=30.0` + `adx_trend_block_xau_training=30.0` + `MeanReversionBacktester.__init__` override 3 ค่า. ผล: Live = 70/30/27, Training = 30/30/30 (กว้างเท่าเดิม). ไม่ต้อง retrain. ดู [`wiki/05-invariants.md` v8.0.29](wiki/05-invariants.md#-version-log-reverse-chronological).
@@ -142,7 +144,8 @@
 | FTMO Daily DD limit | 5 % (we cap at 4%) | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | FTMO Total DD limit | 10 % (we cap at 8%) | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
 | Default risk per trade | **0.7 %** (v8.0.43 — paired with Option X trail) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
-| Option X (v8.0.47) | Trail TP+SL after **0.9R** hit — SL 0.5R behind best, TP 1R ahead | `TradeManager.TRAIL_*` |
+| **Stepwise Trail (v8.0.48b)** | Stage 1@0.5R (partial+BE), Stage 2@0.8R (TP→1.5R, SL→0.5R), Stage 3@1.0R (SL→1.0R + chase, floor 1R) — **Pass 68.8%** | `TradeManager.TP_STEP_*` / `TRAIL_*` |
+| **Daily caps (v8.0.48b)** | DAILY_LOSS_HARD_STOP_PCT 4% **only** (DAILY_PROFIT_CAP + DAILY_LOSS_CAP disabled — overlap) | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | Main loop interval (v8.0.46) | 5s default, **1s** when any position profit ≥ 0.5R | `bot_config.main_loop_interval`, adaptive in `FTMOTradingBot.run` |
 | Trail reward (v8.0.47) | Raw outcome (no cap — let big runners flow) | `FTMOSignalFilterEnv.step()` |
 | ML threshold (v8.0.3) | **0.30** (was 0.36 SMC era) | `FTMOConfig.ML_FILTER_THRESHOLD` |

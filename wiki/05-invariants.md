@@ -1,5 +1,79 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.47** — Trail 0.9R balance + removed reward cap)
+> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.48b** — Stepwise Trail + sim hit_sl fix + caps simplified, Pass 68.8%)
+
+## 📝 Version Log Entry — v8.0.48b (2026-05-20) — DEPLOYED Pass 68.8%
+
+**Stepwise Trail finalized + sim hit_sl fix + simplified caps (Pass 68.8% — best ever)**
+
+Final result (5000-eps eval):
+- Pass Rate: **68.8%** (vs v8.0.47 61.5%, +7.3pp; vs v8.0.43e 65.7%, +3.1pp — best ever)
+- Profitable Rate: **94.3%** (vs v8.0.47 91.4%)
+- Profit avg: **$8,454** (vs v8.0.47 $7,873, +$581)
+- Breach Rate: 0%, Total DD: 5.80%, Daily DD: 3.00%
+
+Code changes vs v8.0.47:
+- `execution/trade_manager.py` + `ml/strategy_backtester.py`:
+  - Stage 2 @ 0.8R: TP→1.5R, SL→0.5R (new)
+  - Stage 3 @ 1.0R: SL→1.0R + trail chase (SL floor 1R)
+  - New constants: `TP_STEP_TRIGGER_RR=0.8`, `TP_STEP_NEW_TP_RR=1.5`, `TP_STEP_NEW_SL_RR=0.5`, `TRAIL_SL_FLOOR_RR=1.0`
+  - `TrailingState` gains `tp_step_done: bool` flag
+- `ml/strategy_backtester.py` (CRITICAL fix):
+  - `hit_sl` block now computes profit from `sl_price - entry` (was hardcoded `-risk_amount * slippage`)
+  - Before fix: Stage 2 trades that retraced to new SL=0.5R were recorded as -1R loss (sim bug). After fix: +0.5R correctly.
+  - First attempt (v8.0.48) had this bug → Pool baseline win rate 38.87%. Fixed v8.0.48b → 49.44%.
+- `config/settings.py` (simplification — user-requested):
+  - `DAILY_PROFIT_CAP_ENABLED: True → False` (let momentum winning days run)
+  - `DAILY_LOSS_CAP_ENABLED: True → False` (overlap with HARD_STOP — `DAILY_LOSS_HARD_STOP_PCT=4%` remains as single FTMO-aligned DD limit)
+
+Pool/GBM:
+- Pool mean outcome **+0.0070** (first time positive; v8.0.47 was -0.041)
+- GBM OOF AUC **0.6134** (best ever; v8.0.47 0.6118)
+- ml_score mean=0.494, std=0.113
+
+RL metrics (Phase 2 end):
+- std=2.66 (vs v8.0.47 2.35 — slightly higher, but live uses deterministic=True so no effect)
+- explained_variance=**0.409** (vs v8.0.47 0.243 — value head 68% better)
+- value_loss=0.09 (vs 0.117, -23%)
+- approx_kl=0.0011, clip_fraction=0.0013 (well-converged)
+
+---
+
+## 📝 Version Log Entry — v8.0.48 (2026-05-20) — SUPERSEDED by v8.0.48b
+
+**Stepwise Trail (user-requested): Stage 2 @ 0.8R + Stage 3 @ 1.0R + SL floor**
+
+Hypothesis: v8.0.47 trail @ 0.9R catches retraces too low (best-0.5R = 0.4R lock). User-proposed stepwise locks more profit at clear thresholds.
+
+3-stage logic (live + sim mirrored):
+- **Stage 1 @ 0.5R** (existing v8.0.14): Partial 50% close + BE move
+- **Stage 2 @ 0.8R** (NEW): TP shift 1.0R → 1.5R, SL shift BE → 0.5R (lock partial close price)
+- **Stage 3 @ 1.0R** (NEW): SL shift 0.5R → 1.0R + trail activate
+  - Trail mode: `SL = max(entry+1R, best-0.5R)`, `TP = best+1R` (chase)
+
+Code changes:
+- `execution/trade_manager.py`:
+  - New constants: `TP_STEP_TRIGGER_RR=0.8`, `TP_STEP_NEW_TP_RR=1.5`, `TP_STEP_NEW_SL_RR=0.5`, `TRAIL_SL_FLOOR_RR=1.0`
+  - `TRAIL_ACTIVATION_RR: 0.9 → 1.0`
+  - New method `_tp_step()` — Stage 2 trigger
+  - `_update_trailing_stop()` enforces SL floor: `max(best-0.5R, entry+1R)` for BUY
+  - `TrailingState` gains `tp_step_done: bool` flag
+- `ml/strategy_backtester.py`:
+  - `_resolve_trade()` gains Stage 2/3 params (defaults match live constants)
+  - Normal mode: Stage 3 trumps Stage 2 if both hit in same bar
+  - Trail mode: SL floor enforced
+
+Sim-vs-live parity caveats:
+- Sim does not model partial 50% close (returns full position R-multiple)
+- For trades that reach Stage 2 and revert to new SL=0.5R: sim outcome = 0.5R, live weighted = 0.5R (partial 0.25R + remaining at 0.5R × 50% = 0.25R) — match
+- For trades that peak 0.5R-0.8R then revert to original SL: sim = -1R, live = +0.25R (partial only) — same approximation as v8.0.47
+
+Gate (vs v8.0.47 baseline 61.5%):
+- Pass ≥ 61.5% → commit + push v8.0.48
+- Pass < 61.5% → revert to v8.0.47
+
+Live continuity during retrain: model files preserved (no overwrite until eval passes).
+
+---
 
 ## 📝 Version Log Entry — v8.0.47 (2026-05-20)
 

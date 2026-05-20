@@ -141,26 +141,19 @@ class FTMOConfig:
     FLIP_LOCK_MIN_MINUTES: int = 5      # เวลาขั้นต่ำก่อน unlock ได้
     FLIP_LOCK_MAX_MINUTES: int = 240    # TTL (4 ชม.) — auto-expire ไม่ว่าราคาจะ retrace หรือไม่
 
-    # === Daily Profit Cap (v8.0.17 — Option D Hard Stop) ===
-    # หยุดเทรดเมื่อกำไรวันนี้ ถึง DAILY_PROFIT_CAP_PCT × INITIAL balance.
-    # นับจาก initial balance (anchor ของ challenge) — ไม่ใช่ daily start
-    # → $10k port: cap = $160 ทุกวัน, $100k port: cap = $1600 ทุกวัน
-    # Trigger ใช้ closed P/L + floating P/L (Option B)
-    # Reset = broker EET midnight (Option A) ผ่าน _on_new_day
-    # Action = ปิดทุก open position + block new trades จนกว่าวันใหม่
-    # v8.0.17: 1.6% (เพิ่มจาก 1.5% เป็น 0.1pp buffer สำหรับ slippage + spread + commission)
-    DAILY_PROFIT_CAP_ENABLED: bool = True
-    DAILY_PROFIT_CAP_PCT: float = 0.016     # 1.6% ของ initial balance
+    # === Daily Profit Cap (v8.0.17, DISABLED v8.0.48) ===
+    # v8.0.48: ปิด — ปล่อย momentum winning days ลุยต่อ (model strong พอ)
+    # แทนที่จะ lock @ 1.6% ทุกวัน, ให้ DAILY_LOSS_HARD_STOP_PCT (4%) ป้องกัน downside แทน
+    DAILY_PROFIT_CAP_ENABLED: bool = False
+    DAILY_PROFIT_CAP_PCT: float = 0.016     # legacy — kept for revert
 
-    # === Daily Loss Cap (v8.0.22 — Option D mirror) ===
-    # ห้ามเทรดเมื่อ daily P/L ≤ -DAILY_LOSS_CAP_PCT × INITIAL balance.
-    # Symmetric กับ profit cap → $10k port: -$300 ทุกวัน, $100k port: -$3000
-    # Trigger ใช้ closed + floating (เหมือน profit cap)
-    # Reset = broker EET midnight ผ่าน _on_new_day
-    # Action = ปิดทุก position + block new trades จนกว่าวันใหม่
-    # Buffer to FTMO 4% Daily DD: 1% = $100 (กัน slippage + spread)
-    DAILY_LOSS_CAP_ENABLED: bool = True
-    DAILY_LOSS_CAP_PCT: float = 0.030       # 3% ของ initial balance (= $300/$10k)
+    # === Daily Loss Cap (v8.0.22, DISABLED v8.0.48 — overlap with HARD_STOP) ===
+    # v8.0.48: ปิด — overlap กับ DAILY_LOSS_HARD_STOP_PCT (4%)
+    # LOSS_CAP 3% ใช้ initial balance anchor (คงที่) → เข้มกว่า HARD_STOP เสมอ
+    # HARD_STOP 4% ใช้ daily_start_equity → ตรงกับ FTMO calculation
+    # ใช้ HARD_STOP 4% (FTMO-aligned, 1% buffer) เป็น single source of truth
+    DAILY_LOSS_CAP_ENABLED: bool = False
+    DAILY_LOSS_CAP_PCT: float = 0.030       # legacy — kept for revert
     
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน
