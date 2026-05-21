@@ -84,7 +84,7 @@ class TradeManager:
     # Stage 3 @ 1.0R: SL shift 0.5R → 1.0R + Trail activate (chase)
     # Trail mode: SL = max(1.0R floor, best - 0.5R), TP = best + 1R
     TP_STEP_TRIGGER_RR: float = 0.8     # Stage 2 trigger
-    TP_STEP_NEW_TP_RR: float = 1.5      # Stage 2: TP shift to 1.5R from entry
+    TP_STEP_NEW_TP_RR: float = 1.5      # v8.0.54: revert v8.0.53 Stage 2 TP back to 1.5R
     TP_STEP_NEW_SL_RR: float = 0.5      # Stage 2: SL shift to 0.5R from entry (lock partial price)
     TRAIL_ACTIVATION_RR: float = 1.0    # v8.0.48: Stage 3 trigger (จาก 0.9)
     TRAIL_SL_FLOOR_RR: float = 1.0      # v8.0.52: revert 0.7→1.0 (v8.0.51 Pass 55.1% < v8.0.48b 68.8%)

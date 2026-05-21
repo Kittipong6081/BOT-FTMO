@@ -1,5 +1,53 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-21 | Scope: red flags, version log, migration notes (latest: **v8.0.52** — Revert v8.0.51 changes, keep v8.0.48b deployed)
+> Last Updated: 2026-05-21 | Scope: red flags, version log, migration notes (latest: **v8.0.54** — Revert v8.0.53, keep v8.0.52 deployed)
+
+## 📝 Version Log Entry — v8.0.54 (2026-05-21) — REVERT v8.0.53
+
+**Revert v8.0.53 (RR 1.2 + Stage 2 TP 1.8R) — Pass 70.4% ≈ v8.0.52 70.7% (no improvement)**
+
+v8.0.53 retrain result vs v8.0.52:
+- Pass Rate: 70.4% (vs 70.7%, -0.3pp ≈)
+- Profitable Rate: 94.6% (identical)
+- Win Rate: 64.4% (vs 63.9%, +0.5pp)
+- Profit avg: $8,606 (vs $8,633, -$27)
+- DD: identical (5.80%/3.00%)
+
+Hypothesis validated: Stage 2/3 trail already extends RR; raising base RR has no meaningful effect. Stage 2 fires at 0.8R regardless of base RR, then trail logic governs the rest.
+
+Reverts:
+- `MRConfig.rr_ratio`: 1.2 → **1.0**
+- `MeanReversionStrategy.RR_RATIO`: 1.2 → **1.0**
+- `TradeManager.TP_STEP_NEW_TP_RR`: 1.8 → **1.5**
+
+Model files: restored from `.v8052_backup` (pool, GBM, PPO P1/P2, vec_normalize).
+
+Lesson: base RR is largely overridden by Stage 2/3 trail. Future trail experiments should target `TP_STEP_TRIGGER_RR`, `TP_STEP_NEW_TP_RR`, or `TRAIL_TP_AHEAD_R` instead of base RR.
+
+---
+
+## 📝 Version Log Entry — v8.0.53 (2026-05-21) — REVERTED in v8.0.54
+
+**RR 1.0 → 1.2 + Stage 2 TP 1.5R → 1.8R (test higher RR for bigger wins)**
+
+Hypothesis: v8.0.52 WR 70% but profit_avg ~$8,633 (small wins). With RR 1.2, partial close at 0.5R + remaining captures TP @ 1.2R → bigger profit per win. EV calc: 0.7 × $85 - 0.3 × $90 = +$32.5/trade (vs current +$0.4/trade with RR 1.0).
+
+Settings changed:
+- `MRConfig.rr_ratio`: 1.0 → **1.2**
+- `MeanReversionStrategy.RR_RATIO`: 1.0 → **1.2**
+- `TradeManager.TP_STEP_NEW_TP_RR`: 1.5 → **1.8** (Stage 2 TP scaled with base RR)
+
+Risk: WR may drop 5-8pp (higher TP harder to hit). Need Pass Rate ≥ 65% to keep.
+
+Backup files saved before retrain (`.v8052_backup` suffix):
+- `data/mr_signal_pool_5000.pkl.v8052_backup`
+- `data/mr_signal_quality_model.pkl.v8052_backup`
+- `models/mr/ppo_mr_filter.zip.v8052_backup`
+- `models/mr/ppo_mr_filter_p1.zip.v8052_backup`
+- `models/mr/vec_normalize_mr*.pkl.v8052_backup`
+
+If v8.0.53 fails: `cp *.v8052_backup *` to restore (5 seconds).
+
+---
 
 ## 📝 Version Log Entry — v8.0.52 (2026-05-21) — REVERT v8.0.51
 

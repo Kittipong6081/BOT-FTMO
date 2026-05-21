@@ -482,7 +482,7 @@ class MeanReversionConfig:
 
     # SL / TP
     sl_atr_mult: float = 1.0     # tight SL — capital preservation
-    rr_ratio: float = 1.0        # 1:1 quick-TP target
+    rr_ratio: float = 1.0        # v8.0.54: revert v8.0.53 (RR 1.2 Pass 70.4% ≈ v8.0.52 70.7%, no improvement)
     min_reversal_wick_ratio: float = 0.4   # was 1.2 — RL learns to filter
 
     # Reward shaping defaults (env constructor uses these)

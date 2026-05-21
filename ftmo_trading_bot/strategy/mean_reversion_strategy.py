@@ -211,7 +211,7 @@ class MeanReversionStrategy:
     ADX_TREND_BLOCK: float = 30.0
     ADX_TREND_BLOCK_XAU: float = 30.0
     SL_ATR_MULT: float = 1.0          # tight SL — capital preservation
-    RR_RATIO: float = 1.0             # 1:1 quick-TP target
+    RR_RATIO: float = 1.0             # v8.0.54: revert v8.0.53 (Stage 2/3 already extends RR)
     MIN_REVERSAL_WICK_RATIO: float = 0.4  # was 1.2 — RL learns to filter weak wicks
     MIN_CONFLUENCE_SCORE: float = 70.0    # v8.0.28 — was 30 (RL filter only); live data shows clear edge ≥ 70 (WR 76% vs 41% below)
 
