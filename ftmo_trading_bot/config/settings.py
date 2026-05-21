@@ -101,37 +101,25 @@ class FTMOConfig:
     # FTMO Challenge ต้องทำกำไร 10% ใน 30 วัน
     PROFIT_TARGET_PCT: float = 0.10  # 10%
 
-    # === Monday Morning Delay (v8.0.19 — กัน volatile post-weekend) ===
-    # ข้อมูลจริง 11 พ.ค.: 3 ไม้แรก (01:06, 03:50, 03:54 EET) เสีย $300+ ก่อน
-    # ตลาดสงบลง. หน่วงไม่ให้บอทเทรดในช่วง MONDAY_DELAY_END_HOUR_EET ชม.แรก
-    # ของ Monday (EET) — ตามเวลา server FTMO. หลังจากนั้นเทรดปกติ.
-    # Tue-Fri ไม่กระทบ.
-    MONDAY_DELAY_ENABLED: bool = True
-    MONDAY_DELAY_END_HOUR_EET: int = 4   # ห้ามเทรด Monday 00:00-03:59 EET (= 04:00-07:59 ICT)
+    # === Monday Morning Delay (v8.0.19, DISABLED v8.0.50 — train-live parity) ===
+    # v8.0.50: ปิด — training simulator ไม่มี Monday delay; RL เรียน SKIP signal คุณภาพต่ำเองแล้ว
+    # Safety: DAILY_LOSS_HARD_STOP_PCT (4%) ยังป้องกัน FTMO breach
+    MONDAY_DELAY_ENABLED: bool = False
+    MONDAY_DELAY_END_HOUR_EET: int = 4   # legacy — kept for revert
 
-    # === Weekday Asian Early Delay (v8.0.24, extended v8.0.25) — Mon-Fri non-XAU ===
-    # ข้อมูลจริง 12-14 พ.ค. (3 วัน):
-    #   Asian early (00-07 EET) non-XAU: -$300 (ขาดทุนหนัก)
-    #   Asian late (07-10 EET): +$242 (sweet spot — WR 83%)
-    #   XAUUSD Asian early: +$159 (WR 80% — เก่ง!)
-    # → ดังนั้น: block trade Mon-Fri 00:00-06:59 EET (= 04:00-10:59 ICT)
-    #   ยกเว้น XAUUSD (Gold เก่ง Asian early — anytime Tue-Fri / 04 EET+ Mon)
-    # v8.0.25: ขยาย Mon ด้วย — Mon non-XAU เริ่ม 07 EET (= 11 ICT)
-    #          Mon XAU: เริ่ม 04 EET (= 08 ICT) — v8.0.19 Monday delay ยังบล็อก 00-04 EET
-    WEEKDAY_DELAY_ENABLED: bool = True
-    WEEKDAY_DELAY_END_HOUR_EET: int = 7  # ห้าม Mon-Fri 00:00-06:59 EET (= 04:00-10:59 ICT)
-    WEEKDAY_DELAY_EXCEPT_SYMBOLS: tuple = ("XAUUSD",)  # ทอง = exception
-    # v8.0.44 (2026-05-20): Conf ≥ 90 ผ่านได้ใน Asian late (premium quality exception)
-    # data 6 วัน: 19 signals conf ≥90, RL อยาก TAKE 9 (47%) — quality สูง
-    # ปลอดภัย: rare event, ไม่ลด FTMO buffer มาก
-    WEEKDAY_DELAY_CONF_EXCEPTION: float = 90.0
+    # === Weekday Asian Early Delay (v8.0.24, DISABLED v8.0.50 — train-live parity) ===
+    # v8.0.50: ปิด — training ไม่มี delay นี้; RL ตัดสินใจเอง (Pass 68.8% รวม Asian Early แล้ว)
+    # หลายชั้นกรองยังเหลือ: confluence ≥70, ADX block 30, ML threshold 0.30, RL TAKE/SKIP
+    # ถ้าผล live แย่ → revert flag กลับเป็น True
+    WEEKDAY_DELAY_ENABLED: bool = False
+    WEEKDAY_DELAY_END_HOUR_EET: int = 7  # legacy
+    WEEKDAY_DELAY_EXCEPT_SYMBOLS: tuple = ("XAUUSD",)  # legacy
+    WEEKDAY_DELAY_CONF_EXCEPTION: float = 90.0  # legacy
 
-    # === XAU Mon-Fri Delay (v8.0.36, extended v8.0.37) ===
-    # XAU เริ่มเทรดได้ตอน 05:05 ICT หลัง rollover (ก่อน v8.0.36)
-    # ตลาดยังไม่มีทิศทางที่แน่นอน — หน่วงไปเริ่ม 05 EET (= 09 ICT) ทุกวัน Mon-Fri
-    # v8.0.37: ขยาย Tue-Fri → Mon-Fri (เดิม Mon XAU เริ่ม 08 ICT จาก MONDAY_DELAY)
-    XAU_WEEKDAY_DELAY_ENABLED: bool = True
-    XAU_WEEKDAY_DELAY_END_HOUR_EET: int = 5  # XAU Mon-Fri เริ่ม 05 EET (= 09 ICT)
+    # === XAU Mon-Fri Delay (v8.0.36, DISABLED v8.0.50 — train-live parity) ===
+    # v8.0.50: ปิด — XAU training ก็ไม่มี delay; เทรดได้ทั้งวัน
+    XAU_WEEKDAY_DELAY_ENABLED: bool = False
+    XAU_WEEKDAY_DELAY_END_HOUR_EET: int = 5  # legacy
 
     # === Flip-Lock TTL (v8.0.18 — fix lock ค้างข้าม weekend) ===
     # FLIP_LOCK_MIN_MINUTES = MIN wait (เวลาเร็วสุดที่ unlock ได้)

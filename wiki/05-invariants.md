@@ -1,5 +1,30 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-20 | Scope: red flags, version log, migration notes (latest: **v8.0.49** — Throttle Daily Loss spam)
+> Last Updated: 2026-05-21 | Scope: red flags, version log, migration notes (latest: **v8.0.50** — Remove Asian Delays for train-live parity)
+
+## 📝 Version Log Entry — v8.0.50 (2026-05-21)
+
+**Remove all Asian Delays (train-live parity)**
+
+Discovery: Training simulator (`MeanReversionBacktester`) has NO Asian Delay logic — RL agent was trained on data including Asian Early signals (00-07 EET). Live had hard-block layered on top → duplicate filtering. Pass Rate 68.8% in eval ALREADY reflects RL handling Asian Early via TAKE/SKIP decisions.
+
+Disabled flags (live now matches training):
+- `MONDAY_DELAY_ENABLED: True → False` (was: block Mon 00-04 EET)
+- `WEEKDAY_DELAY_ENABLED: True → False` (was: block Mon-Fri 00-07 EET for non-XAU)
+- `XAU_WEEKDAY_DELAY_ENABLED: True → False` (was: block XAU 00-05 EET Mon-Fri)
+- Legacy fields kept (revertable)
+
+Pre-removal data (~2 weeks): 124 Asian Early signals blocked by hard rule. After removal, these flow to RL for TAKE/SKIP decision. Estimated additional 8-9 trades/day initially, but RL is expected to SKIP most low-quality ones (training data biased these to negative outcomes).
+
+Safety layers remaining:
+- `DAILY_LOSS_HARD_STOP_PCT = 4%` (FTMO-aligned, 1% buffer from 5% breach)
+- ML threshold 0.30, Confluence ≥ 70, ADX block 30
+- Stage 2/3 trail (v8.0.48b lock 0.5R-1R)
+
+Watch: If live Asian Early P/L < -$100/day on average over 5 trading days → revert all 3 flags to True.
+
+No retrain needed.
+
+---
 
 ## 📝 Version Log Entry — v8.0.49 (2026-05-20)
 
