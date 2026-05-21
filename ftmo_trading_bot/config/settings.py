@@ -457,11 +457,9 @@ class MeanReversionConfig:
     rsi_overbought: float = 60.0     # was 70 — looser
 
     # Trend filter (ADX H1) — > threshold blocks MR entries
-    adx_trend_block: float = 30.0    # was 25 — only block extreme trends
-    # v8.0.27: per-symbol ADX threshold for XAUUSD (tighter than default) — REVERTED v8.0.34
-    # v8.0.34 (2026-05-18): 27 → 30 (กลับ default) — v8.0.28 conf floor 70 = safety net ชั้น 2
-    # Analysis 14 XAU trades: ไม้แพ้ -$103 (5/15) Conf=48 → ถูก v8.0.28 block อยู่แล้ว.
-    # Conf ≥ 70 group: 7W/2L, WR 78%, Net +$245. ADX 27 block ทำให้ XAU = 0 signals 3 วัน.
+    # v8.0.52 (2026-05-21): revert 25→30 — v8.0.51 retrain Pass 55.1% (vs v8.0.48b 68.8%)
+    # Lesson: ADX 25 ตัด killer zone (25-30) แต่ตัด paradox winners 30+ ด้วย → Net loss
+    adx_trend_block: float = 30.0
     adx_trend_block_xau: float = 30.0
 
     # v8.0.28: Confluence quality floor — LIVE filter (analysis 48 trades 2026-05-12..15)
@@ -478,11 +476,9 @@ class MeanReversionConfig:
     min_confluence_score: float = 75.0          # live (used in main.py path)
     min_confluence_score_training: float = 30.0  # training pool (kept wide for diversity)
 
-    # v8.0.29: ADX threshold split (live tighter than training)
-    # Training: default 30/30 (any-symbol, wide pool)
-    # Live: 30 FX / 27 XAU (tighter on XAU based on 14-trade analysis 2026-05-15)
-    adx_trend_block_training: float = 30.0       # training pool (both XAU + FX)
-    adx_trend_block_xau_training: float = 30.0   # training pool — XAU same as FX
+    # v8.0.52 (2026-05-21): revert to 30/30 — match live (which reverted from v8.0.51)
+    adx_trend_block_training: float = 30.0       # training pool
+    adx_trend_block_xau_training: float = 30.0   # training pool — XAU same
 
     # SL / TP
     sl_atr_mult: float = 1.0     # tight SL — capital preservation

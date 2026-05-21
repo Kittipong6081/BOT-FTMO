@@ -1,5 +1,67 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-21 | Scope: red flags, version log, migration notes (latest: **v8.0.50** — Remove Asian Delays for train-live parity)
+> Last Updated: 2026-05-21 | Scope: red flags, version log, migration notes (latest: **v8.0.52** — Revert v8.0.51 changes, keep v8.0.48b deployed)
+
+## 📝 Version Log Entry — v8.0.52 (2026-05-21) — REVERT v8.0.51
+
+**Revert v8.0.51 (ADX 30→25 + SL floor 0.7) — eval Pass 55.1% < v8.0.48b 68.8%**
+
+v8.0.51 retrain result vs v8.0.48b:
+- Pass Rate: 55.1% (vs 68.8%, **-13.7pp**)
+- Profitable Rate: 91.1% (vs 94.3%, -3.2pp)
+- Win Rate: 65.1% (vs 64.0%, +1.1pp — but lower Pass)
+- Profit avg: $7,464 (vs $8,454, -$990)
+
+Hypothesis why it failed:
+1. ADX 25 cut both killer-zone losers AND ADX 30+ paradox-winners
+2. SL floor 0.7R "too safe" — big runners locked at 0.7-1.0R instead of trailing 1.5R+
+3. Pool size dropped 21% (424 MB vs 536 MB) → less RL training samples
+4. explained_variance 0.263 (vs 0.409) — value head less accurate
+
+Reverts:
+- `MRConfig.adx_trend_block`: 25 → **30** (live + training symmetric)
+- `MRConfig.adx_trend_block_xau`: 25 → **30**
+- `MeanReversionStrategy.ADX_TREND_BLOCK`: 25 → **30** (class defaults)
+- `TradeManager.TRAIL_SL_FLOOR_RR`: 0.7 → **1.0**
+- `strategy_backtester.trail_sl_floor_r` default: 0.7 → **1.0**
+
+Model files: restored from commit `fa69020` (v8.0.48b) via `git checkout`.
+
+Lesson: data-driven hypothesis (ADX 25-30 killer zone) was correct but treatment was wrong — blanket block lost good signals too. Better future approach: **conditional block** (e.g., block ADX 25-30 only when other signals weak).
+
+---
+
+## 📝 Version Log Entry — v8.0.51 (2026-05-21) — REVERTED in v8.0.52
+
+**ADX threshold 30 → 25 + Trail SL floor 1.0R → 0.7R**
+
+User-reported issue: หลัง Stage 3 SL = 1.0R, ราคามักย่อมา test TP เดิม (1R magnet) แล้วชน SL = exit at exactly +1R (lose big-runner potential).
+
+Trail SL floor change:
+- `TradeManager.TRAIL_SL_FLOOR_RR`: 1.0 → **0.7**
+- `strategy_backtester.trail_sl_floor_r` default: 1.0 → **0.7**
+
+**ADX threshold 30 → 25 (back to Wilder default; data-driven correction)**
+
+Data discovery (87 trades): ADX H1 25-30 = "killer zone" — 16 trades, WR 25%, P/L -$679. Original threshold 25 (Wilder 1978 default) was correct; relaxed 25→30 historically based on intuition ("only block extreme trends"), not data.
+
+Setting changes (both train + live):
+- `MRConfig.adx_trend_block`: 30 → **25**
+- `MRConfig.adx_trend_block_xau`: 30 → **25** (was 27, then 30 in v8.0.34)
+- `MRConfig.adx_trend_block_training`: 30 → **25**
+- `MRConfig.adx_trend_block_xau_training`: 30 → **25**
+- `MeanReversionStrategy.ADX_TREND_BLOCK`: 30 → **25** (class default)
+- `MeanReversionStrategy.ADX_TREND_BLOCK_XAU`: 27 → **25**
+
+Per-bucket WR from 87 trades:
+- ADX 0-15: WR 100% (5 trades)
+- ADX 15-20: WR 57% (23)
+- ADX 20-25: WR 61% (23)
+- **ADX 25-30: WR 25% (16) ← killer zone, now blocked**
+- ADX 30+: WR 67-79% (20, small sample, paradox — likely overextended-reversal)
+
+**Retrain pending** — user wants to ask more questions before retrain chain (~1.5 hr).
+
+---
 
 ## 📝 Version Log Entry — v8.0.50 (2026-05-21)
 
