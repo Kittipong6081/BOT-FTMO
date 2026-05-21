@@ -214,7 +214,7 @@ class StrategyBacktester:
         tp_step_trigger_r: float = 0.8,   # v8.0.48 Stage 2 trigger
         tp_step_new_tp_r: float = 1.5,    # v8.0.48 Stage 2: TP→1.5R from entry
         tp_step_new_sl_r: float = 0.5,    # v8.0.48 Stage 2: SL→0.5R from entry
-        trail_sl_floor_r: float = 1.0,    # v8.0.48 Stage 3: SL floor at entry+1R
+        trail_sl_floor_r: float = 1.0,    # v8.0.52: revert 0.7→1.0 (v8.0.51 Pass 55.1% < v8.0.48b 68.8%)
     ) -> float:
         """Simulate trade outcome against future bars.
 

@@ -207,8 +207,9 @@ class MeanReversionStrategy:
     RSI_OVERBOUGHT: float = 60.0      # was 70 — looser overbought
     BB_OVERSOLD: float = 0.30         # was 0.10 — entry on lower-half pullback
     BB_OVERBOUGHT: float = 0.70       # was 0.90 — entry on upper-half pullback
-    ADX_TREND_BLOCK: float = 30.0     # was 25 — only block extreme trends
-    ADX_TREND_BLOCK_XAU: float = 27.0 # v8.0.27 — per-symbol tighter threshold for XAUUSD
+    # v8.0.52 (2026-05-21): revert 25→30 — v8.0.51 retrain Pass 55.1% < v8.0.48b 68.8%
+    ADX_TREND_BLOCK: float = 30.0
+    ADX_TREND_BLOCK_XAU: float = 30.0
     SL_ATR_MULT: float = 1.0          # tight SL — capital preservation
     RR_RATIO: float = 1.0             # 1:1 quick-TP target
     MIN_REVERSAL_WICK_RATIO: float = 0.4  # was 1.2 — RL learns to filter weak wicks
