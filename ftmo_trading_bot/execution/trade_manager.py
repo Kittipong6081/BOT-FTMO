@@ -72,11 +72,18 @@ class TradeManager:
     ทุกตัว (TP ปิด @ 1.0R ก่อน BE/Partial ทำงาน, Trail 1.5R เป็นไปไม่ได้เลย).
     """
 
-    # === ค่าคงที่สำหรับการจัดการ (v8.0.14 Partial-first fix) ===
-    BE_TRIGGER_RR: float = 0.5          # เลื่อน SL มา Entry เมื่อ best_rr ≥ 0.5R (หลัง Partial)
+    # === ค่าคงที่สำหรับการจัดการ (v8.0.56 — fix "ตัดกำไรเร็ว ปล่อยขาดทุนเต็ม") ===
+    # Audit 111 trades พบ RR ออกแบบ 1.0 แต่ realized 0.589 (cap ที่ ~0.6-0.7R/win)
+    # เพราะ Partial+BE @ 0.5R หั่นกำไรเร็วเกินไป
+    # Fix:
+    #   BE 0.5 → 0.3 — จับไม้ revert เร็ว (62% ของ losses เคยมี MFE > 0)
+    #   Partial 0.5 → 0.8 — ปล่อยไม้ชนะวิ่งเต็ม 0.8R ก่อนหั่น
+    #   PartialPct 0.5 → 0.33 — ปิดแค่ 33% เก็บ position ใหญ่กว่าเดิม
+    # คาด Avg Win $44 → ~$60-70, Avg Loss $75 → ~$50 (BE save)
+    BE_TRIGGER_RR: float = 0.3          # v8.0.56: 0.5 → 0.3 — จับไม้แพ้ revert ทัน
     BE_OFFSET_PIPS: float = 0.0         # เลื่อน SL มา Entry พอดี (ไม่มี offset)
-    PARTIAL_CLOSE_PCT: float = 0.5      # ปิด 50% เมื่อ Partial Trigger Hit
-    PARTIAL_TRIGGER_RR: float = 0.5     # ปิด 50% ที่ best_rr ≥ 0.5R (เท่า BE — Partial เรียกก่อน BE)
+    PARTIAL_CLOSE_PCT: float = 0.33     # v8.0.56: 0.5 → 0.33 — ปิดแค่ 33% (เก็บ position ใหญ่)
+    PARTIAL_TRIGGER_RR: float = 0.8     # v8.0.56: 0.5 → 0.8 — ให้ไม้ชนะวิ่งก่อนหั่น
 
     # === v8.0.48 Stepwise Trail (user-requested) ===
     # Stage 1 @ 0.5R: Partial 50% + BE (เดิม v8.0.14)

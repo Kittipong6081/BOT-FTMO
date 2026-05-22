@@ -1,5 +1,148 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-22 | Scope: red flags, version log, migration notes (latest: **v8.0.55** — 3 live filters kept, RL/pool reverted to v8.0.52)
+> Last Updated: 2026-05-23 | Scope: red flags, version log, migration notes (latest: **v8.0.61** — REVERT RR 1.5 → 1.0 after M1 validity check, Phase 1 fixes KEPT)
+
+## 📝 Version Log Entry — v8.0.61 (2026-05-23) — REVERT RR 1.5 → 1.0 (data-driven)
+
+**Trigger**: M1 OHLCV replay validity check ([scripts_local/m1_replay_validity_check.py](scripts_local/m1_replay_validity_check.py)) — eliminated counterfactual bias from prior polled-MFE replay.
+
+### M1 Replay Findings (106/113 trades covered)
+
+| Metric | Result |
+|---|---|
+| **Continuation Rate avg (1.0R → 1.5R)** | **26.9%** |
+| Gate threshold for RR 1.5 deploy | ≥ 40% |
+| **Decision** | **🔴 FAIL gate → REVERT RR 1.5 → 1.0** |
+
+Per-symbol continuation rate:
+- 🟢 USDJPY: **45.5%** (only symbol passing gate — true trend currency)
+- 🔴 NZDUSD: **0%** (true MR, mean-reverts instantly)
+- 🔴 XAUUSD: **0%** (6/6 trades reached 1.0R, none to 1.5R)
+- 🔴 GBPJPY/GBPUSD: **0%**
+- ⚠️ EURUSD (50%, n=2), EURJPY (100%, n=1) — sample too small
+
+Scenario comparison (after -$10 spread per trade):
+- OLD baseline: -$342 (real history)
+- **Phase 1 Only**: **+$109** (EV +$1.63/trade, PF 1.08) ✅
+- Phase 1+2 Full (RR 1.5): -$627 (EV -$9.36/trade, PF 0.57) 🔴
+
+### Polled MFE Column Bias Confirmed
+
+- TRUE max MFE (M1): **6.721R**
+- POLLED max MFE (Excel): **1.500R** (suspicious cap)
+- 47/106 trades (44.3%) had TRUE > POLLED (poll missed peak by avg 0.215R)
+- Prior replay using polled MFE was systematically pessimistic on continuation
+
+### Revert Actions
+
+**Code changes** (2 files, RR 1.5 → 1.0):
+- `ftmo_trading_bot/config/settings.py`: `MRConfig.rr_ratio = 1.0`
+- `ftmo_trading_bot/strategy/mean_reversion_strategy.py`: `MeanReversionStrategy.RR_RATIO = 1.0`
+
+**Artifacts restored** from `.pre_v8060` backups (MD5 verified):
+- `data/mr_signal_pool_5000.pkl` (537 MB) ← v8.0.52 baseline
+- `data/mr_signal_quality_model.pkl` (1.2 MB, AUC 0.6135)
+- `models/mr/ppo_mr_filter.zip` (Phase 2 RL, Pass 70.7%)
+- `models/mr/ppo_mr_filter_p1.zip` (Phase 1 RL)
+- `models/mr/vec_normalize_mr.pkl` + `_p1.pkl`
+
+### Phase 1 Fixes — KEPT (passed validity check)
+
+These fixes ALONE pivot system from -$342 → +$109 (+$451 swing):
+- `SymbolConfig.blocked_symbols = ['AUDUSD', 'USDCAD', 'USDCHF']` — block 3 worst (-$1,238 saved)
+- `TradeManager.BE_TRIGGER_RR = 0.3` (was 0.5)
+- `TradeManager.PARTIAL_TRIGGER_RR = 0.8` / `PARTIAL_CLOSE_PCT = 0.33`
+- `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT = 0.0070` (was 0.0085)
+- `FTMOConfig.MAX_OPEN_POSITIONS = 2` (was 3)
+- `FTMOConfig.DAILY_LOSS_CAP_ENABLED = True` @ 2.5%
+
+### Lesson Learned
+
+1. **Polled MFE (5s scan) is unreliable for replay** — must use M1 OHLCV high/low for true MFE
+2. **Mean Reversion strategy ≠ Trend Following** — MR by definition reverts after extreme; expecting 1.5R continuation is fighting the strategy's edge
+3. **USDJPY is the exception** (45.5% continuation) — future work: per-symbol RR (USDJPY can use 1.5R, others stay 1.0R)
+4. **Validity check FIRST, retrain SECOND** — could have saved 1h+ retrain effort if M1 replay was done before Phase 2 work
+
+### Backups (don't delete)
+
+`.pre_v8060` files preserved — if v8.0.61 has issues, restore Phase 1 settings only or full revert to v8.0.56 (Phase 1 + v8.0.52 model = current state).
+
+---
+
+## 📝 Version Log Entry — v8.0.56 (2026-05-22) — Phase 1 EV Fix (live-only, no retrain)
+
+## 📝 Version Log Entry — v8.0.56 (2026-05-22) — Phase 1 EV Fix (live-only, no retrain)
+
+**Trigger**: Audit 111 closed trades (`logs/ftmo_trades.xlsx` Trades sheet) — WR 59.46% แต่ Net **-$460.54**, EV **-$4.15/trade**, Profit Factor 0.863. Realized RR = **0.589** (vs design 1.0) — "ตัดกำไรเร็ว ปล่อยขาดทุนเต็ม".
+
+### Root cause from audit
+
+- ไม้ชนะ 86% โดน Partial @0.5R + BE → cap ที่ ~0.6-0.7R เท่านั้น
+- ไม้แพ้ 100% ไม่มี Partial / BE → กิน SL เต็ม -1R
+- 3 คู่ AUDUSD/USDCAD/USDCHF = WR 27-46%, รวม -$1,297 vs 7 คู่ที่เหลือ +$836
+- Avg Win $44.10 vs Avg Loss $74.92 — เสียเปรียบ 70%/ไม้
+
+### Fixes (live-only, no retrain — RL pool/reward เป็น R-multiple scale-invariant)
+
+**1. Symbol Blocking** (`SymbolConfig.blocked_symbols` — new field):
+- Block AUDUSD, USDCAD, USDCHF
+- Filter ใน `LiveMRScanner.__init__` — exclude จาก `_symbols` list
+- Toggle: ลบจาก list = unblock
+- Training pool ยังเทรดได้เต็ม (live-only filter, parity acceptable)
+- Expected: pool 7 คู่ × ~5% take rate = ~5-8 trades/day (vs ~10-12 เดิม)
+
+**2. BE/Partial tune** (`TradeManager` constants):
+- `BE_TRIGGER_RR`: 0.5 → **0.3** — จับไม้ revert (62% ของ losses เคย MFE > 0)
+- `PARTIAL_TRIGGER_RR`: 0.5 → **0.8** — ให้ไม้ชนะวิ่งเต็มก่อนหั่น
+- `PARTIAL_CLOSE_PCT`: 0.5 → **0.33** — ปิด 33% (เก็บ position ใหญ่)
+- Expected Avg Win $44 → ~$60-70, Avg Loss $75 → ~$50
+- ⚠️ Side-effect: ไม้ MFE 0.3-0.7R → revert จะปิดที่ entry (lose 0.25R partial เก่า) — รับได้เพราะ BE สำคัญกว่า
+
+**3. Risk Reduction** (FTMOConfig):
+- `DEFAULT_RISK_PER_TRADE_PCT`: 0.0085 → **0.0070** (-18%)
+- `MAX_OPEN_POSITIONS`: 3 → **2**
+- `DAILY_LOSS_CAP_ENABLED`: False → **True** (re-enable)
+- `DAILY_LOSS_CAP_PCT`: 0.030 → **0.025** — soft cap 1.5pp buffer ก่อน FTMO 4%
+- ห้ามลด risk < 0.5% (Pass Rate ตก 30-50% เพราะ +10% target เป็น absolute $)
+
+### What stays the same (v8.0.55 baseline)
+
+- 3 live filters (Entry Confirmation + Spread Spike + Cluster Cooldown) ยังคงเดิม
+- RR target ยัง 1.0 (Phase 2 จะปรับเป็น 1.5 หลัง retrain)
+- RL model + GBM + Pool ยังเป็น v8.0.52 (Pass 70.7%)
+- Stage 2/3 trail (TP_STEP 0.8R, TRAIL_ACTIVATION 1.0R) ยังเปิด — ⚠️ ตอนนี้ Partial 0.8R จะปะทะ Stage 2 0.8R (ทั้งคู่ trigger พร้อมกัน) → ที่ 0.8R: ปิด 33% + shift TP→1.5R + SL→0.5R = ไม้ที่เหลือเก็บ TP ใหญ่ขึ้น
+
+### FTMO Safety Math ($10k)
+
+- 4 SL streak × 0.70% = -2.8% (vs DAILY_LOSS_CAP 2.5% → block ก่อนถึง)
+- DAILY_LOSS_CAP $250 trigger → block new trades + keep open
+- DAILY_LOSS_HARD_STOP $400 (4%) → close all + halt 24h
+- Max concurrent loss = 2 open × 0.70% = -1.4% ครั้งเดียว
+
+### Expected impact
+
+- Net P/L: -$460 → projected **+$836** (จาก block 3 symbols เท่านั้น)
+- + Partial 0.8R improvement: คาดเพิ่ม +$300-500
+- EV: -$4.15 → projected **+$5-8/trade**
+- Pass Rate (backtest): คาดลด 5-8pp (ยัง > 60% gate)
+
+### Verification
+
+- `grep "blocked_symbols" ftmo_trading_bot/` → เจอใน config + strategy
+- Dry-run: confirm 3 blocked symbols ไม่ปรากฏใน Signals sheet `Direction` column
+- Live monitor 50 trades or 14 days → ดู WR, PF, EV vs acceptance criteria
+- Rollback: `cp logs/bot_state.json.pre_v8056 logs/bot_state.json` + `git revert` config/strategy/trade_manager
+
+### Files touched
+
+- `ftmo_trading_bot/config/settings.py` — SymbolConfig.blocked_symbols (NEW), DEFAULT_RISK_PER_TRADE_PCT 0.0085→0.0070, MAX_OPEN_POSITIONS 3→2, DAILY_LOSS_CAP_ENABLED False→True, DAILY_LOSS_CAP_PCT 0.030→0.025
+- `ftmo_trading_bot/strategy/mean_reversion_strategy.py` — `LiveMRScanner.__init__` filter `_symbols` by `blocked_symbols`
+- `ftmo_trading_bot/execution/trade_manager.py` — BE_TRIGGER_RR 0.5→0.3, PARTIAL_TRIGGER_RR 0.5→0.8, PARTIAL_CLOSE_PCT 0.5→0.33
+
+### Backups
+
+- `logs/bot_state.json.pre_v8056`
+
+---
 
 ## 📝 Version Log Entry — v8.0.55 (2026-05-22) — 3 Live Filters Kept + RL/Pool Reverted
 

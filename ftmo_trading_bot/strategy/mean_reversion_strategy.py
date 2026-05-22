@@ -211,7 +211,7 @@ class MeanReversionStrategy:
     ADX_TREND_BLOCK: float = 30.0
     ADX_TREND_BLOCK_XAU: float = 30.0
     SL_ATR_MULT: float = 1.0          # tight SL — capital preservation
-    RR_RATIO: float = 1.0             # v8.0.54: revert v8.0.53 (Stage 2/3 already extends RR)
+    RR_RATIO: float = 1.0             # v8.0.61: revert v8.0.60 (M1 replay: continuation 26.9% < 40% gate)
     MIN_REVERSAL_WICK_RATIO: float = 0.4  # was 1.2 — RL learns to filter weak wicks
     MIN_CONFLUENCE_SCORE: float = 70.0    # v8.0.28 — was 30 (RL filter only); live data shows clear edge ≥ 70 (WR 76% vs 41% below)
 
@@ -517,7 +517,12 @@ class LiveMRScanner:
         self._d1_bias_cache = {}
         # Accept the symbols list from settings — same as SMC
         from config.settings import bot_config
-        self._symbols = list(bot_config.symbols.symbols)
+        # v8.0.56: filter blocked_symbols (data-driven block from 111-trade audit)
+        # AUDUSD/USDCAD/USDCHF net -$1,297 → toggle via SymbolConfig.blocked_symbols
+        blocked = set(getattr(bot_config.symbols, "blocked_symbols", []))
+        self._symbols = [s for s in bot_config.symbols.symbols if s not in blocked]
+        if blocked:
+            print(f"🚫 [LiveMRScanner] blocked_symbols: {sorted(blocked)} (trading {len(self._symbols)}/{len(bot_config.symbols.symbols)})")
 
     # ─── Public API ───────────────────────────────────────────────────
 

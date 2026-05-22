@@ -50,6 +50,8 @@ ftmo_trading_bot/models/mr/best_*pass*/
 *.bak_*
 *.pkl.bak*
 *.zip.bak*
+*.pre_v*
+*.v8052_backup
 
 # Process / runtime locks
 *.pid

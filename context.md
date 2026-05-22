@@ -1,8 +1,11 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-22 (v8.0.55 — 3 live filters KEPT, RL/pool reverted to v8.0.52) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-23 (v8.0.61 — REVERT RR 1.5 → 1.0 after M1 validity check, Phase 1 fixes KEPT) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
+- **v8.0.61 (2026-05-23) — 🔴 REVERT RR 1.5 → 1.0 (data-driven via M1 OHLCV replay)**: เขียน [scripts_local/m1_replay_validity_check.py](scripts_local/m1_replay_validity_check.py) walk M1 high/low bars จริงของ 106/113 ไม้ → **Continuation Rate (1.0R→1.5R) = 26.9% << 40% gate**. รายคู่: USDJPY 45.5% (ผ่าน), อื่นๆ 0-50% (ส่วนใหญ่ MR เด้งกลับทันที). หลังหัก -$10 spread: Phase 1 Only = **+$109** (PF 1.08) vs Phase 1+2 = **-$627** (PF 0.57). พบ Polled MFE underestimate (TRUE max 6.72R vs polled cap 1.50R, 44% trades poll พลาด peak). Revert: `MRConfig.rr_ratio` 1.5→1.0, restore pool/GBM/RL จาก `.pre_v8060` (= v8.0.52 baseline Pass 70.7%). **Phase 1 fixes ยังคงไว้ทั้งหมด** (block + BE 0.3R + Partial 0.8R/33% + Risk 0.7% + Daily Cap 2.5%). ดู [`wiki/05-invariants.md` v8.0.61](wiki/05-invariants.md#-version-log-entry--v8061-2026-05-23--revert-rr-15--10-data-driven).
+- **v8.0.60 (2026-05-22, SUPERSEDED by v8.0.61) — Phase 2 RR 1.5 retrain**: build pool RR 1.5 (4900 ep, WR 49.31%) + train GBM (AUC 0.6140 ผ่าน gate 0.6135) + train RL (Pass 64.5%, gate ≥60% ผ่าน). แต่ M1 OHLCV replay พบว่า MR strategy ไม่ continuation ถึง 1.5R → revert.
+- **v8.0.56 (2026-05-22) — 🎯 Phase 1 EV fix (live-only, no retrain)**: Audit 111 trades — WR 59.46% แต่ Net **-$460**, EV **-$4.15/trade**. Realized RR 0.589 (vs design 1.0) — "ตัดกำไรเร็ว ปล่อยขาดทุนเต็ม". Fixes: **(1)** `SymbolConfig.blocked_symbols` (NEW) — block AUDUSD/USDCAD/USDCHF (-$1,297 รวม, WR 27-46%). **(2)** `TradeManager` BE 0.5→0.3 + Partial 0.5→0.8 + PartialPct 0.5→0.33 — ปล่อยไม้ชนะวิ่งก่อนหั่น, จับไม้แพ้ revert ทัน. **(3)** Risk reduction: `DEFAULT_RISK_PER_TRADE_PCT` 0.85%→0.70%, `MAX_OPEN_POSITIONS` 3→2, `DAILY_LOSS_CAP_ENABLED` True @2.5% (1.5pp buffer ก่อน FTMO 4%). RL pool/reward เป็น R-multiple → ไม่ต้อง retrain (Pass Rate คาดลดเพียง 5-8pp). Expected EV: -$4.15 → +$5-8/trade. Backup: `logs/bot_state.json.pre_v8056`. ดู [`wiki/05-invariants.md` v8.0.56](wiki/05-invariants.md#-version-log-entry--v8056-2026-05-22--phase-1-ev-fix-live-only-no-retrain).
 - **v8.0.55 (2026-05-22) — ✅ 3 live filters KEPT, ⏪ RL/Pool/GBM reverted to v8.0.52**: After 2026-05-21 16-trade analysis ($-80 net, 6 trades MFE ≤ 4 = -$472), built 3 pre-execution gates + retrain attempt. **Retrain result: Train Pass 68.1% (-2.6pp vs v8.0.52 70.7%), Holdout 48.5% (mild overfit Δ +5.3pp) → REVERT decision**. Training proxy (M15 first-bar slip ≤ 0.6R) didn't transfer well to live (live uses M1 backward + slip + BB). However, **3 live filters work without RL retraining** (RL-blind gates, same pattern as v7.1.10 news / v8.0.21 pre-news / v8.0.26 bulk guard) — kept in code, reduce TAKE rate ~10-20% in exchange for gap/cluster disaster protection. **(1)** `TradeExecutor._check_entry_confirmation` — slip 0.30R + M1 last bar direction + BB %B still extreme. **(2)** `TradeExecutor._check_spread_spike` — rolling median 30 bars, > 2x → SKIP (broker-agnostic). **(3)** `RiskManager` cluster cooldown — 300s global / 600s same-theme USD/JPY/METAL. State schema v8 (`_last_open_theme` persisted). RL/GBM/Pool restored from `models/mr/best_v8052_pass707/` + `data/*.pre_v8055`. Backups still on disk. ดู [`wiki/05-invariants.md` v8.0.55](wiki/05-invariants.md#-version-log-entry--v8055-2026-05-22--3-live-filters-kept--rlpool-reverted).
 - **v8.0.54 (2026-05-21) — Revert v8.0.53 (Pass 70.4% ≈ 70.7%, no improvement)**: Stage 2/3 trail already extends RR, raising base RR has no effect. Reverted MR config + restored from `.v8052_backup`.
 - **v8.0.53 (2026-05-21) — RR 1.0→1.2 + Stage 2 TP 1.8R (REVERTED in v8.0.54)**: Test higher RR for bigger wins. `MRConfig.rr_ratio` 1.0→1.2, `MeanReversionStrategy.RR_RATIO` 1.0→1.2, `TradeManager.TP_STEP_NEW_TP_RR` 1.5→1.8. Hypothesis: WR 70% × $85 win - 30% × $90 loss = +$32.5/trade EV (vs +$0.4 current). Risk: WR may drop 5-8pp. Backup .v8052_backup saved for rollback. ดู [`wiki/05-invariants.md` v8.0.53](wiki/05-invariants.md#-version-log-entry--v8053-2026-05-21--retrain-in-progress).
@@ -145,18 +148,21 @@
 | Metric | Value | Source (symbol) |
 |--------|-------|-----------------|
 | Strategy (v8.0+) | **Mean Reversion** + ADX trend filter (SMC removed v8.0.6) | `LiveMRScanner`, `MeanReversionStrategy` |
-| Symbols | **10** (EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, XAUUSD) | `SymbolConfig.symbols` |
+| Symbols (configured) | **10** (EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, XAUUSD) | `SymbolConfig.symbols` |
+| **Symbols (LIVE, v8.0.56)** | **7** (blocked: AUDUSD/USDCAD/USDCHF — audit Net -$1,297) | `SymbolConfig.blocked_symbols` |
 | Timeframes | M15 (entry) / H1 (ADX trend filter) | only M15 + H1 used in v8.0 (H4 ignored by MR) |
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
 | FTMO Daily DD limit | 5 % (we cap at 4%) | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
 | FTMO Total DD limit | 10 % (we cap at 8%) | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
-| Default risk per trade | **0.7 %** (v8.0.43 — paired with Option X trail) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
-| **Stepwise Trail (v8.0.48b)** | Stage 1@0.5R (partial+BE), Stage 2@0.8R (TP→1.5R, SL→0.5R), Stage 3@1.0R (SL→1.0R + chase, floor 1R) — **Pass 68.8%** | `TradeManager.TP_STEP_*` / `TRAIL_*` |
-| **Daily caps (v8.0.48b)** | DAILY_LOSS_HARD_STOP_PCT 4% **only** (DAILY_PROFIT_CAP + DAILY_LOSS_CAP disabled — overlap) | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
+| **MR RR (v8.0.61)** | **1.0** (reverted from v8.0.60 RR 1.5 — M1 replay showed continuation 26.9% < 40% gate) | `MRConfig.rr_ratio` / `MeanReversionStrategy.RR_RATIO` |
+| Default risk per trade | **0.70 %** (v8.0.56 — Phase 1 EV fix, was 0.85%) | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
+| **BE / Partial (v8.0.56)** | BE 0.3R / Partial 0.8R @ 33% close (was 0.5/0.5/50%) — "ปล่อยไม้ชนะวิ่งก่อน, จับไม้แพ้ revert" | `TradeManager.BE_TRIGGER_RR/PARTIAL_TRIGGER_RR/PARTIAL_CLOSE_PCT` |
+| **Stepwise Trail (v8.0.48b)** | Stage 1@0.5R (BE only after v8.0.56), Stage 2@0.8R (TP→1.5R, SL→0.5R), Stage 3@1.0R (SL→1.0R + chase, floor 1R) | `TradeManager.TP_STEP_*` / `TRAIL_*` |
+| **Daily caps (v8.0.56)** | DAILY_LOSS_HARD_STOP_PCT 4% + **DAILY_LOSS_CAP_PCT 2.5%** (re-enabled, 1.5pp buffer) | `FTMOConfig.DAILY_LOSS_CAP_*` |
 | Main loop interval (v8.0.46) | 5s default, **1s** when any position profit ≥ 0.5R | `bot_config.main_loop_interval`, adaptive in `FTMOTradingBot.run` |
 | Trail reward (v8.0.47) | Raw outcome (no cap — let big runners flow) | `FTMOSignalFilterEnv.step()` |
 | ML threshold (v8.0.3) | **0.30** (was 0.36 SMC era) | `FTMOConfig.ML_FILTER_THRESHOLD` |
-| Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
+| Max open positions | **2** (v8.0.56 — was 3, reduce concurrent risk) | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | **Env DAILY_DD_GUARD (v8.0.4)** | **3.0 %** (was 4.0 %) | `FTMOSignalFilterEnv.DAILY_DD_GUARD` |
 | **Env TOTAL_DD_GUARD (v8.0.5)** | **5.8 %** (was 8.5 %) | `FTMOSignalFilterEnv.TOTAL_DD_GUARD` |
 | **MR BB oversold/overbought** | 0.30 / 0.70 | `bot_config.mr.bb_oversold/overbought` |

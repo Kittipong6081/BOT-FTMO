@@ -71,11 +71,15 @@ class FTMOConfig:
     # v7.1.9 (2026-05-05): bump 0.7% → 0.99% — sync กับ RL training (--risk_per_trade 0.0099)
     # v8.0.43 Option X (2026-05-19): 0.99% → 0.7% — Plan B Trick (trail) ชดเชย EV
     # v8.0.43c (2026-05-19): 0.7% → 0.85% — สายกลาง (Pass 49% → คาด 51-54%)
-    # FTMO Safety: 4 SL × 0.85% = 3.4% daily (vs 4% limit, 15% buffer)
-    #             8 SL × 0.85% = 6.8% total (vs 8% limit, 15% buffer)
+    # v8.0.56 (2026-05-22): 0.85% → 0.70% — audit 111 trades (Net -$460, EV -$4.15/trade)
+    #   ลด risk เล็กน้อย (~18%) เพื่อเพิ่ม buffer ก่อน FTMO breach
+    #   Pass Rate impact: คาดลด 5-8pp (acceptable — RL pool/reward เป็น R-multiple scale-invariant)
+    #   ห้ามลด < 0.5% (Pass Rate ตก 30-50% เพราะ +10% target เป็น absolute $)
+    # FTMO Safety: 4 SL × 0.70% = 2.8% daily (vs 4% limit, 30% buffer)
+    #             8 SL × 0.70% = 5.6% total (vs 8% limit, 30% buffer)
     MIN_RISK_PER_TRADE_PCT: float = 0.005   # 0.5% ขั้นต่ำ (floor ปลอดภัย)
-    MAX_RISK_PER_TRADE_PCT: float = 0.0085  # 0.85% สูงสุด (v8.0.43c)
-    DEFAULT_RISK_PER_TRADE_PCT: float = 0.0085  # 0.85% — sync กับ RL training v8.0.43c
+    MAX_RISK_PER_TRADE_PCT: float = 0.0085  # 0.85% สูงสุด (v8.0.43c — kept for scale-up Phase 3)
+    DEFAULT_RISK_PER_TRADE_PCT: float = 0.0070  # 0.70% — v8.0.56 risk reduction
     
     # === อัตราส่วน Risk:Reward ขั้นต่ำ ===
     # v8.0.9 (2026-05-07): ลด 1.5 → 1.0 เพื่อรองรับ MR strategy ที่ใช้ RR 1:1
@@ -86,7 +90,9 @@ class FTMOConfig:
     PREFERRED_RISK_REWARD_RATIO: float = 1.0  # MR fix RR 1:1
     
     # === จำนวน Position สูงสุดที่เปิดได้พร้อมกัน ===
-    MAX_OPEN_POSITIONS: int = 3
+    # v8.0.56 (2026-05-22): 3 → 2 — ลด concurrent risk exposure
+    #   4-loss streak (Max Open 2 × 2 cycles) = 4 × 0.70% = -2.8% (vs Daily Cap 2.5%)
+    MAX_OPEN_POSITIONS: int = 2
 
     # === Min Seconds Between Opens (v8.0.26 — anti bulk-trading) ===
     # The5ers ห้าม "bulk trading" = เปิดหลายไม้พร้อมกันในวินาทีเดียว
@@ -135,13 +141,14 @@ class FTMOConfig:
     DAILY_PROFIT_CAP_ENABLED: bool = False
     DAILY_PROFIT_CAP_PCT: float = 0.016     # legacy — kept for revert
 
-    # === Daily Loss Cap (v8.0.22, DISABLED v8.0.48 — overlap with HARD_STOP) ===
-    # v8.0.48: ปิด — overlap กับ DAILY_LOSS_HARD_STOP_PCT (4%)
-    # LOSS_CAP 3% ใช้ initial balance anchor (คงที่) → เข้มกว่า HARD_STOP เสมอ
-    # HARD_STOP 4% ใช้ daily_start_equity → ตรงกับ FTMO calculation
-    # ใช้ HARD_STOP 4% (FTMO-aligned, 1% buffer) เป็น single source of truth
-    DAILY_LOSS_CAP_ENABLED: bool = False
-    DAILY_LOSS_CAP_PCT: float = 0.030       # legacy — kept for revert
+    # === Daily Loss Cap (v8.0.22, RE-ENABLED v8.0.56 — safety net for live FTMO) ===
+    # v8.0.48: ปิด (overlap กับ HARD_STOP 4%)
+    # v8.0.56 (2026-05-22): RE-ENABLE @ 2.5% — soft cap ก่อน FTMO breach 4%
+    #   เหตุผล: User push live FTMO เลย (เร่ง) → ต้อง buffer 1.5pp ก่อน hard breach
+    #   LOSS_CAP 2.5% (initial balance anchor) = $250 บน $10k → block new trades + keep open
+    #   HARD_STOP 4% (daily_start_equity, FTMO-aligned) = ยังเป็น hard cap สำหรับ breach
+    DAILY_LOSS_CAP_ENABLED: bool = True
+    DAILY_LOSS_CAP_PCT: float = 0.025       # 2.5% — soft cap (1.5pp buffer ก่อน FTMO 4%)
     
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน
@@ -283,7 +290,21 @@ class SymbolConfig:
         "GBPJPY",   # British Pound / Japanese Yen
         "XAUUSD",   # Gold / US Dollar (metal — digits=2, contract=100 oz)
     ])
-    
+
+    # === Blocked Symbols (v8.0.56, data-driven block) ===
+    # บล็อกคู่ที่ขาดทุนสะสมจาก audit 111 ไม้ (logs/ftmo_trades.xlsx):
+    #   AUDUSD: WR 27%, -$596 (11 ไม้) — worst offender
+    #   USDCAD: WR 46%, -$411 (13 ไม้)
+    #   USDCHF: WR 40%, -$290 (15 ไม้)
+    # รวมขาดทุน -$1,297 vs net loss $-460 → block 3 คู่นี้พลิกเป็น +$836
+    # Live-only filter — training pool ยังเทรดได้เต็ม (parity OK: SKIP เพิ่มที่ scanner)
+    # Toggle: ลบ symbol ออกจาก list นี้ = ปลดบล็อก (recovery ง่าย, ไม่กระทบ symbol_overrides)
+    blocked_symbols: List[str] = field(default_factory=lambda: [
+        "AUDUSD",
+        "USDCAD",
+        "USDCHF",
+    ])
+
     # Timeframe หลักสำหรับการวิเคราะห์ (ใช้ค่า MT5 constant)
     # mt5.TIMEFRAME_M15 = 15 นาที
     primary_timeframe: str = "M15"      # Timeframe หลักสำหรับ Entry
@@ -514,7 +535,13 @@ class MeanReversionConfig:
 
     # SL / TP
     sl_atr_mult: float = 1.0     # tight SL — capital preservation
-    rr_ratio: float = 1.0        # v8.0.54: revert v8.0.53 (RR 1.2 Pass 70.4% ≈ v8.0.52 70.7%, no improvement)
+    # v8.0.60 (2026-05-22): 1.0 → 1.5 — Phase 2 RR Architecture Redesign (REVERTED in v8.0.61)
+    # v8.0.61 (2026-05-23): 1.5 → 1.0 — REVERT after M1 OHLCV replay validity check
+    #   Continuation Rate (1.0R→1.5R) = 26.9% << 40% gate (only USDJPY 45.5%, others 0%)
+    #   MR strategy mean-reverts too fast → RR 1.5 wins don't materialize
+    #   Phase 1 fixes (block + BE 0.3 + Partial 0.8/33%) kept — they passed validity check
+    #   Restored from .pre_v8060 backups (pool + GBM + RL = v8.0.52 baseline, Pass 70.7%)
+    rr_ratio: float = 1.0        # v8.0.61: revert to v8.0.52 baseline
     min_reversal_wick_ratio: float = 0.4   # was 1.2 — RL learns to filter
 
     # Reward shaping defaults (env constructor uses these)
