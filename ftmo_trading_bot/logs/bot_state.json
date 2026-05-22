@@ -2,85 +2,61 @@
   "state": "ACTIVE",
   "initial_balance": 10000.0,
   "highest_balance": 10332.13,
-  "daily_start_equity": 10246.02,
-  "daily_start_balance": 10246.02,
-  "peak_daily_equity": 10283.38,
-  "current_day": "2026-05-19",
-  "daily_closed_pnl": -296.4680952380881,
-  "daily_trades_count": 7,
+  "daily_start_equity": 9544.0,
+  "daily_start_balance": 9544.0,
+  "peak_daily_equity": 9609.83,
+  "current_day": "2026-05-22",
+  "daily_closed_pnl": 80.63,
+  "daily_trades_count": 2,
   "last_loss_time_per_symbol": {
-    "GBPJPY": "2026-05-14T06:29:05.271659+03:00",
-    "AUDUSD": "2026-05-19T12:18:30.967527+03:00",
-    "EURJPY": "2026-05-18T19:32:28.870859+03:00",
-    "USDCHF": "2026-05-19T12:18:26.289858+03:00",
-    "EURUSD": "2026-05-19T11:53:03.786060+03:00"
+    "USDCHF": "2026-05-21T23:30:03.428253+03:00",
+    "GBPUSD": "2026-05-21T16:42:25.896540+03:00"
   },
-  "consecutive_losses": 3,
-  "halt_until": "2026-05-19T13:18:30.983087+03:00",
+  "consecutive_losses": 0,
+  "halt_until": null,
   "daily_pnl_history": {
     "2026-05-12": -73.36887381199021,
     "2026-05-13": 141.48026709480175,
     "2026-05-14": 140.0178211945402,
     "2026-05-15": 40.010000000000005,
-    "2026-05-18": 1.9599670397130655
+    "2026-05-18": 1.9599670397130655,
+    "2026-05-19": -296.4680952380881,
+    "2026-05-20": -304.2599999999976,
+    "2026-05-21": -80.30624725043675
   },
   "mt5_login": 26337318,
   "challenge_start_date": "2026-05-12",
   "last_tp_per_symbol_dir": {
-    "XAUUSD|BUY": {
-      "tp_price": 4546.54,
-      "tp_time": "2026-05-19T06:23:52.523458+03:00"
+    "AUDUSD|BUY": {
+      "tp_price": 0.71408,
+      "tp_time": "2026-05-22T08:55:33.569309+03:00"
     },
-    "USDCAD|SELL": {
-      "tp_price": 1.37519,
-      "tp_time": "2026-05-19T11:01:12.632797+03:00"
+    "XAUUSD|BUY": {
+      "tp_price": 4522.65,
+      "tp_time": "2026-05-22T09:10:19.810045+03:00"
     }
   },
   "flip_lock": {
-    "XAUUSD": {
-      "closed_direction": "BUY",
-      "close_price": 4546.54,
-      "atr_at_close": 10.38043533274979,
-      "unlock_threshold": 4540.31173880035,
-      "min_unlock_time": "2026-05-19T06:28:52.540436+03:00",
-      "max_expiry_time": "2026-05-19T10:23:52.540436+03:00"
-    },
-    "EURUSD": {
-      "closed_direction": "BUY",
-      "close_price": 1.16242,
-      "atr_at_close": 0.0005340060621932993,
-      "unlock_threshold": 1.1620461957564647,
-      "min_unlock_time": "2026-05-19T11:58:03.796331+03:00",
-      "max_expiry_time": "2026-05-19T15:53:03.796331+03:00"
-    },
-    "USDCAD": {
-      "closed_direction": "SELL",
-      "close_price": 1.37519,
-      "atr_at_close": 0.0003843520358908964,
-      "unlock_threshold": 1.3753821760179454,
-      "min_unlock_time": "2026-05-19T11:06:12.649655+03:00",
-      "max_expiry_time": "2026-05-19T15:01:12.649655+03:00"
-    },
-    "USDCHF": {
-      "closed_direction": "SELL",
-      "close_price": 0.7875,
-      "atr_at_close": 0.00046695044370364543,
-      "unlock_threshold": 0.7878268653105925,
-      "min_unlock_time": "2026-05-19T12:23:26.298223+03:00",
-      "max_expiry_time": "2026-05-19T16:18:26.298223+03:00"
-    },
     "AUDUSD": {
       "closed_direction": "BUY",
-      "close_price": 0.71104,
-      "atr_at_close": 0.00060614604490823,
-      "unlock_threshold": 0.7106156977685643,
-      "min_unlock_time": "2026-05-19T12:23:30.976506+03:00",
-      "max_expiry_time": "2026-05-19T16:18:30.976506+03:00"
+      "close_price": 0.71408,
+      "atr_at_close": 0.00043057133021972134,
+      "unlock_threshold": 0.7138647143348902,
+      "min_unlock_time": "2026-05-22T09:00:33.584947+03:00",
+      "max_expiry_time": "2026-05-22T12:55:33.584947+03:00"
+    },
+    "XAUUSD": {
+      "closed_direction": "BUY",
+      "close_price": 4522.65,
+      "atr_at_close": 8.389438488847672,
+      "unlock_threshold": 4517.616336906691,
+      "min_unlock_time": "2026-05-22T09:15:19.822951+03:00",
+      "max_expiry_time": "2026-05-22T13:10:19.822951+03:00"
     }
   },
   "daily_profit_locked": false,
-  "daily_loss_locked": true,
-  "last_open_time_iso": "2026-05-19T12:09:20.248476",
+  "daily_loss_locked": false,
+  "last_open_time_iso": "2026-05-22T09:34:23.779467",
   "schema_version": 7,
-  "last_updated": "2026-05-19T16:51:55.693102"
+  "last_updated": "2026-05-22T13:34:23.779619"
 }

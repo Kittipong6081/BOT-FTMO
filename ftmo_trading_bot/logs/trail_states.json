@@ -1,1 +1,38 @@
-{}
+{
+  "555453918": {
+    "ticket": 555453918,
+    "initial_sl": 1.37979,
+    "current_sl": 1.37979,
+    "best_price": 1.3783699999999999,
+    "breakeven_moved": false,
+    "partial_closed": false,
+    "trailing_active": false,
+    "trail_distance": 0.00048330366696198334,
+    "pip_size": 0.0001,
+    "tp_step_done": false
+  },
+  "555512632": {
+    "ticket": 555512632,
+    "initial_sl": 0.78522,
+    "current_sl": 0.78645,
+    "best_price": 0.78713,
+    "breakeven_moved": true,
+    "partial_closed": true,
+    "trailing_active": false,
+    "trail_distance": 0.00032672730533257765,
+    "pip_size": 0.0001,
+    "tp_step_done": false
+  },
+  "555567167": {
+    "ticket": 555567167,
+    "initial_sl": 0.58566,
+    "current_sl": 0.58566,
+    "best_price": 0.58699,
+    "breakeven_moved": false,
+    "partial_closed": false,
+    "trailing_active": false,
+    "trail_distance": 0.0003742259207990565,
+    "pip_size": 0.0001,
+    "tp_step_done": false
+  }
+}
