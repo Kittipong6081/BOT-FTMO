@@ -2,7 +2,7 @@
 ===============================================================================
 Fetch OHLCV Data from MT5 → CSV (สำหรับ RL Training)
 ===============================================================================
-ดึงข้อมูลแท่งเทียน M15 + H1 + H4 ของ 9 symbols จาก MetaTrader 5 broker
+ดึงข้อมูลแท่งเทียน M1 + M15 + H1 + H4 ของ 10 symbols จาก MetaTrader 5 broker
 แล้วบันทึกเป็น CSV ที่ ftmo_trading_bot/data/ohlcv/{SYMBOL}_{TF}.csv
 
 Usage:
@@ -10,6 +10,14 @@ Usage:
     python scripts/fetch_mt5_data.py --years 5                    # ดึง 5 ปี
     python scripts/fetch_mt5_data.py --symbols EURUSD,GBPUSD      # เฉพาะบาง symbol
     python scripts/fetch_mt5_data.py --timeframe M15              # เฉพาะ M15 อย่างเดียว
+    python scripts/fetch_mt5_data.py --timeframe M1               # เฉพาะ M1 (v8.0.55 — train-live parity)
+    python scripts/fetch_mt5_data.py --timeframe M1 --years 1     # M1 1 ปี (~80MB/symbol)
+
+หมายเหตุ M1 (v8.0.55):
+    - M1 มี 1440 bars/วัน (15x ของ M15) → ขนาดไฟล์ใหญ่ ~80-100 MB/symbol/ปี
+    - ใช้ใน MeanReversionBacktester proxy entry_confirm (mirror live M1 check)
+    - แนะนำ --years 1 หรือ 2 (เพียงพอสำหรับ MR training pool 5000 eps)
+    - Broker บางที่มี max bars limit ต่ำ — script จะ cap อัตโนมัติ
 
 Prerequisites:
     - MT5 terminal เปิดอยู่ + login broker แล้ว
@@ -38,6 +46,8 @@ DEFAULT_SYMBOLS = [
 ]
 
 TIMEFRAMES = {
+    # v8.0.55: M1 added for train-live parity (MeanReversionBacktester entry_confirm)
+    "M1": mt5.TIMEFRAME_M1,
     "M15": mt5.TIMEFRAME_M15,
     "H1": mt5.TIMEFRAME_H1,
     "H4": mt5.TIMEFRAME_H4,
@@ -86,20 +96,27 @@ def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     # คำนวณจำนวนแท่งที่ต้องการ
-    bars_per_day = {"M15": 96, "H1": 24, "H4": 6}[timeframe_key]
+    # v8.0.55: M1 = 1440 bars/day (Forex market: 24/5 ≈ 5 days/week, ใช้ 365 × bars_per_day
+    #         approximation พอเพียงสำหรับ chunked fetch — broker max bars เป็น cap จริง)
+    bars_per_day = {"M1": 1440, "M15": 96, "H1": 24, "H4": 6}[timeframe_key]
     requested_count = years * 365 * bars_per_day
-    
+
     # ตรวจสอบขีดจำกัด Terminal (Max bars)
     term = mt5.terminal_info()
     max_bars = getattr(term, "maxbars", 100000) if term else 100000
     # เผื่อ buffer ไว้เล็กน้อย ไม่ให้ชนขอบ limit พอดีเป๊ะ
     limit = min(requested_count, max_bars - 500)
-    
+
     if limit < requested_count:
+        # v8.0.55: M1 มักชนขอบ max_bars เพราะ requested ใหญ่มาก (3 ปี ≈ 1.5M bars)
+        # → cap ที่ max_bars - 500 พอใช้สำหรับ training pool 5000 eps
         print(f"  ℹ️  {symbol}: จำกัดการดึงที่ {limit:,} bars (ตาม Max bars ใน MT5)")
+        if timeframe_key == "M1" and limit < bars_per_day * 180:
+            print(f"  ⚠️  {symbol}: M1 limit ต่ำกว่า 6 เดือน — ปรับ Max bars ใน MT5 Tools→Options→Charts")
 
     all_rates = []
-    chunk_size = 20000
+    # v8.0.55: M1 ใช้ chunk ใหญ่กว่าเพื่อลดจำนวน round-trip (M1 = 15x ของ M15)
+    chunk_size = 50000 if timeframe_key == "M1" else 20000
     pos = 0
     
     print(f"  📥 {symbol}: เริ่มดึงข้อมูลแบบ chunk (เป้าหมาย {limit:,} bars)...", end="", flush=True)
