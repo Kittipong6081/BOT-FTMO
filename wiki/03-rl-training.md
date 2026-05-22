@@ -1,5 +1,7 @@
 # 03 — RL Training (Obs 32 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-20 (v8.0.48 — Stepwise Trail in sim mirrors live; raw reward kept) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-05-22 (v8.0.55 — env entry_confirm forced-SKIP code KEPT but pool reverted = no-op) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+>
+> **v8.0.55 status** — Pool/GBM/PPO REVERTED to v8.0.52. Env still has `_entry_confirm_forced_skips` counter + force-SKIP gate. With current v8.0.52 pool loaded, signal dicts don't have `entry_confirm_passed` field → `.get('entry_confirm_passed', True)` defaults to True → no force-SKIP → behaves identically to v8.0.52. Future pool rebuilds will populate the field and gate will activate. Retrain attempt: Train Pass 68.1% (-2.6pp vs 70.7%), Holdout 48.5% (mild overfit). Lesson: M15 first-bar slip ≠ M1 last-bar direction (live filter); training proxy didn't transfer well. See [`wiki/05-invariants.md` v8.0.55](05-invariants.md#-version-log-entry--v8055-2026-05-22--3-live-filters-kept--rlpool-reverted) for full eval + decision rationale.
 >
 > **v8.0.48 change** — `_resolve_trade()` in sim now mirrors live 3-stage trail (Stage 2 @ 0.8R: SL→0.5R, TP→1.5R; Stage 3 @ 1.0R: SL→1.0R + trail chase with `max(entry+1R, best-0.5R)` SL floor). Reward stays raw (no cap, kept from v8.0.47). Sim does NOT model partial close (returns full-position R-multiple); for Stage 2+ trades the math coincidentally aligns with weighted live realized P/L. Pre-Stage 2 trades retain pre-existing sim-vs-live gap (sim full SL = -1R, live partial-only = +0.25R).
 >

@@ -97,6 +97,11 @@ class RiskManager:
         # ใช้ใน can_open_trade กัน 2 ไม้เปิดในวินาทีเดียว (= flag bot)
         self._last_open_time_iso: Optional[str] = None
 
+        # v8.0.55: Cluster cooldown — track theme of last opened trade
+        # USD_LONG / USD_SHORT / JPY_LONG / JPY_SHORT / METAL_LONG / METAL_SHORT / None
+        # ใช้ใน can_open_trade กัน 2 ไม้เดิมพันธีมเดียวกันใน 10 นาที (5-21 20:18-20:19 case)
+        self._last_open_theme: Optional[str] = None
+
         # === Cooldown / Anti-Revenge-Trading State (v2) ===
         # เวลาที่โดน SL ล่าสุดของแต่ละ symbol (ISO string)
         self._last_loss_time_per_symbol: Dict[str, str] = {}
@@ -567,12 +572,51 @@ class RiskManager:
         """ตอบว่าวันนี้ล็อกแล้วจาก daily loss cap หรือไม่"""
         return self._daily_loss_locked
 
-    def record_trade_open(self) -> None:
+    def record_trade_open(
+        self,
+        symbol: str = "",
+        direction: str = "",
+    ) -> None:
         """v8.0.26: บันทึกเวลาเปิดออเดอร์ล่าสุด (สำหรับ bulk-trading guard).
+        v8.0.55: เพิ่ม symbol+direction → คำนวณ theme สำหรับ cluster cooldown.
+
         เรียกหลัง executor.execute_signal() สำเร็จ"""
         now = TimeManager.get_server_time().replace(tzinfo=None)
         self._last_open_time_iso = now.isoformat()
+        # v8.0.55: track theme of this open (USD_LONG/SHORT, JPY_LONG/SHORT, METAL_LONG/SHORT)
+        self._last_open_theme = self._compute_theme(symbol, direction)
         self._save_state()
+
+    @staticmethod
+    def _compute_theme(symbol: str, direction: str) -> Optional[str]:
+        """v8.0.55: คำนวณ "theme" ของไม้เพื่อใช้ใน cluster cooldown.
+
+        Theme = ฝั่ง USD/JPY/METAL ที่ไม้นี้กำลังเดิมพัน.
+        ตัวอย่าง:
+          • EURUSD BUY = USD_SHORT (ขาย USD เพื่อซื้อ EUR)
+          • USDJPY BUY = USD_LONG (ซื้อ USD เพื่อขาย JPY) + JPY_SHORT
+          • XAUUSD BUY = METAL_LONG
+
+        คืน theme หลัก (priority: USD > JPY > METAL).
+        """
+        if not symbol or not direction:
+            return None
+        su = symbol.upper()
+        du = direction.upper()
+        # USD theme (priority สูงสุด — USD pairs)
+        # Quote = USD → BUY = USD_SHORT, SELL = USD_LONG
+        if su in {"EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"}:
+            return "USD_SHORT" if du == "BUY" else "USD_LONG"
+        # Base = USD → BUY = USD_LONG, SELL = USD_SHORT
+        if su in {"USDJPY", "USDCAD", "USDCHF"}:
+            return "USD_LONG" if du == "BUY" else "USD_SHORT"
+        # JPY cross (no USD) → BUY = JPY_SHORT, SELL = JPY_LONG
+        if su in {"EURJPY", "GBPJPY"}:
+            return "JPY_SHORT" if du == "BUY" else "JPY_LONG"
+        # Metals
+        if su in {"XAUUSD", "XAGUSD"}:
+            return "METAL_LONG" if du == "BUY" else "METAL_SHORT"
+        return None
 
     def can_open_trade(
         self,
@@ -620,6 +664,41 @@ class RiskManager:
                         return (False, f"⏱️ Bulk-trading guard: เพิ่งเปิดไม้ก่อนหน้า "
                                 f"{elapsed:.0f}s ที่แล้ว — รออีก {remaining:.0f}s "
                                 f"(min gap {min_gap}s, The5ers compliance)")
+                except (ValueError, TypeError):
+                    pass
+
+        # === ตรวจสอบที่ 0-pre.2: Cluster Cooldown (v8.0.55) ===
+        # ขยายจาก v8.0.26 60s → 5 นาที (300s) global + 10 นาที (600s) same theme
+        # เหตุผล: 5-21 20:18-20:19 เปิด AUDUSD+XAUUSD ขายพร้อมกัน (สวน USD เหมือนกัน)
+        # ห่างกัน 82 วินาที = ผ่าน v8.0.26 60s → -$170 ใน 1 นาที
+        if getattr(self._config, "CLUSTER_COOLDOWN_ENABLED", False):
+            cd_any = int(getattr(self._config, "CLUSTER_COOLDOWN_ANY_SEC", 300))
+            cd_theme = int(getattr(self._config, "CLUSTER_COOLDOWN_SAME_THEME_SEC", 600))
+            if self._last_open_time_iso:
+                try:
+                    last_t = datetime.fromisoformat(self._last_open_time_iso)
+                    if last_t.tzinfo is not None:
+                        last_t = last_t.replace(tzinfo=None)
+                    now_t = TimeManager.get_server_time().replace(tzinfo=None)
+                    elapsed = (now_t - last_t).total_seconds()
+                    # Theme cooldown (ตรวจก่อนเพราะเข้มกว่า)
+                    new_theme = self._compute_theme(symbol, direction or "")
+                    if (
+                        cd_theme > 0
+                        and new_theme is not None
+                        and self._last_open_theme == new_theme
+                        and 0 <= elapsed < cd_theme
+                    ):
+                        remaining = cd_theme - elapsed
+                        return (False, f"⏱️ Cluster theme cooldown: ธีม {new_theme} "
+                                f"เพิ่งเปิด {elapsed:.0f}s ที่แล้ว — รออีก {remaining:.0f}s "
+                                f"(theme gap {cd_theme}s)")
+                    # Global cooldown
+                    if cd_any > 0 and 0 <= elapsed < cd_any:
+                        remaining = cd_any - elapsed
+                        return (False, f"⏱️ Cluster cooldown: เพิ่งเปิดไม้ "
+                                f"{elapsed:.0f}s ที่แล้ว — รออีก {remaining:.0f}s "
+                                f"(global gap {cd_any}s)")
                 except (ValueError, TypeError):
                     pass
 
@@ -1043,7 +1122,9 @@ class RiskManager:
             "daily_loss_locked": self._daily_loss_locked,
             # --- v7 (v8.0.26): Bulk-trading guard (last open time, EET ISO) ---
             "last_open_time_iso": self._last_open_time_iso,
-            "schema_version": 7,
+            # --- v8 (v8.0.55): Cluster cooldown — theme of last open ---
+            "last_open_theme": self._last_open_theme,
+            "schema_version": 8,
             "last_updated": datetime.now().isoformat(),
         }
 
@@ -1131,6 +1212,9 @@ class RiskManager:
 
             # --- v7 (v8.0.26): Bulk-trading guard (last open time, ISO EET) ---
             self._last_open_time_iso = data.get("last_open_time_iso", None)
+
+            # --- v8 (v8.0.55): Cluster cooldown — theme of last open ---
+            self._last_open_theme = data.get("last_open_theme", None)
 
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))

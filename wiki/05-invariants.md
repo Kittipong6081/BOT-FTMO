@@ -1,5 +1,134 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-21 | Scope: red flags, version log, migration notes (latest: **v8.0.54** — Revert v8.0.53, keep v8.0.52 deployed)
+> Last Updated: 2026-05-22 | Scope: red flags, version log, migration notes (latest: **v8.0.55** — 3 live filters kept, RL/pool reverted to v8.0.52)
+
+## 📝 Version Log Entry — v8.0.55 (2026-05-22) — 3 Live Filters Kept + RL/Pool Reverted
+
+**Eval result: Train Pass 68.1% (-2.6pp vs v8.0.52 70.7%), Holdout 48.5% (mild overfit Δ +5.3pp). Decision: REVERT RL/GBM/Pool to v8.0.52, KEEP 3 live filters.**
+
+### Eval summary
+
+| Metric | v8.0.52 (baseline) | v8.0.55 retrain | Δ |
+|---|---|---|---|
+| Train Pass Rate | 70.7% | 68.1% | -2.6pp 🟡 |
+| Holdout Pass Rate | ~54% | 48.5% | -5.5pp 🔴 |
+| Δ train−holdout | — | +5.3pp | 🟡 mild overfit |
+| Total DD max | 5.80% | 5.80% | same |
+| Daily DD max | 3.00% | 3.00% | same |
+| Breach Rate | 0% | 0% | same |
+| Profit avg | $8,633 | $8,533 | -$100 |
+
+Verdict: training proxy (M15 first-bar slip ≤ 0.6R) doesn't transfer well to live (live uses M1 backward + slip + BB). 56% pass with 0.3R was too strict; 76% with 0.6R captured quality but RL distribution shift caused regression.
+
+### What's KEPT (live filters work without retrain — RL-blind gates)
+
+3 live filters block ~15-25% of signals post-RL decision. Since they only REJECT (never CREATE new TAKEs) and don't modify observation, RL doesn't need to know about them. Same pattern as v7.1.10 news close, v8.0.21 pre-news block, v8.0.26 bulk-trading guard — all live-only, all production-stable.
+
+- `TradeExecutor._check_entry_confirmation` — slip 0.30R + M1 last bar direction + BB %B still extreme
+- `TradeExecutor._check_spread_spike` + `_record_spread_observation` + `_spread_history` — broker-agnostic rolling median 30 bars, > 2x → SKIP
+- `RiskManager` cluster cooldown — `CLUSTER_COOLDOWN_ANY_SEC (300)` + `CLUSTER_COOLDOWN_SAME_THEME_SEC (600)` + `_compute_theme(symbol, direction)` + `_last_open_theme` state
+- `record_trade_open(symbol, direction)` signature change (main.py updated)
+- `bot_state.json` schema v8 (adds `last_open_theme`)
+- All 8 config values in `FTMOConfig` (ENTRY_CONFIRM_*, SPREAD_SPIKE_*, CLUSTER_COOLDOWN_*)
+
+### What's REVERTED (RL doesn't benefit from training proxy)
+
+Files restored from backup:
+- `models/mr/ppo_mr_filter.zip` ← `models/mr/best_v8052_pass707/`
+- `models/mr/ppo_mr_filter_p1.zip` ← same
+- `models/mr/vec_normalize_mr.pkl` ← same
+- `models/mr/vec_normalize_mr_p1.pkl` ← same
+- `data/mr_signal_pool_5000.pkl` ← `.pre_v8055`
+- `data/mr_signal_quality_model.pkl` ← `.pre_v8055`
+
+### Code that stays in repo (no-op when reverted)
+
+- `MeanReversionBacktester.entry_confirm_passed` field — computed in pool but pool reverted. Dead-but-harmless field. Future pool rebuilds will recompute.
+- `FTMOSignalFilterEnv._entry_confirm_forced_skips` — counter+gate code stays. When current v8.0.52 pool loaded, signals have `entry_confirm_passed` field missing → `.get('entry_confirm_passed', True)` defaults to True → no force-SKIP → behaves identically to v8.0.52.
+- `fetch_mt5_data.py` M1 timeframe support — added for future use (broker M1 history limited to 97 days, not enough for current 3-year M15 training pool).
+
+### Lesson learned
+
+Training proxies must mirror live filters precisely, OR be left out entirely (live-only is safe for small filters). M15 first-bar swing ≠ M1 last-bar direction. Future filters that need training parity require either:
+1. M1 historical data with multi-year coverage (broker dependent — current brokers cap at ~3 months)
+2. Different proxy that statistically tracks live behavior (testable via backtest)
+3. Keep as live-only if block rate <30% (safe per v7.1.10/8.0.21/8.0.26 precedent)
+
+### Deployment
+
+Current `models/mr/` matches v8.0.52 (Pass 70.7%). Live execution path includes 3 new filters. Live behavior:
+- Same RL/GBM scoring as v8.0.52
+- Adds 3 pre-execution gates → slight reduction in TAKE rate (estimated -10-20%)
+- DD spikes from gap/cluster cases reduced
+
+### Backups still on disk (don't delete)
+
+- `models/mr/best_v8052_pass707/` — full snapshot (PPO + vec_normalize × 2)
+- `data/*.pre_v8055` — pool + GBM (1.3 GB)
+- `data/*.v8052_backup` — earlier backup from v8.0.53 attempt
+- `models/mr/*.v8052_backup` — same
+
+---
+
+## 📝 Version Log Entry — v8.0.55 (2026-05-22, ATTEMPT, SUPERSEDED) — Entry Confirmation + Spread Spike + Cluster Cooldown (in retrain)
+
+**3 new pre-execution gates added after 2026-05-21 16-trade analysis (Net -$80, 14/16 SL hits, 6 trades with MFE ≤ 4 = -$472)**
+
+Trigger trades that justify the gates:
+- XAUUSD SELL 2026-05-21 20:19 EET — instant gap, MFE 0, -$79 in 63 sec → **Spread Spike** would catch (US session open spread surge)
+- AUDUSD + XAUUSD SELL 20:18-20:19 EET (82 sec apart) — both bet "USD strong", lost -$170 together → **Cluster Cooldown (same theme 600s)** would catch
+- USDCAD 5:37 (MFE 0.9), 16:02 (MFE 0), GBPUSD 16:16 (MFE 4.4) — straight to SL with no favorable move → **Entry Confirmation** (M1 last bar direction match) would catch
+
+Gate 1 — **Entry Confirmation** (`TradeExecutor._check_entry_confirmation`):
+- Slip: `|signal.entry_price - current_price| / sl_distance > ENTRY_CONFIRM_MAX_SLIP_R (0.30)` → SKIP
+- M1 last closed bar direction must match signal direction (body ≥ 5% of range)
+- BB %B must still be in extreme zone (`ENTRY_CONFIRM_BB_BUY_MAX 0.35` / `_SELL_MIN 0.65`)
+- Training mirror: `MeanReversionBacktester` sets `entry_confirm_passed=False` when first future M15 bar swings against signal direction. Env force-SKIPs (similar to v7.0.2 correlation simulator).
+
+Gate 2 — **Spread Spike** (`TradeExecutor._check_spread_spike` + `_record_spread_observation`):
+- Per-symbol rolling history (`deque(maxlen=SPREAD_SPIKE_LOOKBACK_BARS=30)`) — broker-agnostic, self-calibrating
+- `current_spread / median_30bars > SPREAD_SPIKE_RATIO_LIMIT (2.0)` → SKIP
+- Warmup: `SPREAD_SPIKE_MIN_SAMPLES (10)` — falls back to fixed `max_spread_points` until baseline ready
+- **Live only** — no spread data in historical CSV. Parity drift accepted at ~3-5% (small gate, mostly catches XAUUSD/JPY)
+
+Gate 3 — **Cluster Cooldown** (`RiskManager.can_open_trade` + `_compute_theme`):
+- Global gap: `CLUSTER_COOLDOWN_ANY_SEC (300)` — any new open within 5 min → SKIP
+- Theme-aware gap: `CLUSTER_COOLDOWN_SAME_THEME_SEC (600)` — same USD/JPY/METAL theme within 10 min → SKIP
+- Themes: `USD_LONG/SHORT`, `JPY_LONG/SHORT`, `METAL_LONG/SHORT` (USD priority over JPY for `USDJPY/USDCAD/USDCHF`)
+- Extends `v8.0.26 MIN_SECONDS_BETWEEN_OPENS_SEC (60)` — both gates active (60s anti-bulk-flag + 300s cluster)
+- State persisted: `RiskManager._last_open_theme` added to `bot_state.json` (schema v8). `record_trade_open(symbol, direction)` now takes 2 args.
+
+Config additions in `FTMOConfig` (`config/settings.py`):
+- `ENTRY_CONFIRM_ENABLED=True`, `ENTRY_CONFIRM_MAX_SLIP_R=0.30`, `ENTRY_CONFIRM_M1_DIRECTION_MATCH=True`, `ENTRY_CONFIRM_BB_BUY_MAX=0.35`, `ENTRY_CONFIRM_BB_SELL_MIN=0.65`
+- `SPREAD_SPIKE_ENABLED=True`, `SPREAD_SPIKE_LOOKBACK_BARS=30`, `SPREAD_SPIKE_RATIO_LIMIT=2.0`, `SPREAD_SPIKE_MIN_SAMPLES=10`
+- `CLUSTER_COOLDOWN_ENABLED=True`, `CLUSTER_COOLDOWN_ANY_SEC=300`, `CLUSTER_COOLDOWN_SAME_THEME_SEC=600`
+
+Files touched:
+- `config/settings.py` — 8 new config values
+- `execution/trade_executor.py` — `_check_entry_confirmation`, `_check_spread_spike`, `_record_spread_observation` + hooked into `execute_signal` (ด่าน 4.5/4.6) + `_spread_history: Dict[str, deque]` state
+- `core/risk_manager.py` — `_compute_theme` (static), `_last_open_theme` state, cluster cooldown gate in `can_open_trade`, `record_trade_open(symbol, direction)` signature change, save/load schema v8
+- `main.py` — `record_trade_open(symbol=sig.symbol, direction=sig.signal_type.value)`
+- `ml/mean_reversion_backtester.py` — `entry_confirm_passed` field added to pool sig dict
+- `ml/signal_filter_env.py` — `_entry_confirm_forced_skips` counter, forced SKIP if `not sig['entry_confirm_passed']`, telemetry in info dict
+
+Pipeline (in progress — overnight ~10 ชม.):
+- Build pool 5,000 episodes (PID 4828, log `logs/build_pool_v8055.log`)
+- Train GBM (auto)
+- Train RL P1 (5M) + P2 (2M) (auto)
+- Eval train + holdout
+
+Gate (decision):
+- Pass ≥ 70.7% (v8.0.52 baseline) **และ** holdout Δ ≤ 10pp → KEEP + deploy
+- 65% ≤ Pass < 70.7% → live test 1 week then decide
+- Pass < 65% → REVERT to `models/mr/best_v8052_pass707/` snapshot + `data/*.pre_v8055`
+
+Backups before retrain:
+- `models/mr/best_v8052_pass707/` (4 files: PPO p1/p2 + vec_normalize × 2)
+- `data/mr_signal_pool_5000.pkl.pre_v8055`
+- `data/mr_signal_quality_model.pkl.pre_v8055`
+
+**Caveat — pool/GBM retrain are real changes (not pure live-only)**: New `entry_confirm_passed` field in pool dict means RL trains on different distribution than v8.0.52 pool. ~15-20% of signals expected to have `entry_confirm_passed=False` (force-SKIP). Pass rate may regress; revert path is one `cp` command.
+
+---
 
 ## 📝 Version Log Entry — v8.0.54 (2026-05-21) — REVERT v8.0.53
 

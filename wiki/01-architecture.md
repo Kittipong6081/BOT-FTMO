@@ -1,5 +1,5 @@
 # 01 — Architecture (3-Brain MR Pipeline + Chronos Forecaster)
-> Last Updated: 2026-05-07 (v8.0.8) | Scope: system overview + data flow
+> Last Updated: 2026-05-22 (v8.0.55 — 3 pre-execution gates inserted at Execute step) | Scope: system overview + data flow
 
 ## TL;DR (30-second scan)
 
@@ -7,7 +7,8 @@
 - Live entry point: `FTMOTradingBot` in `ftmo_trading_bot/main.py`. Calls `LiveMRScanner.scan_all_symbols()` (drop-in for legacy `SMCStrategy.scan_all_symbols`).
 - Training pipeline: `build_mr_signal_pool.py` → `train_mr_signal_quality.py` → `train_mr_signal_filter.py` (orchestrated by `auto_train_pipeline.py`).
 - Observation = **32 dims** (v8 production model). Must stay in sync across `FTMOSignalFilterEnv._get_obs`, `MeanReversionFilterEnv._get_obs` (overrides 3 slots), `FTMOTradingBot._build_signal_observation`, and `SelfLearningAgent.OBS_DIM`.
-- Every live decision flows through gates in this order: **Risk → Time (rollover/daily-close/weekend) → News → MR Strategy → ML gate → RL → Execute → Manage**.
+- Every live decision flows through gates in this order: **Risk → Time (rollover/daily-close/weekend) → News → MR Strategy → ML gate → RL → [Execute pre-gates: Spread Spike → Entry Confirmation] → Order → Manage**.
+- **v8.0.55 Execute pre-gates** (NEW): `TradeExecutor._check_spread_spike` (median 30 bars, > 2x → SKIP, broker-agnostic) → `TradeExecutor._check_entry_confirmation` (slip 0.30R + M1 direction + BB %B still extreme). `RiskManager` cluster cooldown gate (300s / 600s same theme) also added at Risk step.
 - **v8.0.5 verified**: Pass Rate **59.30 %** (5000-eps eval), Profitable Rate 89.10 %, Breach 0 %, Total DD max 5.80 % (env guard 5.8%), Daily DD max 3.00 % (env guard 3.0%), Profit avg +7.23 %. PPO + auxiliary head predicting `outcome_pnl_ratio` (MSE weight=0.5).
 
 ## Quick Reference

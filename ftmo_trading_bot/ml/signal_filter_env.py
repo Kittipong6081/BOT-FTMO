@@ -276,6 +276,8 @@ class FTMOSignalFilterEnv(gym.Env):
         self._open_positions: List[Dict] = []
         # counter สำหรับ telemetry: trades ที่ถูก correlation block (forced SKIP)
         self._correlation_forced_skips: int = 0
+        # v8.0.55: counter trades ที่ถูก entry-confirm block (mirror live gate)
+        self._entry_confirm_forced_skips: int = 0
         # v7.1: floating portfolio state for obs[29-30]
         # อัพเดทใน step() ตอน open/close position (simulator)
         self._floating_pnl_norm: float = 0.0
@@ -579,6 +581,16 @@ class FTMOSignalFilterEnv(gym.Env):
             take = False
             correlation_forced_skip = True
             self._correlation_forced_skips += 1
+
+        # v8.0.55: Entry confirmation forced SKIP — mirror live pre-execution gate
+        # Backtester ตั้ง entry_confirm_passed=False เมื่อ first future bar swing สวนทิศ signal
+        # ถ้า RL อยาก TAKE แต่ entry confirm fail → force SKIP (เหมือน live executor reject)
+        # → training distribution ตรงกับ live (Pass rate ที่วัดสะท้อนพฤติกรรมจริง)
+        entry_confirm_forced_skip = False
+        if take and not sig.get('entry_confirm_passed', True):
+            take = False
+            entry_confirm_forced_skip = True
+            self._entry_confirm_forced_skips += 1
 
         outcome = float(sig.get('outcome_pnl_ratio', 0.0))
         # v8.0.47: removed trail reward cap — let runners flow naturally
@@ -893,10 +905,14 @@ class FTMOSignalFilterEnv(gym.Env):
                 'max_daily_dd_pct': self.max_daily_dd_pct,
                 # v7.0.2: correlation simulator telemetry
                 'correlation_forced_skips': self._correlation_forced_skips,
+                # v8.0.55: entry confirmation forced skips
+                'entry_confirm_forced_skips': self._entry_confirm_forced_skips,
             }
 
         # v7.0.2: per-step flag สำหรับ debug logger ภายนอก
         info['correlation_forced_skip'] = correlation_forced_skip
+        # v8.0.55: per-step flag for entry confirmation skip
+        info['entry_confirm_forced_skip'] = entry_confirm_forced_skip
         return self._get_obs(), float(reward), terminated, truncated, info
 
     def _get_rng(self):

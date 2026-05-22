@@ -1,5 +1,15 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-07 (v8.0.13 — Orphan recovery + trail_states persistence) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-22 (v8.0.55 — 3 pre-execution gates added) | Scope: every module + key class / method / variable
+>
+> **v8.0.55 new methods/state** (Entry Confirm + Spread Spike + Cluster Cooldown):
+> - `TradeExecutor._check_entry_confirmation(signal)` — slip (≤ 0.30R) + M1 last bar direction + BB %B still extreme
+> - `TradeExecutor._check_spread_spike(symbol, current_spread_pts)` — rolling median 30 bars, > 2x → SKIP
+> - `TradeExecutor._record_spread_observation(symbol, spread_pts)` — feeds `_spread_history: Dict[str, deque]`
+> - `RiskManager._compute_theme(symbol, direction)` — static helper → `USD_LONG/SHORT`, `JPY_LONG/SHORT`, `METAL_LONG/SHORT`
+> - `RiskManager.record_trade_open(symbol, direction)` — signature change (was no args); `main.py` call site updated
+> - `RiskManager._last_open_theme` state, persisted in `bot_state.json` schema v8
+> - `MeanReversionBacktester` pool dict now includes `entry_confirm_passed: bool` (first future M15 bar direction match)
+> - `FTMOSignalFilterEnv._entry_confirm_forced_skips` counter + `info['entry_confirm_forced_skip']` per-step flag
 >
 > **v8.0 new modules (MR pivot, code staged — not wired to live)**:
 >

@@ -220,6 +220,30 @@ class MeanReversionBacktester(StrategyBacktester):
                 direction = 1.0 if is_buy else -1.0
                 bias_alignment = direction * float(signal.market_bias)
 
+                # v8.0.55: Entry Confirmation simulator (mirror live gate, hybrid approach)
+                # Live เช็ค slip + M1 direction + BB %B. ใน training ไม่มี M1 + BB recompute
+                # → ใช้ "adverse move ของ first future M15 bar ≤ 0.6R" เป็น proxy
+                # (ผ่อนจาก ENTRY_CONFIRM_MAX_SLIP_R=0.30 เพราะ M15 swing ใหญ่กว่า M1 มาก)
+                # หากใช้ 0.30R เป๊ะจะ block 56% ของ signals (M15 range เฉลี่ย ~0.5-1.0× SL)
+                # 0.60R = block ~25-30% ตรงกับ live block rate ที่คาดการณ์
+                # หมายเหตุ: M1 data จาก broker จำกัด 97 วัน → ไม่พอ training pool 3 ปี
+                # ทาง full M1 parity จึงรอจนกว่า broker จะ support M1 history ที่ยาวขึ้น
+                entry_confirm_passed = True
+                if len(future) >= 1 and actual_sl > 0:
+                    first_bar = future.iloc[0]
+                    bar_high = float(first_bar["high"])
+                    bar_low = float(first_bar["low"])
+                    entry_p = float(signal.entry_price)
+                    # adverse = max ที่ราคาเคลื่อนสวนทิศเรา ภายใน bar แรก
+                    if is_buy:
+                        adverse_move = max(0.0, entry_p - bar_low)
+                    else:
+                        adverse_move = max(0.0, bar_high - entry_p)
+                    slip_r = adverse_move / actual_sl
+                    # 0.60 = relaxed from live 0.30 to compensate for M15 vs M1 granularity
+                    if slip_r > 0.60:
+                        entry_confirm_passed = False
+
                 typical_spread_pips = self._TYPICAL_SPREAD_PIPS.get(symbol, 1.5)
                 sl_distance_pips = sl_distance_atr * (atr_val / pip_size)
 
@@ -265,6 +289,8 @@ class MeanReversionBacktester(StrategyBacktester):
                     "reversal_wick_ratio": signal.reversal_wick_ratio,
                     "bars_to_resolution": int(bars_to_resolution),
                     "is_quick_tp": bool(is_quick_tp),
+                    # v8.0.55: Entry confirmation flag (mirror live gate in training)
+                    "entry_confirm_passed": bool(entry_confirm_passed),
                 }
 
                 # v7.1 temporal/regime features (so GBM trainer can reuse the same

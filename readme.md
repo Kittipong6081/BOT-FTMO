@@ -2,7 +2,15 @@
 
 > ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **Mean Reversion + Trend Filter** + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
 >
-> **Last Updated:** 2026-05-07 (v8.0.8) | Pass Rate **59.30%** (verified 5000-eps eval, exceeded 8% gate by 51 pp)
+> **Last Updated:** 2026-05-22 (v8.0.55 — 3 live filters KEPT, RL/pool reverted) | Deployed Pass Rate **70.7%** (v8.0.52 RL)
+>
+> **✅ v8.0.55 status — Live filters KEPT, RL reverted**:
+> - **เก็บไว้** (live-only, ไม่ต้อง retrain): Entry Confirmation + Spread Spike + Cluster Cooldown
+>   - Entry Confirm — เช็คก่อนยิง: slip / แท่ง M1 ทิศตรงไหม / BB %B ยังอยู่เขต
+>   - Spread Spike — เทียบ spread กับค่าเฉลี่ย 30 ค่า, เกิน 2x = ข้าม (auto-calibrate ต่อ broker)
+>   - Cluster Cooldown — 5 นาทีทั่วไป / 10 นาที same theme USD/JPY/METAL
+> - **คืนกลับ**: RL/GBM/Pool (retrain Pass 68.1% ตก -2.6pp, holdout overfit → ไม่คุ้ม)
+> - **ผล**: ได้ Pass 70.7% ของเดิม + filter ใหม่กัน disaster ฟรี ✅
 >
 > **🎉 v8.0.8 status — Production ready**: pipeline autonomous + self-correct ทำงานสำเร็จในรอบเดียว. ตัวเลขสุดท้าย: Pass Rate 59.30%, Profitable 89.10%, Total DD max 5.80%, Daily DD max 3.00%, Breach 0%, Profit avg +7.23%. Best model อยู่ที่ [`models/mr/best/`](ftmo_trading_bot/models/mr/best/). รัน `python main.py` ได้เลย — ระบบโหลด MR model อัตโนมัติ.
 >

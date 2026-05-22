@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-20 (v8.0.48b — Stepwise Trail + simplified caps, Pass 68.8% best ever) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-22 (v8.0.55 — 3 pre-execution gates: Entry Confirm + Spread Spike + Cluster Cooldown) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -8,6 +8,10 @@
 - Risk hard stops: **4 % daily DD**, **8 % total DD** (buffer vs FTMO 5 %/10 %), target **10 % profit**.
 - Default risk per trade = **0.7 %** (v8.0.43 Option X — paired with trail).
 - **ML threshold = 0.30** (v8.0.3, sync `bot_config.ftmo.ML_FILTER_THRESHOLD` ↔ trainer ↔ HyperParams).
+- **v8.0.55 pre-execution gates** (in addition to RiskManager + correlation):
+  - `TradeExecutor._check_spread_spike` — `current_spread / median(SPREAD_SPIKE_LOOKBACK_BARS=30) > SPREAD_SPIKE_RATIO_LIMIT (2.0)` → SKIP. Warmup: `SPREAD_SPIKE_MIN_SAMPLES=10` (falls back to fixed `max_spread_points`).
+  - `TradeExecutor._check_entry_confirmation` — slip ≤ `ENTRY_CONFIRM_MAX_SLIP_R (0.30)`, M1 last bar direction match (body ≥ 5% of range), BB %B still extreme (BUY ≤ 0.35 / SELL ≥ 0.65).
+  - `RiskManager` cluster cooldown — `CLUSTER_COOLDOWN_ANY_SEC (300)` global, `CLUSTER_COOLDOWN_SAME_THEME_SEC (600)` for same USD/JPY/METAL theme. Extends `v8.0.26 MIN_SECONDS_BETWEEN_OPENS_SEC (60s)`.
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
 - **No session block** (v8.0.6 SessionConfig cleanup) — bot trades 24/5 except: rollover (23:55-01:05 EET), daily close (Mon-Thu 23:30-23:55 EET), Friday >= 20:45 EET, weekend, news blackout.
 - **Console quiet mode**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.

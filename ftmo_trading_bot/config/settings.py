@@ -227,6 +227,38 @@ class FTMOConfig:
     POST_TP_EMA_TIMEFRAME: str = "M15"
     POST_TP_EMA_LOOKBACK_BARS: int = 3            # เช็ค EMA touch ใน 3 bars ล่าสุด (~45 นาที)
 
+    # === Entry Confirmation (v8.0.55, NEW — pre-execution chart re-check) ===
+    # ก่อนยิงไม้ทุก order: เช็คอีกครั้งว่า signal ยัง valid ไหม
+    # 1. Slip: ราคาเคลื่อนสวนเรา > X*SL distance = SKIP (signal stale)
+    # 2. M1 last closed candle direction ต้องตรงทิศ signal (รejection ต่อเนื่อง)
+    # 3. BB %B ยังอยู่ใน extreme zone ของทิศนั้น (ไม่หลุดเขตไปแล้ว)
+    # Mirrored ใน training: MeanReversionBacktester เช็ค first future bar direction
+    ENTRY_CONFIRM_ENABLED: bool = True
+    ENTRY_CONFIRM_MAX_SLIP_R: float = 0.30        # 30% ของ SL distance = max adverse slip
+    ENTRY_CONFIRM_M1_DIRECTION_MATCH: bool = True # require M1 last bar wick/body confirm
+    ENTRY_CONFIRM_BB_BUY_MAX: float = 0.35        # BUY: %B ต้องยัง ≤ 0.35 (relaxed +0.05 จาก oversold 0.30)
+    ENTRY_CONFIRM_BB_SELL_MIN: float = 0.65       # SELL: %B ต้องยัง ≥ 0.65 (relaxed -0.05 จาก overbought 0.70)
+
+    # === Spread Spike Filter (v8.0.55, NEW — broker-agnostic, live-only) ===
+    # ปัจจุบัน max_spread_points (per-symbol fixed) ตัด absolute high spread
+    # ใหม่: เทียบ spread ปัจจุบัน vs median ล่าสุด → ตัดเฉพาะตอนตลาดประหม่า
+    # ทำงาน per-broker อัตโนมัติ (เรียน baseline จาก rolling history)
+    # Training: ไม่ sim (no spread data in CSV) — accept ~3-5% parity drift
+    SPREAD_SPIKE_ENABLED: bool = True
+    SPREAD_SPIKE_LOOKBACK_BARS: int = 30          # window สำหรับคำนวณ median
+    SPREAD_SPIKE_RATIO_LIMIT: float = 2.0         # current > 2x median → SKIP
+    SPREAD_SPIKE_MIN_SAMPLES: int = 10            # warmup — ต่ำกว่านี้ skip check
+
+    # === Cluster Cooldown (v8.0.55, NEW — extends v8.0.26 bulk-trading) ===
+    # v8.0.26 มี 60s gate (anti The5ers flag) — ตอนนี้ขยายเป็น cooldown ยาวขึ้น
+    # + theme-aware (USD_LONG/USD_SHORT/JPY_LONG/JPY_SHORT/METAL_*)
+    # เหตุผล: 5-21 20:18-20:19 EET เปิด AUDUSD+XAUUSD เดิมพันธีมเดียวกัน (USD strong)
+    #         ห่างกัน 82 วินาที = ผ่าน 60s guard → เสีย -$170 ใน 1 นาที
+    # Mirrored ใน training env: forced SKIP ภายใน slot
+    CLUSTER_COOLDOWN_ENABLED: bool = True
+    CLUSTER_COOLDOWN_ANY_SEC: int = 300           # ห้ามเปิดไม้ใหม่ทุกคู่ภายใน 5 นาที
+    CLUSTER_COOLDOWN_SAME_THEME_SEC: int = 600    # 10 นาทีถ้าเป็นธีม USD/JPY/METAL เดียวกัน
+
 
 # =============================================================================
 # 💱 การตั้งค่าคู่เงินและ Symbol ที่เทรด

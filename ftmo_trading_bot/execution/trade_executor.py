@@ -17,9 +17,12 @@ FTMO Trading Bot — Trade Executor (ระบบส่งคำสั่งซ�
 """
 
 import time as time_module
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field
+
+import numpy as np
 
 from config.settings import bot_config
 from core.mt5_connector import MT5Connector
@@ -350,6 +353,12 @@ class TradeExecutor:
         self._total_rejected = 0
         self._notifier = DiscordNotifier()
 
+        # v8.0.55: Spread spike filter — rolling history per symbol
+        # บอทเรียน "spread ปกติของ broker นี้" เอง จากการสังเกตเอง
+        # ตอน entry ใหม่: เทียบ spread ตอนนี้ vs median 30 ค่าล่าสุด
+        # เกิน 2x = SKIP (ตลาดประหม่า, อย่าเข้า)
+        self._spread_history: Dict[str, deque] = {}
+
         print("⚡ [Trade Executor] เริ่มต้นระบบส่งคำสั่งเทรด")
 
     # =========================================================================
@@ -509,13 +518,40 @@ class TradeExecutor:
         symbol_info = self._connector.get_symbol_info(symbol)
         max_spread = bot_config.symbols.max_spread_points.get(symbol, 20)
 
+        current_spread_pts = 0.0
         if symbol_info:
             current_spread_pts = price_info["spread"] / symbol_info["point"]
             if current_spread_pts > max_spread:
                 print(f"🚫 [Executor] Spread สูงเกินไป ({current_spread_pts:.0f} > {max_spread}) — รอ Spread ลด")
                 self._last_reject_reason = f"spread_high:{current_spread_pts:.0f}>{max_spread}"
                 self._total_rejected += 1
+                # บันทึก observation ก่อน return (สำหรับ baseline)
+                self._record_spread_observation(symbol, current_spread_pts)
                 return None
+
+        # === ด่านที่ 4.5: Spread Spike (v8.0.55 — dynamic, broker-agnostic) ===
+        # เทียบ spread ปัจจุบัน vs median rolling 30 ค่าล่าสุด → กรองตลาดประหม่า
+        if current_spread_pts > 0:
+            spike_ok, spike_reason = self._check_spread_spike(symbol, current_spread_pts)
+            if not spike_ok:
+                print(f"🚫 [Executor] Spread Spike: {spike_reason}")
+                self._last_reject_reason = f"spread_spike:{spike_reason}"
+                self._total_rejected += 1
+                # ยังบันทึก observation เพื่อ track baseline ต่อ
+                self._record_spread_observation(symbol, current_spread_pts)
+                return None
+            # บันทึก observation ปัจจุบันก่อน gate ต่อ (เผื่อ entry confirm reject)
+            self._record_spread_observation(symbol, current_spread_pts)
+
+        # === ด่านที่ 4.6: Entry Confirmation (v8.0.55 — pre-execution chart re-check) ===
+        # เช็ค 3 อย่างก่อนยิง: slip / M1 direction / BB %B still extreme
+        # ปัญหาที่แก้: signal stale ระหว่าง scan → execute (~30-60 วินาที)
+        ec_ok, ec_reason = self._check_entry_confirmation(signal)
+        if not ec_ok:
+            print(f"🚫 [Executor] Entry Confirmation Failed: {ec_reason}")
+            self._last_reject_reason = f"entry_confirm:{ec_reason}"
+            self._total_rejected += 1
+            return None
 
         # === ด่านที่ 5: Final Validation ===
         remaining_budget = self._risk_manager.get_remaining_daily_budget()
@@ -825,6 +861,173 @@ class TradeExecutor:
                 )
 
         return (True, "ผ่านการตรวจ Correlation Risk")
+
+    # =========================================================================
+    # 🕯️ Entry Confirmation + Spread Spike (v8.0.55 — pre-execution gates)
+    # =========================================================================
+
+    def _record_spread_observation(self, symbol: str, spread_points: float) -> None:
+        """เก็บ spread observation ปัจจุบันใน rolling history per symbol.
+
+        ใช้ใน `_check_spread_spike` เพื่อเทียบกับ median ภายหลัง.
+        Auto-learns baseline ของ broker — ไม่ต้อง config ต่อ broker.
+        """
+        if spread_points <= 0:
+            return
+        cfg = bot_config.ftmo
+        lookback = int(getattr(cfg, "SPREAD_SPIKE_LOOKBACK_BARS", 30))
+        if symbol not in self._spread_history:
+            self._spread_history[symbol] = deque(maxlen=lookback)
+        dq = self._spread_history[symbol]
+        # Re-size ถ้า config เปลี่ยน (rare)
+        if dq.maxlen != lookback:
+            new_dq = deque(dq, maxlen=lookback)
+            self._spread_history[symbol] = new_dq
+            dq = new_dq
+        dq.append(float(spread_points))
+
+    def _check_spread_spike(
+        self, symbol: str, current_spread_pts: float
+    ) -> Tuple[bool, str]:
+        """v8.0.55 — Spread Spike Filter (broker-agnostic, live-only).
+
+        เทียบ spread ปัจจุบัน vs median ล่าสุด.
+        เกิน 2x = ตลาดประหม่า/news/illiquidity → SKIP
+
+        ตรรกะ: บอทเรียน "ค่าปกติของ broker นี้" จากการสังเกตเอง.
+        ไม่ต้องตั้งค่า spread แต่ละ broker ล่วงหน้า.
+
+        Returns:
+            (passed, reason)
+        """
+        cfg = bot_config.ftmo
+        if not getattr(cfg, "SPREAD_SPIKE_ENABLED", False):
+            return (True, "disabled")
+        if current_spread_pts <= 0:
+            return (True, "no_spread_data")
+
+        hist = self._spread_history.get(symbol)
+        min_samples = int(getattr(cfg, "SPREAD_SPIKE_MIN_SAMPLES", 10))
+        if not hist or len(hist) < min_samples:
+            # Warmup — ยังไม่มี baseline พอ ใช้ fixed threshold (max_spread_points) เป็น fallback
+            return (True, f"warmup ({len(hist) if hist else 0}/{min_samples})")
+
+        median = float(np.median(list(hist)))
+        if median <= 0:
+            return (True, "no_baseline")
+
+        ratio = current_spread_pts / median
+        limit = float(getattr(cfg, "SPREAD_SPIKE_RATIO_LIMIT", 2.0))
+        if ratio > limit:
+            return (
+                False,
+                f"spread spike: {current_spread_pts:.1f} vs median {median:.1f} "
+                f"= {ratio:.2f}x (limit {limit:.1f}x)"
+            )
+        return (True, f"spread ok ({ratio:.2f}x median)")
+
+    def _check_entry_confirmation(self, signal: 'TradeSignal') -> Tuple[bool, str]:
+        """v8.0.55 — Entry Confirmation Gate (pre-execution chart re-check).
+
+        เช็ค 3 อย่างก่อนยิง:
+        1. Slip: ราคาตอนนี้เคลื่อนสวนเรา > MAX_SLIP_R × SL distance → SKIP
+        2. M1 last closed candle direction ต้องตรงทิศ signal
+        3. BB %B ยังอยู่ใน extreme zone (ไม่หลุดเขตไปแล้ว)
+
+        ปัญหาที่แก้: signal generated ตอน scan แต่ execute ห่างไป 30-60 วินาที.
+        ภายในช่วงนั้นราคาอาจเคลื่อนผ่านจุด rejection ไปแล้ว.
+        Mirrored ใน MeanReversionBacktester (first future bar direction match).
+
+        Returns:
+            (passed, reason)
+        """
+        cfg = bot_config.ftmo
+        if not getattr(cfg, "ENTRY_CONFIRM_ENABLED", False):
+            return (True, "disabled")
+
+        symbol = signal.symbol
+        direction = signal.signal_type.value.upper()  # "BUY" / "SELL"
+
+        # ─── เช็ค 1: Slip จาก signal entry → current price ─────────────
+        price_now = self._connector.get_current_price(symbol)
+        if price_now is None:
+            return (True, "no_current_price")
+
+        sl_distance = abs(float(signal.entry_price) - float(signal.sl_price))
+        if sl_distance <= 0:
+            return (True, "no_sl_distance")
+
+        if direction == "BUY":
+            current_exec_price = float(price_now.get("ask", signal.entry_price))
+            # adverse = price moved DOWN (away from BUY) ก่อนยิง
+            adverse_move = max(0.0, float(signal.entry_price) - current_exec_price)
+        else:
+            current_exec_price = float(price_now.get("bid", signal.entry_price))
+            # adverse = price moved UP (away from SELL) ก่อนยิง
+            adverse_move = max(0.0, current_exec_price - float(signal.entry_price))
+
+        slip_r = adverse_move / sl_distance
+        max_slip_r = float(getattr(cfg, "ENTRY_CONFIRM_MAX_SLIP_R", 0.30))
+        if slip_r > max_slip_r:
+            return (
+                False,
+                f"slip {slip_r:.2f}R > {max_slip_r:.2f}R "
+                f"(entry {signal.entry_price:.5f} → exec {current_exec_price:.5f}, "
+                f"SL dist {sl_distance:.5f})"
+            )
+
+        # ─── เช็ค 2: M1 last closed candle direction match ──────────────
+        if getattr(cfg, "ENTRY_CONFIRM_M1_DIRECTION_MATCH", True):
+            try:
+                m1_df = self._connector.get_ohlcv(symbol, "M1", count=100)
+                if m1_df is not None and len(m1_df) >= 2:
+                    # iloc[-1] = แท่งกำลังก่อตัว (อาจ partial), iloc[-2] = แท่งล่าสุดที่ปิด
+                    last_closed = m1_df.iloc[-2]
+                    bar_body = float(last_closed["close"]) - float(last_closed["open"])
+                    # อนุญาต doji (body ≈ 0) ผ่าน — ไม่ใช่ contra signal
+                    body_threshold = max(
+                        abs(float(last_closed["close"]) - float(last_closed["open"])),
+                        float(last_closed["high"]) - float(last_closed["low"]),
+                    ) * 0.05  # ต้องมี body ≥ 5% ของ range ถึงจะนับเป็น directional bar
+                    if abs(bar_body) > body_threshold:
+                        if direction == "BUY" and bar_body < 0:
+                            return (
+                                False,
+                                f"M1 last bar bearish "
+                                f"(O={last_closed['open']:.5f} > C={last_closed['close']:.5f}) "
+                                f"— BUY needs bullish confirm"
+                            )
+                        if direction == "SELL" and bar_body > 0:
+                            return (
+                                False,
+                                f"M1 last bar bullish "
+                                f"(O={last_closed['open']:.5f} < C={last_closed['close']:.5f}) "
+                                f"— SELL needs bearish confirm"
+                            )
+            except Exception:
+                # fail-open: ดึง M1 ไม่ได้ก็ผ่าน (network glitch ฯลฯ)
+                pass
+
+        # ─── เช็ค 3: BB %B ยังอยู่ใน extreme zone ────────────────────────
+        # ใช้ค่าจาก signal (scan time) — ห่างไป ~seconds, ปกติยัง valid
+        bb_pctb = getattr(signal, "bb_pctb", None)
+        if bb_pctb is not None:
+            buy_max = float(getattr(cfg, "ENTRY_CONFIRM_BB_BUY_MAX", 0.35))
+            sell_min = float(getattr(cfg, "ENTRY_CONFIRM_BB_SELL_MIN", 0.65))
+            if direction == "BUY" and float(bb_pctb) > buy_max:
+                return (
+                    False,
+                    f"BB %B {bb_pctb:.2f} > {buy_max:.2f} — BUY zone left "
+                    f"(scan-time value, signal stale)"
+                )
+            if direction == "SELL" and float(bb_pctb) < sell_min:
+                return (
+                    False,
+                    f"BB %B {bb_pctb:.2f} < {sell_min:.2f} — SELL zone left "
+                    f"(scan-time value, signal stale)"
+                )
+
+        return (True, "ok")
 
     # =========================================================================
     # 🔄 ส่งคำสั่งพร้อม Retry
