@@ -129,6 +129,11 @@ class TradeManager:
         )
         self._load_trail_states()
 
+        # v8.0.62: Friday Force Close throttle — กัน spam print ทุก 5s scan
+        # หลัง 20:45 EET วันศุกร์ condition จะ True ตลอด → print เดิม fire ทุก tick
+        # mirror v8.0.16 (Give-back) + v8.0.49 (Daily Loss) throttle pattern
+        self._friday_close_announced_date: Optional[str] = None
+
         print("📋 [Trade Manager] เริ่มต้นระบบจัดการเทรด")
 
     # =========================================================================
@@ -748,8 +753,20 @@ class TradeManager:
         # === ความปลอดภัยระดับสูงสุด: Friday Force Close (ใช้เวลา Server EET ตามกฎ FTMO) ===
         # friday_force_close ใน config (20:45) ตีความเป็น EET server time โดยเฉพาะ
         # (FTMO rollover อ้างอิง EET ของโบรกเกอร์)
+        # v8.0.62: throttle print — announce ครั้งเดียวต่อวัน (กัน spam หลัง 20:45 EET ทุก 5s scan)
         if TimeManager.is_friday_close_time(server_time_now):
-            print("🚨 [Trade Manager] ⚠️ FRIDAY FORCE CLOSE ⚠️ — ปิดทุก Position ทันทีเพื่อรักษากฎ FTMO!")
+            today_str = server_time_now.date().isoformat()
+            active_ct = len(self._executor.active_trades)
+
+            # Announce once per day — only print on first detection OR if positions exist
+            if self._friday_close_announced_date != today_str:
+                if active_ct > 0:
+                    print(f"🚨 [Trade Manager] ⚠️ FRIDAY FORCE CLOSE ⚠️ — ปิด {active_ct} Position(s) เพื่อรักษากฎ FTMO!")
+                else:
+                    print(f"🚨 [Trade Manager] Friday Force Close window active ({server_time_now.strftime('%H:%M')} EET, no positions)")
+                self._friday_close_announced_date = today_str
+
+            # Still attempt to close any active positions every tick (safety — orphan recovery)
             for ticket in list(self._executor.active_trades.keys()):
                 if self._executor.close_trade(ticket, reason="FTMO Friday Force Close"):
                     closed_count += 1

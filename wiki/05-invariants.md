@@ -1,5 +1,42 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-23 | Scope: red flags, version log, migration notes (latest: **v8.0.61** — REVERT RR 1.5 → 1.0 after M1 validity check, Phase 1 fixes KEPT)
+> Last Updated: 2026-05-23 | Scope: red flags, version log, migration notes (latest: **v8.0.62** — Friday Force Close throttle, anti-spam fix)
+
+## 📝 Version Log Entry — v8.0.62 (2026-05-23) — Friday Force Close Throttle (anti-spam)
+
+**Bug**: `TradeManager.check_session_close` print `🚨 ⚠️ FRIDAY FORCE CLOSE ⚠️` ทุก 5s scan loop หลัง 20:45 EET วันศุกร์ → spam log จนอ่านยาก. ต่างจาก `daily_close` (line 763) + `friday_warning` (line 776) ที่เช็ค `active_ct > 0` ก่อน print
+
+**Root cause** (`trade_manager.py:752` ก่อน fix):
+```python
+if TimeManager.is_friday_close_time(server_time_now):
+    print("🚨 ... FRIDAY FORCE CLOSE ...")   # ← UNCONDITIONAL print
+    for ticket in list(...):
+        if self._executor.close_trade(...): closed_count += 1
+    return closed_count
+```
+- Condition True ตลอด 3+ ชม. (20:45 EET → end of trading day)
+- Print fire ทุก tick แม้ไม่มี position เหลือ
+
+**Fix** — Throttle pattern (mirror v8.0.16 give-back + v8.0.49 daily-loss):
+1. เพิ่ม `self._friday_close_announced_date: Optional[str] = None` ใน `__init__`
+2. Guard print ด้วย:
+   - `today_str = server_time_now.date().isoformat()`
+   - `if self._friday_close_announced_date != today_str:` → announce + set flag
+3. Print แสดง active position count + EET time stamp
+4. Close attempt ยัง fire ทุก tick (safety — orphan position recovery)
+
+**Result**:
+- 1 announce/วัน (เทียบเดิม ~2000+ ครั้ง/3 ชม.)
+- Auto-reset ทุกวัน (date-based key)
+- ปลอดภัย: ถ้ามี orphan position ใหม่เข้ามาหลังประกาศ → ยัง close ตามปกติ (เงียบ)
+
+**Files touched**:
+- `ftmo_trading_bot/execution/trade_manager.py` (line 130 add field, line 752-770 throttle logic)
+
+**No retrain needed** — execution-layer cosmetic fix only.
+
+---
+
+## 📝 Version Log Entry — v8.0.61 (2026-05-23) — REVERT RR 1.5 → 1.0 (data-driven)
 
 ## 📝 Version Log Entry — v8.0.61 (2026-05-23) — REVERT RR 1.5 → 1.0 (data-driven)
 
