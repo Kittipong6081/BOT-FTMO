@@ -1,5 +1,76 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.66** — Fix news CSV parser: preserve Holiday impact)
+> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.67** — XAU-only morning block re-enabled, data-driven)
+
+## 📝 Version Log Entry — v8.0.67 (2026-05-25) — XAU-only Morning Block (data-driven)
+
+**Trigger**: User asked if Morning Block (04-09 ICT) should be re-enabled after v8.0.50 disabled all delays.
+
+**Analysis methodology**: Multi-TF CSV audit (NOT Excel which had small-sample bias)
+- 7 symbols × Feb-May 2026 OHLCV (M15 + M1)
+- Synthetic MR entries (BB extreme + RSI extreme)
+- Walk M1 forward 120 bars → apply v8.0.61 logic (BE 0.3R, Partial 0.8R, TP 1.0R)
+- Subtract $10/trade spread
+- Total: **8,058 synthetic entries** (vs 23 Excel trades = 350x more sample)
+
+**Results — Morning (EET 00-04) vs Others**:
+
+| Metric | Morning (n=1520) | Others (n=6538) |
+|---|---|---|
+| WR | 54.3% | 53.3% |
+| EV/trade | **+$7.64** ✅ | +$6.15 |
+| Hit SL | 37.3% (safer) | 44.5% |
+| t-test | t=1.01, **p=0.31** | not sig |
+
+**Per-symbol morning EV**:
+- 🌟 USDJPY +$12, EURJPY +$12, NZDUSD +$12 (excellent)
+- ✅ GBPJPY +$8.5, GBPUSD +$7.7, EURUSD +$6 (good)
+- 🔴 **XAUUSD -$6.06** ← ONLY morning loser
+
+**Why XAU bad in morning**:
+- Continuation rate 0.3R→1.0R = 44.8% (vs 57.6% group avg)
+- Hit SL rate 42.9% (vs 37.3% group avg)
+- Asian session = Gold's quiet time + spread spike risk
+
+**Decision**:
+- 🟢 KEEP UNBLOCKED general morning (6/7 symbols profitable)
+- 🔴 BLOCK XAU only morning (-$6/trade prevented)
+- EET 03 (ICT 07) actually BEST hour of day (+$24.98/trade) — must NOT block
+
+**Why Excel was wrong (small-sample bias)**:
+- 23 trades only
+- May 12 outlier: 4 trades = -$432 (dominated total -$500)
+- Excluding May 12: morning EV ≈ -$3/trade (still small but no clear signal)
+- CSV 1,520 morning entries: pattern reverses to +$7.64/trade
+
+**Fix** ([config/settings.py](ftmo_trading_bot/config/settings.py) FTMOConfig):
+```python
+# v8.0.50 had False:
+XAU_WEEKDAY_DELAY_ENABLED: bool = False
+# v8.0.67 RE-ENABLE:
+XAU_WEEKDAY_DELAY_ENABLED: bool = True
+XAU_WEEKDAY_DELAY_END_HOUR_EET: int = 5  # block EET 00-04 = ICT 04-08
+```
+
+**Other delays kept disabled**:
+- `WEEKDAY_DELAY_ENABLED = False` (general — would lose +$11k from 6 good symbols)
+- `MONDAY_DELAY_ENABLED = False`
+
+**Expected savings**:
+- 198 XAU morning entries/90 days × $6 = ~$1,200 prevented
+- ≈ $13/day on XAU alone (vs catastrophic -$42/day if we blocked ALL morning)
+
+**Train-live parity caveat**:
+- Training simulator has no Asian Delay
+- But XAU-only block is per-symbol gate at `RiskManager.can_open_trade` → RL-blind
+- Same pattern as v7.1.10 / v8.0.21 / v8.0.26 (live-only gates work without retrain)
+
+**No retrain needed** — execution-layer config flag only.
+
+**Lesson learned**: Always validate small-sample Excel findings against large-sample CSV before deploying restrictive filters. 23 trades cannot conclude what 1,520 entries clearly show.
+
+---
+
+## 📝 Version Log Entry — v8.0.66 (2026-05-25) — Fix: news CSV parser preserve Holiday impact
 
 ## 📝 Version Log Entry — v8.0.66 (2026-05-25) — Fix: news CSV parser preserve Holiday impact
 

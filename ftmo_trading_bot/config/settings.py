@@ -122,10 +122,15 @@ class FTMOConfig:
     WEEKDAY_DELAY_EXCEPT_SYMBOLS: tuple = ("XAUUSD",)  # legacy
     WEEKDAY_DELAY_CONF_EXCEPTION: float = 90.0  # legacy
 
-    # === XAU Mon-Fri Delay (v8.0.36, DISABLED v8.0.50 — train-live parity) ===
+    # === XAU Mon-Fri Delay (v8.0.36, DISABLED v8.0.50, RE-ENABLED v8.0.67) ===
     # v8.0.50: ปิด — XAU training ก็ไม่มี delay; เทรดได้ทั้งวัน
-    XAU_WEEKDAY_DELAY_ENABLED: bool = False
-    XAU_WEEKDAY_DELAY_END_HOUR_EET: int = 5  # legacy
+    # v8.0.67 (2026-05-25): RE-ENABLE เฉพาะ XAU — Multi-TF CSV audit (8,058 synthetic
+    #   entries, Feb-May 2026) พบ XAUUSD morning EV = -$6.06/trade (only negative symbol).
+    #   เหตุผล: Asian session = Gold's quiet time, continuation rate ต่ำ (44.8%),
+    #   hit SL rate สูง (42.9%). Other 6 symbols morning ปกติ +$6-$12 → ไม่ block.
+    #   Expected savings: 198 XAU morning entries/90 วัน × $6 = ~$1,200 (~$13/วัน)
+    XAU_WEEKDAY_DELAY_ENABLED: bool = True
+    XAU_WEEKDAY_DELAY_END_HOUR_EET: int = 5  # block EET 00:00-04:59 (= ICT 04:00-08:59)
 
     # === Flip-Lock TTL (v8.0.18 — fix lock ค้างข้าม weekend) ===
     # FLIP_LOCK_MIN_MINUTES = MIN wait (เวลาเร็วสุดที่ unlock ได้)
