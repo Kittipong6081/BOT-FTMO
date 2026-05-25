@@ -150,7 +150,7 @@ def _load_json_calendar() -> List[ScheduledNewsEvent]:
     # Cache hit — file ไม่ได้ถูกแก้
     if _scheduled_cache is not None and _cache_file_mtime == mtime:
         # ตรวจหมดอายุ
-        if _cache_valid_until and datetime.now(timezone.utc) > _cache_valid_until:
+        if _cache_valid_until and datetime.now(timezone.utc).replace(tzinfo=None) > _cache_valid_until:
             print(f"⚠️ [NewsFilter] news_calendar.json หมดอายุ (valid_until={_cache_valid_until.isoformat()}) — fallback hardcoded")
             return []
         return _scheduled_cache
@@ -171,7 +171,7 @@ def _load_json_calendar() -> List[ScheduledNewsEvent]:
             valid_until = datetime.fromisoformat(vu)
             if valid_until.tzinfo is not None:
                 valid_until = valid_until.astimezone(pytz.UTC).replace(tzinfo=None)
-            if datetime.now(timezone.utc) > valid_until:
+            if datetime.now(timezone.utc).replace(tzinfo=None) > valid_until:
                 print(f"⚠️ [NewsFilter] news_calendar.json หมดอายุ ({data['valid_until']}) — fallback hardcoded")
                 _scheduled_cache = []
                 _cache_file_mtime = mtime

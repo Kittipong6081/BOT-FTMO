@@ -1,5 +1,35 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-23 | Scope: red flags, version log, migration notes (latest: **v8.0.63** — Drift warning throttle + utcnow() deprecation fix)
+> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.64** — Hotfix TZ mismatch from v8.0.63 utcnow migration)
+
+## 📝 Version Log Entry — v8.0.64 (2026-05-25) — Hotfix: TZ-aware vs naive comparison
+
+**Bug introduced by v8.0.63**: `⚠️ [Bot] Trade Manager error: can't compare offset-naive and offset-aware datetimes` spam ทุก scan loop
+
+**Root cause** ([config/news_events.py:153, 174](ftmo_trading_bot/config/news_events.py#L153)):
+- v8.0.63 เปลี่ยน `datetime.utcnow()` (naive) → `datetime.now(timezone.utc)` (aware) ทั่วทุกที่
+- แต่ news_events.py ออกแบบให้ใช้ **naive datetime ทั่วทั้งไฟล์** (line 173, 190 strip tzinfo ทุกที่)
+- → เปลี่ยนของซ้าย (aware) เปรียบเทียบกับของขวา (naive) = `TypeError`
+
+**Fix**:
+- Line 153: `datetime.now(timezone.utc)` → `datetime.now(timezone.utc).replace(tzinfo=None)`
+- Line 174: เหมือนกัน
+- → Preserve naive convention ของไฟล์ + ไม่ deprecated warning (เพราะใช้ `now(timezone.utc)` ไม่ใช่ `utcnow()`)
+
+**Why other 10 utcnow fixes ปลอดภัย**:
+- main.py:1457 (drift log) → `.strftime()` ไม่ compare
+- main.py:829 (temporal feat) → `compute_temporal_features` handle ทั้ง aware/naive (line 71-82)
+- notifier.py × 8 → `.isoformat()` for Discord, ไม่ compare
+- ml/signal_quality.py:75 → fallback ใน try/except, ไม่ compare
+- execution/trade_executor.py:733 → `.hour` accessor, ไม่ compare
+
+**Lesson**: เมื่อ migrate `utcnow()` ต้องตรวจว่าผลลัพธ์ใช้ในการ compare กับ naive datetime อื่นไหม
+
+**Files touched**:
+- `ftmo_trading_bot/config/news_events.py` (2 lines)
+
+---
+
+## 📝 Version Log Entry — v8.0.63 (2026-05-23) — Drift Throttle + datetime.utcnow Fix
 
 ## 📝 Version Log Entry — v8.0.63 (2026-05-23) — Drift Throttle + datetime.utcnow Fix
 
