@@ -21,7 +21,7 @@ Architecture: Hybrid ML+RL
 import math
 import os
 import pickle
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Union, Dict, Any
 
 import numpy as np
@@ -72,7 +72,7 @@ def compute_temporal_features(
         try:
             timestamp = datetime.fromisoformat(timestamp)
         except Exception:
-            timestamp = datetime.utcnow()
+            timestamp = datetime.now(timezone.utc)
 
     # ใช้ UTC สำหรับ session calc (consistent กับ _is_session_warmup ใน SMC)
     if timestamp.tzinfo is not None:
@@ -173,7 +173,10 @@ class SignalQualityModel:
 
         # Drift state — เก็บ recent live features เพื่อใช้กับ KS test
         self._recent_features: List[Dict[str, float]] = []
-        self._drift_window: int = 100  # check ทุก 100 signals
+        # v8.0.63: 100 → 200 — เพิ่ม window ขนาดเพื่อลด false-positive KS test
+        # (sample เล็กไป โดยเฉพาะ time-of-day features เช่น hour_of_day_cos / day_of_week
+        # ที่ KS แตกง่ายตอนเก็บ data ได้แค่ 1-2 วัน)
+        self._drift_window: int = 200
 
     @staticmethod
     def _extract(src: Any, key: str) -> float:

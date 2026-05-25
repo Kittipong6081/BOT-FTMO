@@ -730,7 +730,7 @@ class TradeExecutor:
         - dd_pct (daily DD % ณ เวลาเปิด)
         """
         # Session จากชั่วโมง UTC
-        hour = datetime.utcnow().hour
+        hour = datetime.now(timezone.utc).hour
         if 7 <= hour < 12:
             session = "LONDON"
         elif 12 <= hour < 17:

@@ -12,7 +12,7 @@ import json
 import time
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from config.settings import bot_config
 
 
@@ -114,7 +114,7 @@ class DiscordNotifier:
                 "title": "🚀 [System Output] Bot Started",
                 "description": "ระบบ FTMO Trading Bot เริ่มทำงานแล้ว และพร้อมทำการแสวงหากำไร",
                 "color": 3066993,  # Green
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "footer": {"text": "System Online"}
             }]
         }
@@ -128,7 +128,7 @@ class DiscordNotifier:
                 "title": "🛑 [System Output] Bot Shutdown",
                 "description": "ระบบ FTMO Trading Bot หยุดทำงานแล้วเรียบร้อย",
                 "color": 15158332,  # Red
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "footer": {"text": "System Offline"}
             }]
         }
@@ -182,7 +182,7 @@ class DiscordNotifier:
                     {"name": "Session", "value": str(trade_dict.get("session") or "-"), "inline": True},
                     {"name": "RR", "value": f"1:{(trade_dict.get('rr_ratio') or 0):.1f}", "inline": True},
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }]
         }
         self._send_payload(payload)
@@ -214,7 +214,7 @@ class DiscordNotifier:
                     {"name": "TP", "value": self._fmt_price(trade_dict.get("tp_price")), "inline": True},
                     {"name": "Time-in-Trade", "value": f"{int(trade_dict.get('time_in_trade') or 0)}s", "inline": True},
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }]
         }
         self._send_payload(payload)
@@ -259,7 +259,7 @@ class DiscordNotifier:
                     {"name": "Remaining Lot", "value": f"{remaining_volume:.2f}", "inline": True},
                     {"name": "TP (final)", "value": self._fmt_price(trade_dict.get("tp_price")), "inline": True},
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }]
         }
         self._send_payload(payload)
@@ -273,7 +273,7 @@ class DiscordNotifier:
                 "title": title,
                 "description": message,
                 "color": 16753920,  # Orange
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }]
         }
         self._send_payload(payload)
@@ -296,7 +296,7 @@ class DiscordNotifier:
                     {"name": "Uptime", "value": uptime_str, "inline": True},
                 ],
                 "footer": {"text": f"Loop #{loop_count}"},
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }]
         }
         self._send_payload(payload)
@@ -314,7 +314,7 @@ class DiscordNotifier:
                     {"name": "Confluence Min", "value": str(params.get('min_confluence_score')), "inline": True},
                     {"name": "Target R:R", "value": f"1:{params.get('preferred_risk_reward_ratio',0):.1f}", "inline": True},
                 ],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }]
         }
         self._send_payload(payload)

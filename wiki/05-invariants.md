@@ -1,5 +1,45 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-23 | Scope: red flags, version log, migration notes (latest: **v8.0.62** — Friday Force Close throttle, anti-spam fix)
+> Last Updated: 2026-05-23 | Scope: red flags, version log, migration notes (latest: **v8.0.63** — Drift warning throttle + utcnow() deprecation fix)
+
+## 📝 Version Log Entry — v8.0.63 (2026-05-23) — Drift Throttle + datetime.utcnow Fix
+
+**Bug 1**: `_check_gbm_drift` print `⚠️ [GBM Drift] N features ห่างจาก training` ทุกชั่วโมง (720 loops). ถ้า drift เกิดขึ้นต่อเนื่อง → ทุก 1 ชม. print message เดิม → log รก. ตัวอย่าง: 23 features drift, top: hour_of_day_cos=0.93, rsi_value=0.89
+
+**Root cause** (`main.py:1396-1437`):
+- `_check_gbm_drift` ไม่มี throttle — `if len(drifts) >= 3: print(...)` fire ทุกเรียก
+- KS test window = 100 signals → sample เล็ก → false positive สูง (โดยเฉพาะ time-of-day features)
+
+**Bug 2**: `datetime.utcnow()` deprecated ใน Python 3.12+ → DeprecationWarning spam ทุก call site (~12 จุด)
+
+**Fix v8.0.63**:
+
+1. **Drift throttle** (`main.py:1396-1452`):
+   - Add `self._last_drift_count: int = -1` + `self._last_drift_announce_ts: Optional[float] = None` ใน `__init__`
+   - Console print เฉพาะถ้า `count` เปลี่ยน ≥ 3 features หรือผ่านไป ≥ 6 ชม.
+   - Discord notify ทำงานพร้อม console announce (เงียบเมื่อ throttled)
+   - File log (`logs/gbm_drift.log`) ยัง append ทุกครั้ง — full audit trail
+
+2. **Drift window 100 → 200** (`ml/signal_quality.py:176`):
+   - Sample ใหญ่ขึ้น → KS test stable ขึ้น
+   - ลด false positive จาก small-sample bias (โดยเฉพาะ hour/day_of_week ที่ต้องการ data หลายวัน)
+
+3. **datetime.utcnow() → datetime.now(timezone.utc)** (12 places, 4 files):
+   - `main.py` (2 places: drift log + temporal feat default)
+   - `core/notifier.py` (8 places: all Discord timestamps)
+   - `config/news_events.py` (2 places: cache expiry check)
+   - `ml/signal_quality.py` (1 place: compute_temporal_features default)
+   - `execution/trade_executor.py` (1 place: hour-based logic)
+
+**Result**:
+- Drift warning: เดิม 24 ครั้ง/วัน → ~4 ครั้ง/วัน (เฉพาะ count เปลี่ยนใหญ่ หรือทุก 6 ชม.)
+- DeprecationWarning: ZERO (Python 3.12+/3.13 compat)
+- File log audit trail: คงไว้ครบทุก check
+
+**No retrain needed** — anti-spam + deprecation fix only.
+
+---
+
+## 📝 Version Log Entry — v8.0.62 (2026-05-23) — Friday Force Close Throttle (anti-spam)
 
 ## 📝 Version Log Entry — v8.0.62 (2026-05-23) — Friday Force Close Throttle (anti-spam)
 

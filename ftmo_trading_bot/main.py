@@ -18,8 +18,8 @@ import os
 import sys
 import signal
 import time as time_module
-from datetime import datetime, date, timedelta
-from typing import Dict
+from datetime import datetime, date, timedelta, timezone
+from typing import Dict, Optional
 
 import numpy as np
 import argparse
@@ -186,6 +186,11 @@ class FTMOTradingBot:
         # === ตัวแปรสถิติ ===
         self._loop_count = 0
         self._start_time = None
+
+        # v8.0.63: Drift warning throttle state — กัน spam "GBM Drift" warning ที่ fire ทุกชม.
+        # Re-print เฉพาะเมื่อ drift count เปลี่ยน ≥ 3 features หรือผ่านไป ≥ 6 ชม.
+        self._last_drift_count: int = -1
+        self._last_drift_announce_ts: Optional[float] = None  # epoch seconds
 
         # v6.9: track trade open history for overtrading detection
         # List of tuples (datetime, symbol) — capped at last 200 entries
@@ -821,7 +826,7 @@ class FTMOTradingBot:
                 sig.symbol, "atr_floor_pips", 100.0 if is_metal else 8.0
             ))
             temporal_feats = compute_temporal_features(
-                timestamp=getattr(sig, "timestamp", None) or datetime.utcnow(),
+                timestamp=getattr(sig, "timestamp", None) or datetime.now(timezone.utc),
                 ltf_df=ltf_df_for_temp,
                 atr_floor_pips=atr_floor,
                 pip_size=pip,
@@ -1401,6 +1406,8 @@ class FTMOTradingBot:
         ไม่ block trading — แค่ alert ให้ user รู้ว่าควร retrain.
 
         v8.0.14 — Append ลงไฟล์ logs/gbm_drift.log ด้วย กัน console scroll-out.
+        v8.0.63 — Throttle console print: re-announce เฉพาะถ้า drift count เปลี่ยน ≥ 3
+                  features หรือผ่านไป ≥ 6 ชม. (file log ยัง append ทุกครั้ง — full audit trail)
         """
         if self._quality_model is None:
             return
@@ -1413,28 +1420,45 @@ class FTMOTradingBot:
         if len(drifts) >= 3:
             top = sorted(drifts.items(), key=lambda x: -x[1])[:5]
             top_str = ", ".join(f"{k}={v:.2f}" for k, v in top)
+            count = len(drifts)
+
+            # v8.0.63: Throttle console — print เฉพาะถ้า count เปลี่ยน ≥3 หรือ 6h elapsed
+            now_ts = time_module.time()
+            count_changed = abs(count - self._last_drift_count) >= 3
+            time_elapsed = (
+                self._last_drift_announce_ts is None
+                or (now_ts - self._last_drift_announce_ts) >= 21600  # 6h
+            )
+            should_announce = count_changed or time_elapsed
+
             msg = (
-                f"⚠️ [GBM Drift] {len(drifts)} features ห่างจาก training "
+                f"⚠️ [GBM Drift] {count} features ห่างจาก training "
                 f"(KS > 0.15). Top: {top_str}"
             )
-            print(msg)
-            # v8.0.14: persistent drift log — กัน PowerShell scrollback ตัด log เก่า
+            if should_announce:
+                print(msg)
+                self._last_drift_count = count
+                self._last_drift_announce_ts = now_ts
+                # Discord notify เฉพาะตอน announce — กัน spam
+                try:
+                    self._notifier.send_alert(msg, level="warning")
+                except Exception:
+                    pass
+
+            # v8.0.14: persistent drift log — append ทุกครั้งสำหรับ audit
+            # v8.0.63: timezone-aware UTC (fix DeprecationWarning datetime.utcnow)
             try:
                 import os
-                from datetime import datetime
+                from datetime import datetime, timezone
                 root = os.path.dirname(os.path.abspath(__file__))
                 log_dir = os.path.join(root, "logs")
                 os.makedirs(log_dir, exist_ok=True)
                 drift_log = os.path.join(log_dir, "gbm_drift.log")
-                ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 with open(drift_log, "a", encoding="utf-8") as f:
-                    f.write(f"[{ts}] count={len(drifts)} top={top_str}\n")
+                    f.write(f"[{ts}] count={count} top={top_str}\n")
             except Exception as e:
                 print(f"⚠️ [Drift] log file write failed: {e}")
-            try:
-                self._notifier.send_alert(msg, level="warning")
-            except Exception:
-                pass
 
     # =========================================================================
     # 🛑 Shutdown
