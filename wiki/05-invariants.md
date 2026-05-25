@@ -1,5 +1,79 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.64** — Hotfix TZ mismatch from v8.0.63 utcnow migration)
+> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.65** — Thai explanation on Discord trade_open)
+
+## 📝 Version Log Entry — v8.0.65 (2026-05-25) — Thai Plain-Language Explanation on Discord
+
+**Feature**: เพิ่มคำอธิบายภาษาไทยแบบเข้าใจง่าย (ไม่มีศัพท์เทคนิค) ใน Discord notification ทุกครั้งที่บอทเปิด order
+
+**Goal**: User ทั่วไปที่ไม่รู้ศัพท์ technical (RSI, ADX, BB %B) สามารถเข้าใจได้ว่าบอทตัดสินใจเข้า trade ทำไม + ระดับความมั่นใจ
+
+**Design principles**:
+1. 🟢 **ZERO impact** on trading logic — output layer only
+2. 🟢 **Fail-silent** — wrap in try/except, ถ้า explainer fail → original Discord embed ส่งปกติ
+3. 🟢 **Toggleable** — config flag `thai_explain_enabled` + env `BOT_THAI_EXPLAIN=0`
+4. 🟢 **Discord-only** — ไม่ print console, ไม่กระทบ trade_executor
+
+**Files added**:
+- `ftmo_trading_bot/core/thai_explainer.py` (NEW, ~200 lines)
+  - `format_trade_open_explanation(trade_dict)` → Discord-formatted Thai string
+  - 8 translation helpers: RSI, BB, ADX, ML, Confluence, Volatility, Chronos, Session
+  - Parser สำหรับ signal_reasons string (regex extract BB %B / RSI / Wick / ADX)
+  - Confidence stars (1-5 ⭐) คำนวณจาก ML + Confluence + ADX
+
+**Files modified**:
+- `ftmo_trading_bot/config/settings.py` (+1 field):
+  - `NotificationConfig.thai_explain_enabled: bool = True` (env `BOT_THAI_EXPLAIN`)
+- `ftmo_trading_bot/core/notifier.py` (`send_trade_open` only):
+  - Append field `🇹🇭 อธิบายภาษาไทย` to existing embed (inline=False)
+  - Length-capped at 1024 chars (Discord limit)
+  - Wrapped in try/except — fail silent
+
+**Translation dictionary** (jargon → plain Thai):
+- RSI → "ความร้อน-เย็นของราคา" (เครื่องวัดไข้)
+- ADX → "ความแรงของเทรนด์" (เครื่องวัดลม)
+- BB %B → "ตำแหน่งราคาในกรอบ" (ยางยืด)
+- ML score → "AI ให้คะแนน" (% ความมั่นใจ)
+- Confluence → "คะแนนรวมจุดเทรด" (เกรด A/B/C)
+- Volatility → "ความผันผวน" (สภาพคลื่น)
+- Chronos → "AI ทำนายอนาคต 2 ชม."
+
+**MR context in explanation**:
+- BUY = "ราคาตกลึกเกิน เด้งกลับขึ้น" (ไม่ใช่ trend up bet)
+- SELL = "ราคาขึ้นแรงเกิน กลับลง" (ไม่ใช่ trend down bet)
+- ใช้ analogy "ยางยืดดึงสุดก็เด้งกลับ"
+
+**Example output** (584 chars, under Discord limit):
+```
+💡 ทิศทาง: ขาย — เก็งว่าราคาขึ้นมาแรงเกินไป เดี๋ยวจะกลับลง
+   (กลยุทธ์ยางยืด — ดึงสุดก็เด้งกลับ)
+
+💰 เดิมพัน: $67 (0.7% ของพอร์ต)
+🎯 เป้ากำไร: +$67 | 🛡️ เซฟสุด: -$67
+
+📊 ทำไมบอทถึงเข้า:
+🎈 ตำแหน่งราคา = ใกล้ขอบบน (0.85) → ยางยืดดึงสุด
+🌡️ ความร้อนของราคา = 72/100 → ร้อนเกิน (มักเย็นลง)
+💨 ความแรงเทรนด์ = 22/100 → ตลาดเริ่มทิศ (พอใช้)
+🤖 AI ให้คะแนน = 50% → 🟡 มั่นใจปานกลาง
+⭐ คะแนนรวมจุดเทรด = 79/100 → เกรด B (ผ่านเกณฑ์)
+🌊 ความผันผวน = ปกติ
+🌅 ช่วงเวลา = London (volume สูง)
+
+🎖️ ระดับมั่นใจ: ⭐✨
+```
+
+**Safety verification**:
+- ✅ Syntax: 3 files ผ่าน ast.parse
+- ✅ Test: format_trade_open_explanation() ทำงานกับ sample trade
+- ✅ Config: `thai_explain_enabled = True` default
+- ✅ Discord field length: 584 chars < 1024 limit
+- ✅ Fail-silent: try/except ครอบ → original embed ส่งได้แม้ explainer fail
+
+**No retrain needed** — Cosmetic Discord layer only.
+
+---
+
+## 📝 Version Log Entry — v8.0.64 (2026-05-25) — Hotfix: TZ-aware vs naive comparison
 
 ## 📝 Version Log Entry — v8.0.64 (2026-05-25) — Hotfix: TZ-aware vs naive comparison
 

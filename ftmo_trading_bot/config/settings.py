@@ -565,6 +565,11 @@ class NotificationConfig:
     enable_notifications: bool = os.getenv("DISCORD_ENABLE", "True").lower() in ("true", "1", "yes")
     discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
 
+    # v8.0.65 — Thai plain-language explanation on Discord trade_open
+    # Toggle: ปิดด้วย env BOT_THAI_EXPLAIN=0 หรือเปลี่ยน default เป็น False
+    # ไม่กระทบ trading logic — เป็น output-layer cosmetic เท่านั้น
+    thai_explain_enabled: bool = os.getenv("BOT_THAI_EXPLAIN", "True").lower() in ("true", "1", "yes")
+
 
 # =============================================================================
 # 📁 การตั้งค่าเส้นทางไฟล์ (File Paths)

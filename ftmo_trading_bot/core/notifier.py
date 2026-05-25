@@ -166,22 +166,44 @@ class DiscordNotifier:
         # ถ้า entry ยังเป็น 0 แปลว่า MT5 ไม่ได้คืน price → แสดง warning
         entry_warn = " ⚠️" if entry_str == "N/A" else ""
 
+        # === Build base fields (เดิม — ไม่แตะ) ===
+        fields = [
+            {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
+            {"name": "Lot Size", "value": self._fmt_num(trade_dict.get("lot_size"), ",.2f"), "inline": True},
+            {"name": "Entry", "value": entry_str + entry_warn, "inline": True},
+            {"name": "SL", "value": sl_str, "inline": True},
+            {"name": "TP", "value": tp_str, "inline": True},
+            {"name": "Risk", "value": f"{(trade_dict.get('risk_pct') or 0):.2%} (${self._fmt_num(trade_dict.get('risk_amount'), ',.2f')})", "inline": True},
+            {"name": "Confluence", "value": self._fmt_num(trade_dict.get("confluence"), ".0f"), "inline": True},
+            {"name": "Session", "value": str(trade_dict.get("session") or "-"), "inline": True},
+            {"name": "RR", "value": f"1:{(trade_dict.get('rr_ratio') or 0):.1f}", "inline": True},
+        ]
+
+        # === v8.0.65: Thai plain-language explanation (toggleable, fail-silent) ===
+        # ห้ามให้กระทบ original notification ถ้า fail → wrap in try/except
+        try:
+            if getattr(self.config, "thai_explain_enabled", True):
+                from core.thai_explainer import format_trade_open_explanation
+                thai_text = format_trade_open_explanation(trade_dict)
+                if thai_text:
+                    # Discord field value limit = 1024 chars
+                    if len(thai_text) > 1024:
+                        thai_text = thai_text[:1020] + "..."
+                    fields.append({
+                        "name": "🇹🇭 อธิบายภาษาไทย",
+                        "value": thai_text,
+                        "inline": False,  # full-width
+                    })
+        except Exception:
+            # Silent fail — original embed still sends
+            pass
+
         payload = {
             "username": "FTMO Bot",
             "embeds": [{
                 "title": f"{emoji} OPENED: {trade_dict.get('type')} {trade_dict.get('symbol')}",
                 "color": color,
-                "fields": [
-                    {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
-                    {"name": "Lot Size", "value": self._fmt_num(trade_dict.get("lot_size"), ",.2f"), "inline": True},
-                    {"name": "Entry", "value": entry_str + entry_warn, "inline": True},
-                    {"name": "SL", "value": sl_str, "inline": True},
-                    {"name": "TP", "value": tp_str, "inline": True},
-                    {"name": "Risk", "value": f"{(trade_dict.get('risk_pct') or 0):.2%} (${self._fmt_num(trade_dict.get('risk_amount'), ',.2f')})", "inline": True},
-                    {"name": "Confluence", "value": self._fmt_num(trade_dict.get("confluence"), ".0f"), "inline": True},
-                    {"name": "Session", "value": str(trade_dict.get("session") or "-"), "inline": True},
-                    {"name": "RR", "value": f"1:{(trade_dict.get('rr_ratio') or 0):.1f}", "inline": True},
-                ],
+                "fields": fields,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }]
         }
