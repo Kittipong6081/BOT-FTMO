@@ -1,5 +1,39 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.65** — Thai explanation on Discord trade_open)
+> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.66** — Fix news CSV parser: preserve Holiday impact)
+
+## 📝 Version Log Entry — v8.0.66 (2026-05-25) — Fix: news CSV parser preserve Holiday impact
+
+**Bug** ([news_csv_parser.py:100](ftmo_trading_bot/config/news_csv_parser.py#L100)):
+- Filter at line 55 accept ทั้ง `"high"` และ `"holiday"`
+- แต่ output dict (line 100) **HARDCODE** `"impact": "high"`
+- → JSON บันทึก Holiday events เป็น `"high"` ผิดทุกครั้ง
+
+**Impact**:
+- ฟังก์ชัน `is_near_high_impact_news()` ไม่กระทบ (treat ทั้ง high+holiday เป็น block เหมือนกัน)
+- แต่ JSON `news_calendar.json` ผิดความหมาย — debug/audit ลำบาก
+- Downstream code ใดที่ต้องการแยก behavior holiday vs high (เช่น log แตกต่าง) จะทำไม่ได้
+
+**Fix** (1 บรรทัด):
+```python
+# เดิม:
+"impact": "high",   # bug
+# ใหม่:
+"impact": impact,   # preserve original ("high" หรือ "holiday")
+```
+
+**Verification** (`config/news_csv_parser.py` test):
+- Input CSV: 2 high + 2 holiday + 1 medium (skip)
+- Output: 4 events (2 high, 2 holiday) ✅
+- Behavior: news block path คงเดิม (ทั้ง high+holiday block)
+
+**Files**:
+- `ftmo_trading_bot/config/news_csv_parser.py` (1 line + comment)
+
+**No retrain, no breaking change** — JSON correctness fix only.
+
+---
+
+## 📝 Version Log Entry — v8.0.65 (2026-05-25) — Thai Plain-Language Explanation on Discord
 
 ## 📝 Version Log Entry — v8.0.65 (2026-05-25) — Thai Plain-Language Explanation on Discord
 

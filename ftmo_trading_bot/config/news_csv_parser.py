@@ -97,7 +97,12 @@ def parse_forexfactory_csv(
                 "datetime_utc": dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "currency": currency,
                 "name": (row.get("Title") or row.get("Event") or "Unknown").strip(),
-                "impact": "high",
+                # v8.0.66 fix: preserve original impact ("high" หรือ "holiday")
+                # เดิม hardcode "high" → bug: Holiday ถูกบันทึกผิดเป็น "high"
+                # downstream (news_events.py:is_near_high_impact_news) treat both
+                # high+holiday เป็น news block เหมือนกัน → ฟังก์ชัน behavior คงเดิม
+                # แค่ JSON ความถูกต้อง correct ขึ้น
+                "impact": impact,
             })
 
     if verbose:
