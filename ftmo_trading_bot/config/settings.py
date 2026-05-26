@@ -271,6 +271,11 @@ class FTMOConfig:
     CLUSTER_COOLDOWN_ANY_SEC: int = 300           # ห้ามเปิดไม้ใหม่ทุกคู่ภายใน 5 นาที
     CLUSTER_COOLDOWN_SAME_THEME_SEC: int = 600    # 10 นาทีถ้าเป็นธีม USD/JPY/METAL เดียวกัน
 
+    # v8.0.68: Opposing-Theme Block — ห้ามเปิดทิศตรงข้ามกับ position ที่เปิดอยู่
+    # ตัวอย่าง: GBPUSD SELL (=USD_LONG) เปิดอยู่ → block EURUSD BUY (=USD_SHORT)
+    # เหตุผล: 2 ไม้สวนทิศ → ไม้นึงกำไรอีกไม้ขาดทุน = Net EV ≈ 0 − spread cost = ขาดทุนเฉลี่ย
+    OPPOSING_THEME_BLOCK_ENABLED: bool = True
+
 
 # =============================================================================
 # 💱 การตั้งค่าคู่เงินและ Symbol ที่เทรด

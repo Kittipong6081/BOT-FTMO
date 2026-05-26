@@ -618,6 +618,39 @@ class RiskManager:
             return "METAL_LONG" if du == "BUY" else "METAL_SHORT"
         return None
 
+    @staticmethod
+    def _is_opposing_theme(theme_a: Optional[str], theme_b: Optional[str]) -> bool:
+        """v8.0.68: คืน True ถ้า theme_a กับ theme_b เป็นทิศตรงข้ามใน group เดียวกัน
+        (USD_LONG vs USD_SHORT, JPY_LONG vs JPY_SHORT, METAL_LONG vs METAL_SHORT).
+        Same theme หรือ unrelated group คืน False"""
+        if not theme_a or not theme_b:
+            return False
+        opposites = {
+            "USD_LONG": "USD_SHORT", "USD_SHORT": "USD_LONG",
+            "JPY_LONG": "JPY_SHORT", "JPY_SHORT": "JPY_LONG",
+            "METAL_LONG": "METAL_SHORT", "METAL_SHORT": "METAL_LONG",
+        }
+        return opposites.get(theme_a) == theme_b
+
+    def _check_opposing_theme(self, symbol: str, direction: Optional[str]) -> Tuple[bool, str]:
+        """v8.0.68: ตรวจว่า position ที่เปิดอยู่มี theme ตรงข้ามกับไม้ใหม่หรือไม่
+        คืน (blocked, reason). blocked=True = ห้ามเปิด"""
+        if not direction:
+            return (False, "")
+        new_theme = self._compute_theme(symbol, direction)
+        if not new_theme:
+            return (False, "")
+        open_positions = self._connector.get_open_positions() or []
+        for pos in open_positions:
+            pos_theme = self._compute_theme(pos.get("symbol", ""), pos.get("type", ""))
+            if self._is_opposing_theme(new_theme, pos_theme):
+                return (
+                    True,
+                    f"🚫 Opposing-theme block: {symbol} {direction} (=ทิศ {new_theme}) "
+                    f"สวนกับ {pos.get('symbol')} {pos.get('type')} ที่เปิดอยู่ (=ทิศ {pos_theme})"
+                )
+        return (False, "")
+
     def can_open_trade(
         self,
         symbol: str,
@@ -830,6 +863,15 @@ class RiskManager:
         current_positions = self._connector.get_positions_count()
         if current_positions >= self._config.MAX_OPEN_POSITIONS:
             return (False, f"❌ เปิด Position ครบ {self._config.MAX_OPEN_POSITIONS} ตำแหน่งแล้ว (ปัจจุบัน: {current_positions})")
+
+        # === ตรวจสอบที่ 2.5: Opposing-Theme Block (v8.0.68) ===
+        # ห้ามเปิดทิศตรงข้ามกับ position ที่เปิดอยู่ใน theme เดียวกัน
+        # (USD_LONG vs USD_SHORT, JPY_LONG vs JPY_SHORT, METAL_LONG vs METAL_SHORT)
+        # ตัวอย่าง: GBPUSD SELL เปิดอยู่ → block EURUSD BUY (สวน USD ทั้งคู่)
+        if getattr(self._config, "OPPOSING_THEME_BLOCK_ENABLED", False):
+            blocked, reason = self._check_opposing_theme(symbol, direction)
+            if blocked:
+                return (False, reason)
 
         # === ตรวจสอบที่ 3: Risk:Reward Ratio ===
         # v8.0.11 fix: epsilon tolerance for FP precision. MR strategy stores

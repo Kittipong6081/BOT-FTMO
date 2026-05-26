@@ -1,5 +1,30 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-25 | Scope: red flags, version log, migration notes (latest: **v8.0.67** — XAU-only morning block re-enabled, data-driven)
+> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.68** — Opposing-Theme Block)
+
+## 📝 Version Log Entry — v8.0.68 (2026-05-26) — Opposing-Theme Block
+
+**Trigger**: User feedback after observing today's losses — "บอทต้องไม่เปิดออเดอร์สวนทางกันเช่น GBPUSD SELL, EURUSD BUY เพราะพอออเดอร์นึงกำไรอีกอันขาดทุน".
+
+**Problem**: Existing `CLUSTER_COOLDOWN_SAME_THEME_SEC` (v8.0.55) blocks same-theme trades within 10 min, but **does NOT prevent OPPOSING theme** when one position is already open. Example failure:
+- 10:00 EET — GBPUSD SELL opens (theme = USD_LONG)
+- 10:20 EET — cooldown expired → EURUSD BUY opens (theme = USD_SHORT)
+- Net: one wins, the other loses; EV ≈ 0 minus spread × 2 = guaranteed net negative
+
+**Fix**: Add `RiskManager._check_opposing_theme()` — walks `connector.get_open_positions()`, computes theme of each (reusing `_compute_theme()` from v8.0.55), and blocks new trade if any open position has opposite theme in same group (USD_LONG↔USD_SHORT, JPY_LONG↔JPY_SHORT, METAL_LONG↔METAL_SHORT).
+
+**Wired** into `RiskManager.can_open_trade` as check #2.5 (after MAX_OPEN_POSITIONS, before RR check) so any signal that would create opposing exposure gets rejected with reason `🚫 Opposing-theme block: {sym} {dir} (=ทิศ X) สวนกับ {open_sym} {open_dir} (=ทิศ Y)`.
+
+**Config**: `FTMOConfig.OPPOSING_THEME_BLOCK_ENABLED = True` (toggle for emergency disable).
+
+**No retrain needed** — pure live-execution filter (mirrors v7.1.10 news / v8.0.21 pre-news / v8.0.26 bulk guard pattern).
+
+**Affected files**:
+- `config/settings.py` — new flag `OPPOSING_THEME_BLOCK_ENABLED`
+- `core/risk_manager.py` — new methods `_is_opposing_theme()`, `_check_opposing_theme()`, gate in `can_open_trade`
+
+**Verification** — unit test (`/tmp/test_opposing_theme.py`) covers theme computation + opposing detection + the exact scenario user complained about (GBPUSD SELL vs EURUSD BUY → BLOCKED).
+
+---
 
 ## 📝 Version Log Entry — v8.0.67 (2026-05-25) — XAU-only Morning Block (data-driven)
 
