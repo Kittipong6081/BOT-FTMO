@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-22 (v8.0.55 — 3 pre-execution gates: Entry Confirm + Spread Spike + Cluster Cooldown) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-26 (v8.0.69 — MAX_OPEN_POSITIONS 2→3) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -28,7 +28,7 @@
 | Total DD stop | 8 % | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
 | Default risk / trade | 0.7 % | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
-| Max open positions | 3 | `FTMOConfig.MAX_OPEN_POSITIONS` |
+| Max open positions | 3 (v8.0.69 — was 2 in v8.0.56) | `FTMOConfig.MAX_OPEN_POSITIONS` |
 | ML threshold | 0.30 | `FTMOConfig.ML_FILTER_THRESHOLD` |
 | Cooldown after loss | 60 min | `FTMOConfig.COOLDOWN_AFTER_LOSS_MIN` |
 | Pause / Halt counts (v6.13) | 3 / 4 consec losses | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT/HALT_COUNT` |

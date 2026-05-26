@@ -91,8 +91,10 @@ class FTMOConfig:
     
     # === จำนวน Position สูงสุดที่เปิดได้พร้อมกัน ===
     # v8.0.56 (2026-05-22): 3 → 2 — ลด concurrent risk exposure
-    #   4-loss streak (Max Open 2 × 2 cycles) = 4 × 0.70% = -2.8% (vs Daily Cap 2.5%)
-    MAX_OPEN_POSITIONS: int = 2
+    # v8.0.69 (2026-05-26): 2 → 3 — user request; safe because v8.0.56 blocked_symbols
+    #   (AUDUSD/USDCAD/USDCHF cut -$1,297) + v8.0.68 OPPOSING_THEME_BLOCK กรอง quality แล้ว
+    #   Risk math: 3 × 0.70% = 2.1% max concurrent (vs DAILY_LOSS_CAP 2.5%, FTMO 4%)
+    MAX_OPEN_POSITIONS: int = 3
 
     # === Min Seconds Between Opens (v8.0.26 — anti bulk-trading) ===
     # The5ers ห้าม "bulk trading" = เปิดหลายไม้พร้อมกันในวินาทีเดียว

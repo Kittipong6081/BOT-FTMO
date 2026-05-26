@@ -1,5 +1,37 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.68** — Opposing-Theme Block)
+> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.69** — MAX_OPEN_POSITIONS 2→3)
+
+## 📝 Version Log Entry — v8.0.69 (2026-05-26) — MAX_OPEN_POSITIONS 2 → 3
+
+**Trigger**: User request — "ปรับบอทให้เปิดไม้ได้สูงสุด 3 ไม้พร้อมกัน".
+
+**Background**: v8.0.56 (2026-05-22) reduced this from 3 → 2 after a 111-trade audit showed Net -$460 / EV -$4.15 per trade. The reduction was bundled with three other safety changes (blocked_symbols, BE/Partial tuning, DAILY_LOSS_CAP re-enabled).
+
+**Why it's safe now to widen back to 3**:
+- `SymbolConfig.blocked_symbols` (v8.0.56) — AUDUSD/USDCAD/USDCHF excluded, which were responsible for -$1,297 of cumulative loss in the audit.
+- `v8.0.55` pre-execution gates — entry confirmation (slip/M1 direction/BB %B), spread spike (2× rolling median), cluster cooldown (300s any / 600s same theme) — filter low-quality concurrent entries.
+- `v8.0.68 OPPOSING_THEME_BLOCK` — prevents the "1 winner + 1 loser = net loss" scenario (e.g. GBPUSD SELL + EURUSD BUY).
+- Combined effect: the quality of signals reaching `can_open_trade` is materially higher than v8.0.56-era → 3rd concurrent slot is no longer "noise slot".
+
+**Risk math** (default 0.70% per trade):
+- 3 positions all hit SL simultaneously = 3 × 0.70% = **2.1% concurrent risk**
+- vs `DAILY_LOSS_CAP_PCT = 2.5%` → 0.4pp buffer before soft cap
+- vs `DAILY_LOSS_HARD_STOP_PCT = 4%` → 1.9pp buffer before FTMO breach
+- 4th loss after a 3-loss streak (3 × 0.70% + 1 × 0.70% = 2.8%) → caught by 2.5% soft cap before reaching 4% hard stop.
+
+**Single-line change** in `ftmo_trading_bot/config/settings.py`:
+```python
+MAX_OPEN_POSITIONS: int = 3  # was 2 in v8.0.56
+```
+
+**No retrain needed** — `MAX_OPEN_POSITIONS` is a live-execution config (not in training pool / env). RL agent does not see open-position count as obs (concurrent risk is enforced gate-side in `RiskManager.can_open_trade`).
+
+**Revert path** — change back to `2` (no state migration, no model swap, no pool rebuild). v8.0.56 backups still exist on disk if a deeper rollback is needed.
+
+**Affected files**:
+- `config/settings.py` — `FTMOConfig.MAX_OPEN_POSITIONS: int = 3`
+
+---
 
 ## 📝 Version Log Entry — v8.0.68 (2026-05-26) — Opposing-Theme Block
 
