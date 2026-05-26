@@ -1,5 +1,30 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.69** — MAX_OPEN_POSITIONS 2→3)
+> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.70** — Full-lifecycle 1s adaptive loop + wall-clock signal scan)
+
+## 📝 Version Log Entry — v8.0.70 (2026-05-26) — Full-lifecycle 1s adaptive loop
+
+**Trigger**: User report — "order ถึงจุดที่ต้องเลื่อน BE แล้วบอทไม่เลื่อนเพราะไม่ถึงเวลาสแกน".
+
+**Root cause**: v8.0.46 adaptive loop switched to 1s only when `profit_r >= 0.5R`. But v8.0.56 lowered `BE_TRIGGER_RR` to **0.3R** → the decisive trail action now fires *below* the 0.5R fast-poll threshold, so the bot is still on 5 s loop at the moment BE must be moved. A fast M1 spike that crosses 0.3R and reverts inside one 5 s tick → bar closes without BE → next loop sees `profit_r < 0.3R` again → BE never set → SL stays at original → trade reverts to full SL.
+
+**Fix part 1 — adaptive condition**: any open position triggers 1 s loop (drop the `profit_r >= 0.5R` precondition). Rationale: lifecycle cost is bounded (avg hold ~75 min × 1 s polls = 4,500 ticks per trade) but accuracy of BE@0.3R / Partial@0.8R / Stage 2@0.8R / Stage 3@1.0R is now tick-precise.
+
+**Fix part 2 — wall-clock signal scan**: the previous scan gate `self._loop_count % 12 == 0` produced 60 s scan @ 5 s loop. Under part 1, loop becomes 1 s while a position is open, which would push scan to 12 s — 5× too fast (ML inference + RL agent + Excel `Signals` row per tick, plus risk of duplicate signal entry on borderline setups). Replace with wall-clock gate using `_last_signal_scan_ts` (epoch seconds, 60 s elapsed). Scan cadence stays at 1/min regardless of loop speed.
+
+**What still uses `loop_count`** (intentionally left alone, cosmetic only):
+- `% 60` (verbose 2 status print, every 5 min @ 5s → every 1 min @ 1s) — debug-only
+- `% 720` (verbose 1 status print + hourly Stats sheet write + GBM drift check) — fires ~6× more often while a position is open. Excel I/O cost is small; behavior unchanged.
+
+**No retrain needed** — execution-only fix. RL agent does not observe loop interval; trade outcomes change only because BE/SL/TP now move on time, which is the intended training spec.
+
+**Affected files**:
+- `ftmo_trading_bot/main.py` — `__init__` (`_last_signal_scan_ts`), Step 2 scan section (wall-clock gate), adaptive sleep section (any-position condition)
+
+**Verification path**: after deploy, expect more rows in `logs/ftmo_trades.xlsx` `Trades` sheet showing `Best Price ≥ 0.3R` paired with `SL = entry` (BE actually moved). Excel `Loop Count` field will inflate while positions are open (1s polls).
+
+**Revert path**: restore the v8.0.46 block in adaptive section + `if self._loop_count % 12 == 0:` in scan section. No state migration.
+
+---
 
 ## 📝 Version Log Entry — v8.0.69 (2026-05-26) — MAX_OPEN_POSITIONS 2 → 3
 

@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-26 (v8.0.69 — MAX_OPEN_POSITIONS 2→3) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-26 (v8.0.70 — Full-lifecycle 1s adaptive loop) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -21,7 +21,8 @@
 
 | Item | Value | Source (symbol) |
 |------|-------|-----------------|
-| Main loop interval | 5 s default, **1 s when position profit ≥ 0.5R** (v8.0.46 adaptive — gives bot time to react before TP race) | `bot_config.main_loop_interval`, adaptive code in `FTMOTradingBot.run` |
+| Main loop interval | 5 s default, **1 s when ANY position open** (v8.0.70 — was v8.0.46 ≥ 0.5R only; full-lifecycle 1s ensures BE @ 0.3R + Partial @ 0.8R + Stage 2/3 fire without 5s window miss) | `bot_config.main_loop_interval`, adaptive code in `FTMOTradingBot.run` |
+| Signal scan cadence | **60 s wall-clock** (v8.0.70 — decoupled from loop count). Was `loop_count % 12 == 0` = 60 s @ 5 s loop but would become 12 s @ 1 s loop. Time-based gate keeps scan at 1/min regardless of loop speed | `FTMOTradingBot._last_signal_scan_ts` |
 | **Stepwise Trail (v8.0.48)** | Stage 1@0.5R partial+BE; Stage 2@0.8R TP→1.5R SL→0.5R; Stage 3@1.0R SL→1R + trail chase (floor 1R) | `TradeManager.TP_STEP_*` + `TRAIL_*` constants |
 | Symbols | 10 (incl. XAUUSD) | `SymbolConfig.symbols` |
 | Daily DD stop | 4 % | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |

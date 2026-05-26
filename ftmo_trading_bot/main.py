@@ -192,6 +192,12 @@ class FTMOTradingBot:
         self._last_drift_count: int = -1
         self._last_drift_announce_ts: Optional[float] = None  # epoch seconds
 
+        # v8.0.70: Signal scan throttle — wall-clock gate (เดิม % 12 loops = 60s @ 5s loop)
+        # ต้องแยกจาก loop_count เพราะ v8.0.70 adaptive ทำให้ loop เป็น 1s ทุกครั้งที่มี
+        # position open → ถ้าใช้ loop_count จะ scan ทุก 12s (เร็วเกิน). ใช้ wall-clock
+        # 60s gate แทน → scan cadence คงที่ไม่ว่า loop จะเร็วแค่ไหน
+        self._last_signal_scan_ts: Optional[float] = None  # epoch seconds
+
         # v6.9: track trade open history for overtrading detection
         # List of tuples (datetime, symbol) — capped at last 200 entries
         self._trade_open_history: list = []
@@ -1219,8 +1225,16 @@ class FTMOTradingBot:
                     self._rollover_announced = False
 
                 # === ขั้นตอนที่ 2: สแกนสัญญาณ + กรองด้วย AI + ส่งคำสั่งเทรด ===
-                # สแกนทุกๆ 12 loops (~1 นาที)
-                if self._loop_count % 12 == 0:
+                # v8.0.70: wall-clock 60s gate (เดิม % 12 loops). decoupled จาก loop_count
+                # เพราะ adaptive ทำให้ loop เป็น 1s ตอนมี position open — % 12 จะกลายเป็น
+                # 12s scan (เร็วเกิน). ใช้ wall-clock 60s ให้ scan cadence คงที่
+                _now_ts = time_module.time()
+                _scan_due = (
+                    self._last_signal_scan_ts is None
+                    or (_now_ts - self._last_signal_scan_ts) >= 60.0
+                )
+                if _scan_due:
+                    self._last_signal_scan_ts = _now_ts
                     try:
                         signals = self._strategy.scan_all_symbols()
                         for sig in signals:
@@ -1339,29 +1353,16 @@ class FTMOTradingBot:
                 if self._loop_count % 720 == 0 and self._loop_count > 0:
                     self._check_gbm_drift()
 
-                # v8.0.46: Adaptive loop interval — fast poll ตอน position ใกล้ TP
-                # ถ้ามี position กำไร ≥ 0.5R → ใช้ 1s (กัน TP hit ก่อน trail modify)
-                # ปกติ 5s
+                # v8.0.70: Adaptive loop — มี position open → 1s ทุกครั้ง (เดิม v8.0.46 เฉพาะ profit ≥ 0.5R)
+                # เหตุผล: BE trigger ที่ 0.3R (v8.0.56) ต้อง modify ภายใน 1 tick มิฉะนั้น price spike
+                # ผ่าน 0.3R + revert ก่อน loop หน้า → BE ไม่ถูกตั้ง. การ poll 1s ตลอด lifecycle ของ
+                # position ทำให้ Partial 0.8R + Stage 2/3 trail แม่นยำสุด. Signal scan แยก wall-clock
+                # 60s gate (ด้านบน) ไม่กระทบ cadence ของการเปิด order ใหม่
                 sleep_interval = bot_config.main_loop_interval
                 try:
                     open_positions = self._connector.get_open_positions()
                     if open_positions:
-                        for pos in open_positions:
-                            entry = pos.get("price_open", 0)
-                            current = pos.get("price_current", entry)
-                            sl = pos.get("sl", 0)
-                            if entry > 0 and sl > 0:
-                                sl_dist = abs(entry - sl)
-                                if sl_dist > 0:
-                                    pos_type = pos.get("type")  # 0=BUY, 1=SELL
-                                    if pos_type == 0:  # BUY
-                                        profit_r = (current - entry) / sl_dist
-                                    else:  # SELL
-                                        profit_r = (entry - current) / sl_dist
-                                    # ใกล้ TP → fast poll
-                                    if profit_r >= 0.5:
-                                        sleep_interval = 1  # fast 1s
-                                        break
+                        sleep_interval = 1  # any open position → 1s for accurate BE/SL/TP
                 except Exception:
                     pass  # fail-safe: use default interval
 

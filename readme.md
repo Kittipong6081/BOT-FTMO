@@ -389,7 +389,7 @@ git pull
 
 ครั้งแรกที่รัน v8.0.6 บน VPS — ถ้ามี `ftmo_trades.xlsx` legacy schema (66/23 cols) จะถูก auto-archive เป็น `ftmo_trades.bak_pre_v8_<ts>.xlsx` + สร้างไฟล์ใหม่ 58/20 cols ให้อัตโนมัติ
 
-จะรัน loop ทุก 5 วินาที + scan signals ทุก 1 นาที + log ทุก trade ลง Excel
+จะรัน loop ทุก 5 วินาที (เร็วขึ้นเป็น **1 วินาที** อัตโนมัติเมื่อมีออเดอร์เปิดอยู่ — เพื่อเลื่อน BE/SL/TP ให้แม่นยำ, v8.0.70) + scan signals ใหม่ทุก 1 นาที (คงที่ wall-clock) + log ทุก trade ลง Excel
 
 แนะนำให้รันใน **Windows Task Scheduler** หรือ **NSSM** เพื่อ auto-restart เวลา crash
 
