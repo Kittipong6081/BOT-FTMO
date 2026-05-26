@@ -366,7 +366,12 @@ class SymbolConfig:
             "min_sl_pips": 20,               # spread 5 = 25% of SL 20 (acceptable)
             "min_confidence": 0.65,
             "spread_atr_ratio_max": 0.5,
-            "max_trades_per_day": 3,
+            # v8.0.71 (2026-05-26): ลบ max_trades_per_day — เดิม 3 แต่ enforcement ใน
+            # risk_manager เทียบกับ _daily_trades_count (GLOBAL counter) ไม่ใช่ per-symbol
+            # → GBPJPY ถูก block ทันทีหลัง total trades ทุกคู่รวมกัน = 3 (แม้ GBPJPY ยังไม่เคย
+            # เทรดวันนั้น). RL + cooldown 60min + spread/ATR + entry-confirm + cluster cooldown
+            # กรองคุณภาพอยู่แล้ว — เคส 2026-05-26: 37 GBPJPY signals → AGENT_SKIP 12 + reject 25
+            # = ปกป้องได้โดยไม่ต้องใช้ cap ที่ broken
             "flip_lock_retrace_mult": 0.7,
         },
         # === Metals (pip = 0.01, ticks) ===

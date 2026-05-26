@@ -391,6 +391,35 @@ class MT5Connector:
     # 📋 ข้อมูล Symbol
     # =========================================================================
 
+    def symbol_exists(self, symbol: str) -> bool:
+        """
+        v8.0.72: ตรวจว่า symbol นี้มีอยู่ในโบรกเกอร์ไหม — แบบเงียบ ไม่ print error
+        ใช้สำหรับ probe pip-value conversion (เช่น JPYUSD ที่ FTMO ไม่มี → ต้อง fallback USDJPY)
+        ผลลัพธ์ cache ใน `_symbol_exists_cache` กัน MT5 round-trip ซ้ำ
+        """
+        cache = getattr(self, "_symbol_exists_cache", None)
+        if cache is None:
+            cache = {}
+            self._symbol_exists_cache = cache
+        if symbol in cache:
+            return cache[symbol]
+
+        if not MT5_AVAILABLE:
+            # Mock mode: ใช้ตามรายการ mock_info ใน get_symbol_info
+            known = {"EURUSD", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD",
+                     "USDJPY", "EURJPY", "GBPJPY", "XAUUSD"}
+            exists = symbol in known
+            cache[symbol] = exists
+            return exists
+
+        if not self.is_connected():
+            return False
+
+        # silent probe — `mt5.symbol_info` คืน None ถ้าไม่มี (ไม่ print)
+        exists = mt5.symbol_info(symbol) is not None
+        cache[symbol] = exists
+        return exists
+
     def get_symbol_info(self, symbol: str) -> Optional[Dict]:
         """
         ดึงข้อมูลรายละเอียดของ Symbol (ใช้ Cache เพื่อประสิทธิภาพ)

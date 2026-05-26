@@ -245,11 +245,15 @@ class PositionSizer:
         conversion_symbol_direct = f"{quote_currency}{acc_ccy}"    # JPYUSD (มักไม่มี)
         conversion_symbol_inverse = f"{acc_ccy}{quote_currency}"   # USDJPY (มี)
 
-        # ลอง direct ก่อน (QUOTE/ACCOUNT)
-        price_direct = self._connector.get_current_price(conversion_symbol_direct)
-        if price_direct and price_direct.get("bid", 0) > 0:
-            # Pip Value (Account) = raw × direct_rate
-            return raw_pip_value * price_direct["bid"]
+        # v8.0.72: ตรวจ existence แบบเงียบก่อน probe direct — กัน MT5 print ❌ ทุก order
+        # ที่ผ่านมา FTMO/most brokers ไม่มี JPYUSD/CHFUSD/CADUSD → direct probe ล้มเหลวเสมอ
+        # แล้ว fall through ไป inverse path ปกติอยู่แล้ว แค่ noisy log
+        if self._connector.symbol_exists(conversion_symbol_direct):
+            # ลอง direct ก่อน (QUOTE/ACCOUNT)
+            price_direct = self._connector.get_current_price(conversion_symbol_direct)
+            if price_direct and price_direct.get("bid", 0) > 0:
+                # Pip Value (Account) = raw × direct_rate
+                return raw_pip_value * price_direct["bid"]
 
         # Fallback: ใช้ inverse (ACCOUNT/QUOTE เช่น USDJPY)
         price_inverse = self._connector.get_current_price(conversion_symbol_inverse)

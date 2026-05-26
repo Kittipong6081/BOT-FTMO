@@ -1,5 +1,93 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.70** — Full-lifecycle 1s adaptive loop + wall-clock signal scan)
+> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.72** — Silent probe for nonexistent conversion symbols)
+
+## 📝 Version Log Entry — v8.0.72 (2026-05-26) — Silent probe for nonexistent conversion symbols
+
+**Trigger**: User flagged the repeated log `❌ [MT5] ดึงราคา JPYUSD ล้มเหลว` appearing on every JPY cross-pair signal.
+
+**Investigation**: not an error — it's noisy logging from an otherwise-correct fallback path. In `PositionSizer._calculate_pip_value`, for cross pairs whose **quote currency ≠ account currency** (e.g. GBPJPY/EURJPY on a USD account), the sizer must convert raw pip value (in JPY) to USD. It tries two symbols in order:
+
+1. **Direct** `f"{quote}{acc_ccy}"` → e.g. `JPYUSD` (most brokers, including FTMO, don't list this)
+2. **Inverse** `f"{acc_ccy}{quote}"` → e.g. `USDJPY` (always exists; divides instead of multiplies)
+
+The `JPYUSD` lookup hits `MT5Connector.get_current_price`, which prints `❌ [MT5] ดึงราคา {symbol} ล้มเหลว` when `mt5.symbol_info_tick()` returns None. The sizer then proceeds silently to the inverse path and returns the correct value. End user just sees the scary ❌.
+
+**Why now** — became more visible after v8.0.69 widened concurrent positions and v8.0.70 cut loop interval to 1 s under load: more frequent calculations → more frequent log spam.
+
+**Root-cause fix** (user preference: "ดูแค่ที่ต้นเหตุกว่า"): rather than passing a `silent=True` flag through `get_current_price`, add a dedicated probe helper at the connector that is *always* silent:
+
+```python
+def MT5Connector.symbol_exists(self, symbol: str) -> bool:
+    # cached, mt5.symbol_info() returns None for missing symbols without printing
+```
+
+Then `PositionSizer._calculate_pip_value` wraps the direct attempt:
+
+```python
+if self._connector.symbol_exists(conversion_symbol_direct):
+    price_direct = self._connector.get_current_price(conversion_symbol_direct)
+    if price_direct and price_direct.get("bid", 0) > 0:
+        return raw_pip_value * price_direct["bid"]
+# falls through to inverse path unchanged
+```
+
+Behavior is identical (same pip value, same fallback); the broker round-trip + ❌ log are skipped when the broker doesn't list the symbol.
+
+**Verification**:
+```
+GBPJPY pip value (mock, account=USD) = $6.6890 / lot   (via USDJPY inverse)
+❌ JPYUSD logged? False
+```
+Result matches prior calculation exactly (`1000 JPY / 149.500 ≈ 6.6890 USD`).
+
+**Caching note**: `_symbol_exists_cache` is per-`MT5Connector` instance and persists for the bot's runtime. If a broker dynamically activates new symbols mid-session this could miss the activation — acceptable trade-off because FTMO's symbol list is static during a challenge.
+
+**No retrain needed** — log/path cleanup only.
+
+**Affected files**:
+- `ftmo_trading_bot/core/mt5_connector.py` — new public method `symbol_exists`
+- `ftmo_trading_bot/core/position_sizer.py` — guard the direct conversion probe
+
+**Revert path**: remove the `if self._connector.symbol_exists(...)` guard in position_sizer. `symbol_exists` can stay (orphaned but harmless).
+
+---
+
+## 📝 Version Log Entry — v8.0.71 (2026-05-26) — Remove broken GBPJPY per-day cap
+
+**Trigger**: User report — "🚫 GBPJPY: เทรดครบ 3 ครั้งวันนี้แล้ว" appeared even though `logs/ftmo_trades.xlsx` Trades sheet showed **0 closed GBPJPY trades** for the day.
+
+**Root cause** (latent bug, present since at least v6.x): in `RiskManager.can_open_trade` (`core/risk_manager.py:853-860`):
+
+```python
+default_max = getattr(self._config, "MAX_TRADES_PER_DAY", 5)
+max_per_day = get_symbol_config(symbol, "max_trades_per_day", default_max)  # per-symbol lookup → 3 for GBPJPY
+if max_per_day is not None and self._daily_trades_count >= max_per_day:     # GLOBAL counter, not per-symbol
+    return (False, f"🚫 {symbol}: เทรดครบ {max_per_day} ครั้งวันนี้แล้ว ...")
+```
+
+The cap is *defined* per-symbol but *enforced* against a single global counter. The inline comment in the file even concedes "track เป็น total count". Result: as soon as the bot's total daily trades across all symbols reaches 3, GBPJPY entries are blocked — even on days where GBPJPY itself has traded zero times.
+
+**Why now** — after v8.0.69 raised `MAX_OPEN_POSITIONS` 2 → 3 and v8.0.55/68 added more aggressive cross-symbol filters, total daily trades reaches 3 earlier in the session, exposing the bug for GBPJPY users who previously rarely hit the global threshold.
+
+**Fix**: remove `"max_trades_per_day": 3` from `SymbolConfig.symbol_overrides["GBPJPY"]`. `get_symbol_config` falls back to `FTMOConfig.MAX_TRADES_PER_DAY` which is already `None` (disabled). Other GBPJPY-specific guardrails are unchanged:
+- `atr_floor_pips=8` (skip dead market)
+- `min_sl_pips=20` (avoid spread-dominated SL)
+- `min_confidence=0.65` (per-symbol RL gate)
+- `spread_atr_ratio_max=0.5` (liquidity check)
+- `flip_lock_retrace_mult=0.7`
+
+**Verification on 2026-05-26 data**: `Signals` sheet shows GBPJPY had **37 candidate signals** → **AGENT_SKIP 12** (RL rejected) + **AGENT_TAKE_FAIL 25** (executor reject — spread/ATR/cooldown/confirm). Zero made it to `Trades` sheet. Existing filters already keep GBPJPY restrained; the broken cap was redundant safety theater.
+
+**Not fixed in this commit** (intentional, low priority): proper per-symbol daily counter (would require new `_daily_trades_per_symbol` dict + `_save_state`/`_load_state` schema bump + tracking on every `record_trade_open` call). Not needed because (a) the global cap default is already `None`, (b) no other symbol uses `max_trades_per_day` override, (c) cross-symbol over-trading is bounded by `MAX_OPEN_POSITIONS=3`, `CLUSTER_COOLDOWN_ANY_SEC=300`, `CONSECUTIVE_LOSS_HALT_COUNT=4`, `DAILY_LOSS_CAP_PCT=2.5%`.
+
+**No retrain needed** — execution config only.
+
+**Affected files**:
+- `ftmo_trading_bot/config/settings.py` — drop `max_trades_per_day` key from GBPJPY overrides
+
+**Revert path**: re-add `"max_trades_per_day": 3,` to the override dict. If the cap is ever desired for real, fix the enforcement side too (per-symbol counter) — not the config alone.
+
+---
 
 ## 📝 Version Log Entry — v8.0.70 (2026-05-26) — Full-lifecycle 1s adaptive loop
 

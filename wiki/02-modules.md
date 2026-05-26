@@ -201,6 +201,7 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 | `MT5Connector.close_all_positions` | Emergency halt |
 | `MT5Connector.get_open_positions` | List currently open positions |
 | `MT5Connector.get_symbol_info` | Cached — reduces API calls |
+| `MT5Connector.symbol_exists` (v8.0.72) | Silent probe — returns bool, no error log. Used by `PositionSizer._calculate_pip_value` to skip nonexistent conversion symbols (e.g. `JPYUSD`) before `get_current_price` to suppress noisy ❌ logs |
 
 ⚠️ **Position ID vs ticket**: use `position_id` for deal matching (never `order` or `ticket`).
 
