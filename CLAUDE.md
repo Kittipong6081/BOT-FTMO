@@ -107,7 +107,7 @@ Tell the user in 1–2 lines which docs were updated. Do not ask for approval.
 
 Full list in `wiki/05-invariants.md`. Short version:
 
-- ⛔ Obs 29 dims (v7) must be in sync in 3 places: `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, `SelfLearningAgent.OBS_DIM`.
+- ⛔ Obs 35 dims (v8.0.74) must be in sync in 3 places: `FTMOSignalFilterEnv._get_obs`, `FTMOTradingBot._build_signal_observation`, `SelfLearningAgent.OBS_DIM`.
 - ⛔ FTMO anchor (`RiskManager._initial_balance`) must not change mid-challenge. Never delete `logs/bot_state.json` while running.
 - ⛔ MT5 deal matching uses `position_id`, not `ticket`.
 - ⛔ Timezone: broker = EET, config = UTC — convert before comparing. Do not use `mt5.symbol_info_tick().time` directly (FTMO quirk, +3 h drift).

@@ -286,6 +286,11 @@ class MeanReversionBacktester(StrategyBacktester):
                     "mr_setup_score": signal.mr_setup_score,
                     "bb_extreme": signal.bb_extreme,
                     "bb_band_width_atr": signal.bb_band_width_atr,
+                    # v8.0.74: Keltner Channel features (anti-whipsaw)
+                    "kc_distance_norm": float(getattr(signal, "kc_distance_norm", 0.0)),
+                    "ema_slope_norm": float(getattr(signal, "ema_slope_norm", 0.0)),
+                    "consecutive_outside": int(getattr(signal, "consecutive_outside", 0)),
+                    "band_squeeze_ratio": float(getattr(signal, "band_squeeze_ratio", 0.5)),
                     "reversal_wick_ratio": signal.reversal_wick_ratio,
                     "bars_to_resolution": int(bars_to_resolution),
                     "is_quick_tp": bool(is_quick_tp),

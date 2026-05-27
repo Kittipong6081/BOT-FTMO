@@ -1,5 +1,26 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.73** — Stage 2 TP extension 1.5R removed, SL lock kept)
+> Last Updated: 2026-05-27 | Scope: red flags, version log, migration notes (latest: **v8.0.74** — Keltner Channel ATR Band anti-whipsaw, obs 32→35)
+
+## 📝 Version Log Entry — v8.0.74 (2026-05-27) — Keltner Channel / ATR Band anti-whipsaw (obs 32→35)
+
+**Trigger**: BE-Whipsaw 64% (9/14 trades) — bot entered mid-trend, not at overextended extremes.
+
+**Fix** (9 files, RETRAIN REQUIRED):
+- `indicators.py`: NEW `calculate_keltner()` — EMA(21) ± 2.5×ATR(14), outputs `kc_distance_norm`, `ema_slope_norm`, `consecutive_outside`, `band_squeeze_ratio`
+- `settings.py`: NEW config `MeanReversionConfig.kc_*` + `FTMOConfig.KC_ENTRY_FILTER_ENABLED`, `KC_SLOPE_*`, `KC_CONSEC_*`
+- `mean_reversion_strategy.py`: 4 new fields in `MRSignal` + compute in `analyze_with_data`
+- `trade_executor.py`: 3 live filters in `_check_entry_confirmation` (checks 4-6: KC distance, EMA slope, consecutive outside)
+- `mean_reversion_backtester.py`: 4 keltner keys added to pool signal dict
+- `signal_filter_env.py`: obs shape 32→35, 3 new dims [32-34]
+- `mean_reversion_env.py`: inherits parent's 35-dim obs
+- `rl_agent.py`: `OBS_DIM = 35`
+- `main.py`: 3 new dims in `_build_signal_observation`
+
+**⚠️ RETRAIN REQUIRED**: OBS_DIM 32→35 = model mismatch crash until retrained.
+
+**Backup**: `ppo_mr_filter.zip.pre_v8074`, `vec_normalize_mr.pkl.pre_v8074`
+
+---
 
 ## 📝 Version Log Entry — v8.0.73 (2026-05-26) — Stage 2 TP extension removed (keep SL lock only)
 

@@ -142,13 +142,13 @@ class FTMOSignalFilterEnv(gym.Env):
         if not self._seq_symbols:
             raise RuntimeError("No symbols with enough data for sequential episode")
 
-        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf + 2 chronos + 3 v7.1 = 32
+        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf + 2 chronos + 3 v7.1 + 3 keltner = 35
         # v6 (2026-04-22): เพิ่ม spread_pct_of_atr, has_opposite_recently_closed, htf_trend_alignment
         # v7 (2026-05-01): เพิ่ม chronos_alignment, chronos_uncertainty_norm จาก Amazon Chronos 2
         # v7.1 (2026-05-04): เพิ่ม floating_pnl_norm, losing_count_norm, mins_since_session_norm
-        #                    เพื่อให้ agent รู้ "portfolio risk realtime + session timing"
+        # v8.0.74 (2026-05-27): เพิ่ม kc_distance_norm, ema_slope_norm, band_squeeze_ratio (ATR Band anti-whipsaw)
         self.observation_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(32,), dtype=np.float32
+            low=-5.0, high=5.0, shape=(35,), dtype=np.float32
         )
 
         # Action: 1 dim continuous — >0 = TAKE, ≤0 = SKIP
@@ -296,7 +296,7 @@ class FTMOSignalFilterEnv(gym.Env):
 
     def _get_obs(self) -> np.ndarray:
         if self._signal_idx >= len(self._signals):
-            return np.zeros(32, dtype=np.float32)
+            return np.zeros(35, dtype=np.float32)
 
         sig = self._signals[self._signal_idx]
 
@@ -422,6 +422,10 @@ class FTMOSignalFilterEnv(gym.Env):
             float(np.clip(floating_pnl_norm, -3.0, 1.0)),
             float(np.clip(open_losing_count_norm, 0.0, 1.0)),
             float(np.clip(mins_since_norm, 0.0, 1.0)),
+            # v8.0.74 Keltner / ATR Band features [32-34]
+            float(np.clip(sig.get("kc_distance_norm", 0.0), -1.0, 1.0)),
+            float(np.clip(sig.get("ema_slope_norm", 0.0), -1.0, 1.0)),
+            float(np.clip(sig.get("band_squeeze_ratio", 0.5), 0.0, 1.0)),
         ], dtype=np.float32)
         return obs
 

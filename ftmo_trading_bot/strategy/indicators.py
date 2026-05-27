@@ -388,6 +388,67 @@ class TechnicalIndicators:
         return df
 
     # =========================================================================
+    # 📏 Keltner Channel (ATR Bands — v8.0.74 anti-whipsaw)
+    # =========================================================================
+
+    def calculate_keltner(
+        self,
+        df: pd.DataFrame,
+        ema_period: int = 21,
+        atr_period: int = 14,
+        multiplier: float = 2.5,
+    ) -> pd.DataFrame:
+        """Keltner Channel = EMA ± multiplier × ATR.
+
+        Adds columns: kc_mid, kc_upper, kc_lower, kc_distance_norm,
+        ema_slope_norm, consecutive_outside, band_squeeze_ratio.
+        """
+        if "atr" not in df.columns:
+            df = self.calculate_atr(df, period=atr_period)
+
+        col = f"ema_{ema_period}"
+        if col not in df.columns:
+            df = self.calculate_ema(df, period=ema_period, column_name=col)
+
+        ema = df[col]
+        atr = df["atr"]
+        band_half = multiplier * atr
+
+        df["kc_mid"] = ema
+        df["kc_upper"] = ema + band_half
+        df["kc_lower"] = ema - band_half
+
+        # --- kc_distance_norm: (close - EMA) / (mult * ATR), clipped [-1.5, 1.5] / 1.5 → [-1, 1]
+        raw_dist = (df["close"] - ema) / (band_half + 1e-10)
+        df["kc_distance_norm"] = raw_dist.clip(-1.5, 1.5) / 1.5
+
+        # --- ema_slope_norm: slope of EMA over 5 bars, normalized by ATR
+        ema_slope = (ema - ema.shift(5)) / (atr * 5 + 1e-10)
+        df["ema_slope_norm"] = (ema_slope / 0.3).clip(-1.0, 1.0)
+
+        # --- consecutive_outside: count of consecutive bars with close outside band
+        outside_upper = df["close"] > df["kc_upper"]
+        outside_lower = df["close"] < df["kc_lower"]
+        outside = outside_upper | outside_lower
+
+        consec = pd.Series(0, index=df.index, dtype=int)
+        prev = 0
+        for i in range(len(df)):
+            if outside.iloc[i]:
+                prev += 1
+            else:
+                prev = 0
+            consec.iloc[i] = prev
+        df["consecutive_outside"] = consec
+
+        # --- band_squeeze_ratio: 1 - (current_width / avg_width_50), clipped [0, 1]
+        current_width = 2.0 * band_half
+        avg_width = current_width.rolling(50, min_periods=10).mean()
+        df["band_squeeze_ratio"] = (1.0 - (current_width / (avg_width + 1e-10)).clip(0.5, 2.0) / 2.0).clip(0.0, 1.0)
+
+        return df
+
+    # =========================================================================
     # 🔀 Trend Detection (การตรวจจับแนวโน้ม)
     # =========================================================================
 
@@ -554,6 +615,7 @@ class TechnicalIndicators:
         df = self.calculate_bollinger_pctb(df)
         df = self.calculate_atr_change(df)
         df = self.calculate_price_roc(df)
+        df = self.calculate_keltner(df)
         df = self.detect_trend(df)
         df = self.calculate_volatility_filter(df)
 

@@ -35,7 +35,8 @@ class SelfLearningAgent:
     """AI Agent สำหรับกรอง signal จาก SMC Strategy — ตัดสินใจ TAKE/SKIP"""
 
     # v7.1 — 29 → 32 (เพิ่ม floating_pnl_norm, open_losing_count_norm, mins_since_session_norm)
-    OBS_DIM: int = 32
+    # v8.0.74 — 32 → 35 (เพิ่ม kc_distance_norm, ema_slope_norm, band_squeeze_ratio)
+    OBS_DIM: int = 35
 
     def __init__(
         self,

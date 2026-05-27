@@ -107,6 +107,12 @@ class MRSignal:
     reversal_wick_ratio: float = 0.0
     adx_block_active: bool = False
 
+    # v8.0.74: Keltner Channel features (ATR Band anti-whipsaw)
+    kc_distance_norm: float = 0.0       # [-1, +1] distance from EMA in ATR units
+    ema_slope_norm: float = 0.0         # [-1, +1] EMA slope steepness
+    consecutive_outside: int = 0        # bars consecutively outside KC band
+    band_squeeze_ratio: float = 0.5     # [0, 1] how squeezed the band is
+
     reasons: List[str] = field(default_factory=list)
 
     @property
@@ -437,6 +443,17 @@ class MeanReversionStrategy:
         else:
             bb_band_width_atr = 0.0
 
+        # ─── Keltner Channel features (v8.0.74 — anti-whipsaw) ──────
+        kc_distance_norm = 0.0
+        ema_slope_norm_val = 0.0
+        consecutive_outside_val = 0
+        band_squeeze_ratio_val = 0.5
+        if "kc_distance_norm" in ltf_df.columns:
+            kc_distance_norm = float(ltf_df["kc_distance_norm"].iloc[-1] or 0.0)
+            ema_slope_norm_val = float(ltf_df["ema_slope_norm"].iloc[-1] or 0.0)
+            consecutive_outside_val = int(ltf_df["consecutive_outside"].iloc[-1] or 0)
+            band_squeeze_ratio_val = float(ltf_df["band_squeeze_ratio"].iloc[-1] or 0.5)
+
         if score < self.MIN_CONFLUENCE_SCORE:
             return self._no_signal(
                 symbol, atr_value,
@@ -470,12 +487,17 @@ class MeanReversionStrategy:
             bb_band_width_atr=bb_band_width_atr,
             reversal_wick_ratio=wick_ratio,
             adx_block_active=False,
+            kc_distance_norm=kc_distance_norm,
+            ema_slope_norm=ema_slope_norm_val,
+            consecutive_outside=consecutive_outside_val,
+            band_squeeze_ratio=band_squeeze_ratio_val,
             reasons=[
                 f"BB%B={bb_pctb:.2f} (extreme={bb_extreme:.2f})",
                 f"RSI={rsi_value:.1f} (extreme={rsi_extreme:.2f})",
                 f"Wick ratio={wick_ratio:.2f}",
                 f"ADX H1={adx_h1:.1f} (block={self.ADX_TREND_BLOCK})",
                 f"SL={sl_distance:.5f} TP={tp_distance:.5f} RR={rr:.2f}",
+                f"KC dist={kc_distance_norm:.2f} slope={ema_slope_norm_val:.2f} consec={consecutive_outside_val}",
             ],
         )
 

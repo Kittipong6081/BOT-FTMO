@@ -1,5 +1,5 @@
-# 03 — RL Training (Obs 32 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-22 (v8.0.55 — env entry_confirm forced-SKIP code KEPT but pool reverted = no-op) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+# 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
+> Last Updated: 2026-05-27 (v8.0.74 — Keltner Channel obs 32→35, ATR Band live filters) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
 >
 > **v8.0.55 status** — Pool/GBM/PPO REVERTED to v8.0.52. Env still has `_entry_confirm_forced_skips` counter + force-SKIP gate. With current v8.0.52 pool loaded, signal dicts don't have `entry_confirm_passed` field → `.get('entry_confirm_passed', True)` defaults to True → no force-SKIP → behaves identically to v8.0.52. Future pool rebuilds will populate the field and gate will activate. Retrain attempt: Train Pass 68.1% (-2.6pp vs 70.7%), Holdout 48.5% (mild overfit). Lesson: M15 first-bar slip ≠ M1 last-bar direction (live filter); training proxy didn't transfer well. See [`wiki/05-invariants.md` v8.0.55](05-invariants.md#-version-log-entry--v8055-2026-05-22--3-live-filters-kept--rlpool-reverted) for full eval + decision rationale.
 >
@@ -9,7 +9,7 @@
 
 ## TL;DR (30-second scan)
 
-- Obs = **32 dims** (v7.1+, production model trained at 32 dims).
+- Obs = **35 dims** (v8.0.74 — adds kc_distance_norm, ema_slope_norm, band_squeeze_ratio). ⚠️ Retrain required after v8.0.74 code changes.
 - Action continuous [−1, 1] — `>0 = TAKE`, `≤0 = SKIP`.
 - **2-phase curriculum**: Phase 1 (Alpha, no DD penalty, oracle SKIP) → Phase 2 (Risk, DD penalty active + MR-specific shaping).
 - **Phase E2 — Auxiliary Task**: policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
@@ -22,7 +22,7 @@
 
 | Item | Value | Source (symbol) |
 |------|-------|-----------------|
-| Obs dims | **32** | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
+| Obs dims | **35** | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
 | Chronos forecaster | `ChronosForecaster` (`amazon/chronos-bolt-small`, optional) | `ml/chronos_forecaster.py` |
 | Action space | Box(−1, 1, shape=(1,)) | `FTMOSignalFilterEnv.action_space` |
 | **VecNormalize stats** | `models/mr/best/vec_normalize_mr.pkl` | loaded by `SelfLearningAgent._load_normalize_stats` |
@@ -38,7 +38,7 @@
 
 ---
 
-## Observation Space Layout (32 dims)
+## Observation Space Layout (35 dims)
 
 **Must be kept in sync in three places**:
 
@@ -160,6 +160,16 @@
 | Baseline M15 alone | 506 | 48.2% | reference |
 
 → **Multi-TF ไม่ improve overall** (45.3% < baseline 48.2%). Sub-population ที่ดีขึ้น: USDCHF (+11 pp), NZDUSD (+4.4 pp), EURUSD (+3.5 pp). แต่ symbol อื่นแย่ลงหนัก (USDCAD -18.9, GBPUSD -18.2). **Conclusion**: ไม่ integrate เข้า v7.0.7 — inference cost 3× ไม่คุ้มกับ uncertain gain.
+
+### v8.0.74 Keltner / ATR Band [32–34] (2026-05-27)
+
+| Idx | Feature | Source | Normalization |
+|-----|---------|--------|---------------|
+| 32 | `kc_distance_norm` | `TechnicalIndicators.calculate_keltner` | `(close - EMA21) / (2.5 × ATR14)`, clip [-1, 1] |
+| 33 | `ema_slope_norm` | `TechnicalIndicators.calculate_keltner` | `(EMA_now - EMA_5bars) / (ATR × 5) / 0.3`, clip [-1, 1] |
+| 34 | `band_squeeze_ratio` | `TechnicalIndicators.calculate_keltner` | `1 - width/avg_width_50`, clip [0, 1] |
+
+**Why v8.0.74**: BE-Whipsaw 64% (9/14 trades) — bot entered mid-trend instead of at overextended extremes. Keltner Channel (EMA ± N×ATR) adapts to volatility unlike fixed S/R. Three live filters added: KC entry (price must be outside band), EMA slope (blocks steep trends), consecutive outside (≥3 bars = sustained trend not spike).
 
 ---
 

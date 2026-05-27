@@ -96,14 +96,11 @@ class FTMOConfig:
     #   Risk math: 3 × 0.70% = 2.1% max concurrent (vs DAILY_LOSS_CAP 2.5%, FTMO 4%)
     MAX_OPEN_POSITIONS: int = 3
 
-    # === Min Seconds Between Opens (v8.0.26 — anti bulk-trading) ===
-    # The5ers ห้าม "bulk trading" = เปิดหลายไม้พร้อมกันในวินาทีเดียว
-    # → flag ว่าเป็นบอท (rationale: "not behind the strategy")
-    # บอทเราเปิดทีละไม้ทุก 5s scan อยู่แล้ว แต่ถ้า 2 symbol เข้า signal
-    # พร้อมกัน อาจเปิดห่างกัน <1s ได้ (เคยเจอ EURUSD pre-news 12 พ.ค. 2 ไม้ห่าง 0.01s)
-    # Gate นี้บังคับช่องว่างขั้นต่ำระหว่างการเปิด — กัน flag จาก The5ers
-    MIN_SECONDS_BETWEEN_OPENS_ENABLED: bool = True
-    MIN_SECONDS_BETWEEN_OPENS_SEC: int = 60  # 60s = 1 นาที (safe margin)
+    # === Min Seconds Between Opens (v8.0.26, DISABLED v8.0.74) ===
+    # v8.0.74: ปิด — CLUSTER_COOLDOWN_ANY_SEC=300 ครอบ 60s อยู่แล้ว (ซ้ำซ้อน)
+    # เดิม: กัน bulk-trading flag จาก The5ers (เปิดหลายไม้ในวินาทีเดียว)
+    MIN_SECONDS_BETWEEN_OPENS_ENABLED: bool = False
+    MIN_SECONDS_BETWEEN_OPENS_SEC: int = 60  # legacy — kept for revert
     
     # === ระดับกำไรเป้าหมาย (FTMO Challenge) ===
     # FTMO Challenge ต้องทำกำไร 10% ใน 30 วัน
@@ -250,8 +247,10 @@ class FTMOConfig:
     ENTRY_CONFIRM_ENABLED: bool = True
     ENTRY_CONFIRM_MAX_SLIP_R: float = 0.30        # 30% ของ SL distance = max adverse slip
     ENTRY_CONFIRM_M1_DIRECTION_MATCH: bool = True # require M1 last bar wick/body confirm
-    ENTRY_CONFIRM_BB_BUY_MAX: float = 0.35        # BUY: %B ต้องยัง ≤ 0.35 (relaxed +0.05 จาก oversold 0.30)
-    ENTRY_CONFIRM_BB_SELL_MIN: float = 0.65       # SELL: %B ต้องยัง ≥ 0.65 (relaxed -0.05 จาก overbought 0.70)
+    # BB recheck ลบแล้ว v8.0.74 — KC distance filter ทดแทน (ดีกว่า: ปรับตาม ATR)
+    # ENTRY_CONFIRM_BB_BUY_MAX / BB_SELL_MIN removed — kept as comment for revert reference
+    # ENTRY_CONFIRM_BB_BUY_MAX: float = 0.35
+    # ENTRY_CONFIRM_BB_SELL_MIN: float = 0.65
 
     # === Spread Spike Filter (v8.0.55, NEW — broker-agnostic, live-only) ===
     # ปัจจุบัน max_spread_points (per-symbol fixed) ตัด absolute high spread
@@ -272,6 +271,16 @@ class FTMOConfig:
     CLUSTER_COOLDOWN_ENABLED: bool = True
     CLUSTER_COOLDOWN_ANY_SEC: int = 300           # ห้ามเปิดไม้ใหม่ทุกคู่ภายใน 5 นาที
     CLUSTER_COOLDOWN_SAME_THEME_SEC: int = 600    # 10 นาทีถ้าเป็นธีม USD/JPY/METAL เดียวกัน
+
+    # === Keltner / ATR Band Live Filter (v8.0.74 — anti-whipsaw) ===
+    # Block MR entry if price is NOT outside Keltner band (not overextended)
+    KC_ENTRY_FILTER_ENABLED: bool = True
+    # Block if EMA slope is too steep (trending, not mean-reverting)
+    KC_SLOPE_FILTER_ENABLED: bool = True
+    KC_SLOPE_THRESHOLD: float = 0.15    # |slope| > 0.15 ATR/bar = strong trend
+    # Block if price has been outside band >= N consecutive bars (sustained trend)
+    KC_CONSEC_OUTSIDE_FILTER_ENABLED: bool = True
+    KC_CONSEC_OUTSIDE_MAX: int = 3      # >= 3 bars outside = trend, not spike
 
     # v8.0.68: Opposing-Theme Block — ห้ามเปิดทิศตรงข้ามกับ position ที่เปิดอยู่
     # ตัวอย่าง: GBPUSD SELL (=USD_LONG) เปิดอยู่ → block EURUSD BUY (=USD_SHORT)
@@ -494,7 +503,7 @@ class MLConfig:
     CHRONOS_DEVICE: str = "cpu"
     CHRONOS_PREDICTION_LENGTH: int = 8       # M15 × 8 ≈ 2 hours ahead
     CHRONOS_CONTEXT_LENGTH: int = 512        # M15 × 512 ≈ 5.3 days history
-    CHRONOS_ENABLED: bool = True             # set False เพื่อ disable Chronos (fallback obs[27,28] = 0)
+    CHRONOS_ENABLED: bool = False            # v8.0.74: ปิด — MR pool ตั้ง 0.0 ตลอด, live ส่งค่าจริง = distribution mismatch. Keltner features ทดแทนแล้ว
 
 
 # =============================================================================
@@ -560,6 +569,12 @@ class MeanReversionConfig:
     #   Restored from .pre_v8060 backups (pool + GBM + RL = v8.0.52 baseline, Pass 70.7%)
     rr_ratio: float = 1.0        # v8.0.61: revert to v8.0.52 baseline
     min_reversal_wick_ratio: float = 0.4   # was 1.2 — RL learns to filter
+
+    # === Keltner Channel / ATR Band Filter (v8.0.74 — anti-whipsaw) ===
+    kc_ema_period: int = 21
+    kc_atr_period: int = 14
+    kc_multiplier: float = 2.5          # Forex default
+    kc_multiplier_xau: float = 3.0      # Gold needs wider band (higher vol)
 
     # Reward shaping defaults (env constructor uses these)
     quick_tp_bars: int = 5

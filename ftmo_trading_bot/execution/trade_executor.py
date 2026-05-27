@@ -1008,23 +1008,49 @@ class TradeExecutor:
                 # fail-open: ดึง M1 ไม่ได้ก็ผ่าน (network glitch ฯลฯ)
                 pass
 
-        # ─── เช็ค 3: BB %B ยังอยู่ใน extreme zone ────────────────────────
-        # ใช้ค่าจาก signal (scan time) — ห่างไป ~seconds, ปกติยัง valid
-        bb_pctb = getattr(signal, "bb_pctb", None)
-        if bb_pctb is not None:
-            buy_max = float(getattr(cfg, "ENTRY_CONFIRM_BB_BUY_MAX", 0.35))
-            sell_min = float(getattr(cfg, "ENTRY_CONFIRM_BB_SELL_MIN", 0.65))
-            if direction == "BUY" and float(bb_pctb) > buy_max:
+        # ─── เช็ค 3-5: Keltner / ATR Band filters (v8.0.74 — anti-whipsaw) ─
+        # BB %B recheck ลบแล้ว v8.0.74 — KC distance ทำหน้าที่เดียวกันแต่ดีกว่า
+        # (ปรับตามความผันผวนจริง ไม่โดน outlier บิดเหมือน BB std dev)
+        # 4. ราคาต้องอยู่นอก Keltner Band (overextended) ถึงจะเข้า MR
+        if getattr(cfg, "KC_ENTRY_FILTER_ENABLED", False):
+            kc_dist = getattr(signal, "kc_distance_norm", None)
+            if kc_dist is not None:
+                if direction == "BUY" and float(kc_dist) > -0.6:
+                    return (
+                        False,
+                        f"KC filter: dist {kc_dist:.2f} > -0.6 — price not overextended down"
+                    )
+                if direction == "SELL" and float(kc_dist) < 0.6:
+                    return (
+                        False,
+                        f"KC filter: dist {kc_dist:.2f} < 0.6 — price not overextended up"
+                    )
+
+        # 5. EMA slope ต้องไม่ชันเกิน (trending = ไม่ใช่ MR environment)
+        if getattr(cfg, "KC_SLOPE_FILTER_ENABLED", False):
+            slope = getattr(signal, "ema_slope_norm", None)
+            slope_thresh = float(getattr(cfg, "KC_SLOPE_THRESHOLD", 0.15))
+            if slope is not None:
+                slope_val = float(slope)
+                if direction == "BUY" and slope_val < -slope_thresh:
+                    return (
+                        False,
+                        f"KC slope: {slope_val:.2f} < -{slope_thresh:.2f} — EMA falling too fast for BUY"
+                    )
+                if direction == "SELL" and slope_val > slope_thresh:
+                    return (
+                        False,
+                        f"KC slope: {slope_val:.2f} > {slope_thresh:.2f} — EMA rising too fast for SELL"
+                    )
+
+        # 6. ราคาอยู่นอกกรอบต่อเนื่อง >= N แท่ง = เทรนด์จริง ไม่ใช่ spike
+        if getattr(cfg, "KC_CONSEC_OUTSIDE_FILTER_ENABLED", False):
+            consec = getattr(signal, "consecutive_outside", None)
+            max_consec = int(getattr(cfg, "KC_CONSEC_OUTSIDE_MAX", 3))
+            if consec is not None and int(consec) >= max_consec:
                 return (
                     False,
-                    f"BB %B {bb_pctb:.2f} > {buy_max:.2f} — BUY zone left "
-                    f"(scan-time value, signal stale)"
-                )
-            if direction == "SELL" and float(bb_pctb) < sell_min:
-                return (
-                    False,
-                    f"BB %B {bb_pctb:.2f} < {sell_min:.2f} — SELL zone left "
-                    f"(scan-time value, signal stale)"
+                    f"KC consec: {consec} bars outside >= {max_consec} — sustained trend, not spike"
                 )
 
         return (True, "ok")

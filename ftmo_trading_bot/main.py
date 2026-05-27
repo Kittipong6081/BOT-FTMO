@@ -673,6 +673,10 @@ class FTMOTradingBot:
             float(np.clip(self._compute_floating_pnl_norm(), -3.0, 1.0)),
             float(np.clip(self._compute_open_losing_count_norm(), 0.0, 1.0)),
             float(np.clip(self._compute_mins_since_session_norm(), 0.0, 1.0)),
+            # v8.0.74 Keltner / ATR Band features [32-34]
+            float(np.clip(getattr(sig, "kc_distance_norm", 0.0), -1.0, 1.0)),
+            float(np.clip(getattr(sig, "ema_slope_norm", 0.0), -1.0, 1.0)),
+            float(np.clip(getattr(sig, "band_squeeze_ratio", 0.5), 0.0, 1.0)),
         ], dtype=np.float32)
         return obs
 
