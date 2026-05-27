@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-27 (v8.0.74 — Keltner Channel, obs 32→35, 3 live filters) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-27 (v8.0.74b — obs 26 dims, Chronos removed, 4 risk rules disabled) | Scope: every module + key class / method / variable
 >
 > **v8.0.55 new methods/state** (Entry Confirm + Spread Spike + Cluster Cooldown):
 > - `TradeExecutor._check_entry_confirmation(signal)` — slip (≤ 0.30R) + M1 last bar direction + BB %B still extreme

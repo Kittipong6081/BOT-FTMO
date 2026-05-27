@@ -838,14 +838,14 @@ class RiskManager:
         # === ตรวจสอบที่ 1.3: Post-TP Pullback Lock (ห้ามเข้าทิศเดิมหลัง TP ทันที) ===
         # ป้องกัน "ไล่จับก้นเหว" — หลัง TP ราคา extended แล้ว entry ใหม่มักโดน SL
         # ปลดล็อกเมื่อ: (a) price เด้ง ≥ ATR buffer จาก TP หรือ (b) EMA20 M15 touched หรือ (c) TTL หมด
-        if direction:
+        # v8.0.74: POST_TP_LOCK disabled — cluster cooldown + RL ครอบแล้ว
+        if getattr(self._config, "POST_TP_LOCK_ENABLED", True) and direction:
             locked, lock_msg = self._is_post_tp_locked(symbol, direction, atr)
             if locked:
                 return (False, f"🔒 {lock_msg}")
 
-        # === ตรวจสอบที่ 1.4: Flip-Lock (กัน whipsaw BUY↔SELL) ===
-        # ห้ามเปิดทิศตรงข้ามทันทีหลังปิดไม้ล่าสุด จนกว่าราคาจะ retrace ≥ K×ATR
-        if direction:
+        # v8.0.74: FLIP_LOCK disabled — cluster cooldown + opposing theme block ครอบแล้ว
+        if getattr(self._config, "FLIP_LOCK_ENABLED", True) and direction:
             flip_locked, flip_msg = self.is_flip_locked(symbol, direction)
             if flip_locked:
                 return (False, f"🔄 {flip_msg}")

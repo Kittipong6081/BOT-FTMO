@@ -142,11 +142,8 @@ class FTMOSignalFilterEnv(gym.Env):
         if not self._seq_symbols:
             raise RuntimeError("No symbols with enough data for sequential episode")
 
-        # Observation: 12 signal core + 4 market regime + 1 ML quality + 7 portfolio + 3 cost/flip/htf + 2 chronos + 3 v7.1 + 3 keltner = 35
-        # v6 (2026-04-22): เพิ่ม spread_pct_of_atr, has_opposite_recently_closed, htf_trend_alignment
-        # v7 (2026-05-01): เพิ่ม chronos_alignment, chronos_uncertainty_norm จาก Amazon Chronos 2
-        # v7.1 (2026-05-04): เพิ่ม floating_pnl_norm, losing_count_norm, mins_since_session_norm
-        # v8.0.74 (2026-05-27): เพิ่ม kc_distance_norm, ema_slope_norm, band_squeeze_ratio (ATR Band anti-whipsaw)
+        # Observation: 35 dims (v8.0.74 — original 32 + 3 keltner features)
+        # v8.0.74b tried 26 dims (trimmed 9) but Pass 69.5% < 73.5% → reverted to 35
         self.observation_space = spaces.Box(
             low=-5.0, high=5.0, shape=(35,), dtype=np.float32
         )
@@ -316,69 +313,43 @@ class FTMOSignalFilterEnv(gym.Env):
         ob_size_atr = sig.get('ob_size_atr', 0.0)
         adx_norm = sig.get('adx', 0.0) / 100.0
 
-        # ─── Market regime (4) — match main._build_signal_observation ──
+        # ─── Market regime (4) ────────────────────────────────
         stoch_norm = (sig.get('stoch_k', 50.0) - 50.0) / 50.0
         bb_pctb = sig.get('bb_pctb', 0.5)
         atr_chg = sig.get('atr_change_ratio', 0.0)
         price_roc = sig.get('price_roc', 0.0)
 
-        # ─── ML quality score (1) — GBM P(win), AUC ~0.59 ⭐ ──
-        # 0.5 = neutral (no info); >0.4 → edge profitable; center at 0.5
+        # ─── ML quality (1) ──────────────────────────────────
         ml_score = sig.get('ml_score', 0.5)
-        ml_score_norm = (ml_score - 0.5) * 2.0  # map [0,1] → [-1,+1]
+        ml_score_norm = (ml_score - 0.5) * 2.0
 
-        # ─── Portfolio state (7) ──────────────────────────────
+        # ─── Portfolio (7) ────────────────────────────────────
         total_dd_n = -self.total_dd_pct / 0.10
         daily_dd_n = -self.daily_dd_pct / 0.05
         progress_n = self.target_progress_pct / 100.0
         day_progress = sig['day'] / max(self.max_days, 1)
         trades_today_n = min(self._trades_today, self.MAX_TRADES_PER_DAY) / self.MAX_TRADES_PER_DAY
         recent = self._trade_results[-10:] if self._trade_results else []
-        if recent:
-            wr = sum(1 for t in recent if t > 0) / len(recent)
-            recent_wr_norm = wr * 2.0 - 1.0
-        else:
-            recent_wr_norm = 0.0
+        recent_wr_norm = ((sum(1 for t in recent if t > 0) / len(recent)) * 2.0 - 1.0) if recent else 0.0
         consec_norm = min(self._consecutive_losses, 5) / 5.0
 
-        # ─── v6: Cost / Flip / HTF (3) ────────────────────────
-        # [24] spread_pct_of_atr — normalize ต้นทุน spread เทียบ volatility
-        #      GBPJPY จะเห็นค่าสูง (~1.0-2.0) → agent เรียนหลีกเลี่ยง setup RR ต่ำ
+        # ─── Context (3) ──────────────────────────────────────
         spread_pips = sig.get('spread_pips', 0.0)
         spread_pct_of_atr = spread_pips / max(atr_pips, 1e-6) if atr_pips > 0 else 0.0
 
-        # [25] has_opposite_recently_closed — flip-lock context
-        #      1.0 ถ้ามี trade ตรงข้ามปิดภายใน last signal (sync กับ flip-lock P0)
-        # ใช้ _last_closed_direction_step ที่เพิ่มใน __init__ (track step # at close)
         last_closed_dir = getattr(self, '_last_closed_direction', 0)
         last_closed_step = getattr(self, '_last_closed_signal_step', -999)
-        # ถือว่า "recent" = ภายใน 3 signals
         recent_opposite = 0.0
         if last_closed_dir != 0 and last_closed_dir != direction:
             gap = self._signal_idx - last_closed_step
-            if gap >= 0 and gap <= 3:
+            if 0 <= gap <= 3:
                 recent_opposite = 1.0
 
-        # [26] htf_trend_alignment — สรุป H1 EMA200 + D1 bias vs signal direction
-        # ใช้ bias_alignment ของ signal (มีอยู่แล้ว) ผสมกับ adx
-        # sig['htf_trend_alignment'] ถ้ามีใน pool (backtester v2) ไม่งั้น fallback = bias_align * sign(adx_norm-0.2)
         htf_align = sig.get('htf_trend_alignment', bias_align)
-
-        # ─── v7: Chronos forecast (2) — Amazon Chronos 2 zero-shot ──────
-        # [27] chronos_alignment — direction × sign(median_h+8 − close), ±1
-        # [28] chronos_uncertainty_norm — log1p((q90 − q10) / (atr×√8)) / 2, [0, 3]
         chronos_align = float(sig.get('chronos_alignment', 0.0))
         chronos_unc = float(sig.get('chronos_uncertainty_norm', 0.0))
-
-        # ─── v7.1 Portfolio risk realtime + session timing (3) ──────
-        # [29] floating_pnl_norm — sum ของ open positions' floating PnL / daily_start_balance
-        # [30] open_losing_count_norm — จำนวน open positions ที่กำลังขาดทุน / 3
-        # [31] mins_since_session_start_norm — minutes since London/NY open / 480
-        # ใน training env เลียนแบบผ่าน virtual portfolio simulator (ดู step())
-        # Live env: main._build_signal_observation จะอ่าน RiskManager.get_unrealized_drawdown_pct
         floating_pnl_norm = getattr(self, '_floating_pnl_norm', 0.0)
         open_losing_count_norm = getattr(self, '_open_losing_count_norm', 0.0)
-        # mins_since_session — pull from sig dict (compute_temporal_features เก็บไว้)
         mins_since = float(sig.get('minutes_since_session_start', 0.0))
         mins_since_norm = min(mins_since / 480.0, 1.0)
 
@@ -401,7 +372,7 @@ class FTMOSignalFilterEnv(gym.Env):
             float(np.clip(bb_pctb, -0.5, 1.5)),
             float(np.clip(atr_chg, -1.0, 1.0)),
             float(np.clip(price_roc, -3.0, 3.0)),
-            # ML quality [16] ⭐ — หลัก signal สำหรับ RL เพราะ AUC 0.59
+            # ML quality [16]
             float(np.clip(ml_score_norm, -1.0, 1.0)),
             # Portfolio [17-23]
             float(np.clip(total_dd_n, -5.0, 0.0)),
@@ -411,18 +382,18 @@ class FTMOSignalFilterEnv(gym.Env):
             float(np.clip(trades_today_n, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
             float(np.clip(consec_norm, 0.0, 1.0)),
-            # v6 Cost/Flip/HTF [24-26]
+            # Cost/Flip/HTF [24-26]
             float(np.clip(spread_pct_of_atr, 0.0, 3.0)),
             float(recent_opposite),
             float(np.clip(htf_align, -1.0, 1.0)),
-            # v7 Chronos forecast [27-28]
+            # Chronos [27-28] (disabled — always 0)
             float(np.clip(chronos_align, -1.0, 1.0)),
             float(np.clip(chronos_unc, 0.0, 3.0)),
-            # v7.1 Portfolio realtime + session timing [29-31]
+            # Portfolio realtime + session [29-31]
             float(np.clip(floating_pnl_norm, -3.0, 1.0)),
             float(np.clip(open_losing_count_norm, 0.0, 1.0)),
             float(np.clip(mins_since_norm, 0.0, 1.0)),
-            # v8.0.74 Keltner / ATR Band features [32-34]
+            # Keltner [32-34]
             float(np.clip(sig.get("kc_distance_norm", 0.0), -1.0, 1.0)),
             float(np.clip(sig.get("ema_slope_norm", 0.0), -1.0, 1.0)),
             float(np.clip(sig.get("band_squeeze_ratio", 0.5), 0.0, 1.0)),

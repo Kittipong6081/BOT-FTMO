@@ -1,5 +1,5 @@
-# 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-27 (v8.0.74 — Keltner Channel obs 32→35, ATR Band live filters) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+# 03 — RL Training (Obs 26 dims, MR Reward Shaping, PPO + Auxiliary Task)
+> Last Updated: 2026-05-27 (v8.0.74b — obs 35→26 trimmed, Chronos removed, 4 risk rules disabled) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
 >
 > **v8.0.55 status** — Pool/GBM/PPO REVERTED to v8.0.52. Env still has `_entry_confirm_forced_skips` counter + force-SKIP gate. With current v8.0.52 pool loaded, signal dicts don't have `entry_confirm_passed` field → `.get('entry_confirm_passed', True)` defaults to True → no force-SKIP → behaves identically to v8.0.52. Future pool rebuilds will populate the field and gate will activate. Retrain attempt: Train Pass 68.1% (-2.6pp vs 70.7%), Holdout 48.5% (mild overfit). Lesson: M15 first-bar slip ≠ M1 last-bar direction (live filter); training proxy didn't transfer well. See [`wiki/05-invariants.md` v8.0.55](05-invariants.md#-version-log-entry--v8055-2026-05-22--3-live-filters-kept--rlpool-reverted) for full eval + decision rationale.
 >
@@ -9,7 +9,7 @@
 
 ## TL;DR (30-second scan)
 
-- Obs = **35 dims** (v8.0.74 — adds kc_distance_norm, ema_slope_norm, band_squeeze_ratio). ⚠️ Retrain required after v8.0.74 code changes.
+- Obs = **26 dims** (v8.0.74b — trimmed 9 dead/duplicate dims: bias_align, trend_str, bb_width, adx_norm, chronos×2, floating_pnl, losing_count, bb_extreme).
 - Action continuous [−1, 1] — `>0 = TAKE`, `≤0 = SKIP`.
 - **2-phase curriculum**: Phase 1 (Alpha, no DD penalty, oracle SKIP) → Phase 2 (Risk, DD penalty active + MR-specific shaping).
 - **Phase E2 — Auxiliary Task**: policy has aux head that predicts `outcome_pnl_ratio`. MSE loss × 0.5 added to PPO loss. Forces representation to encode signal quality.
@@ -22,7 +22,7 @@
 
 | Item | Value | Source (symbol) |
 |------|-------|-----------------|
-| Obs dims | **35** | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
+| Obs dims | **26** | `SelfLearningAgent.OBS_DIM`, `FTMOSignalFilterEnv.observation_space` |
 | Chronos forecaster | `ChronosForecaster` (`amazon/chronos-bolt-small`, optional) | `ml/chronos_forecaster.py` |
 | Action space | Box(−1, 1, shape=(1,)) | `FTMOSignalFilterEnv.action_space` |
 | **VecNormalize stats** | `models/mr/best/vec_normalize_mr.pkl` | loaded by `SelfLearningAgent._load_normalize_stats` |

@@ -153,27 +153,8 @@ class FTMOTradingBot:
         except Exception as e:
             print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
 
-        # === Chronos 2 Forecaster (v7, 2026-05-01) — feeds obs[27,28] ===
-        # Zero-shot M15 forecast (median + q10 + q90 ใน 8 bars ahead)
-        # Disabled via bot_config.ml.CHRONOS_ENABLED = False หรือ env BOT_DISABLE_CHRONOS=1
+        # v8.0.74: Chronos removed — obs trimmed to 26 dims, no chronos slots
         self._chronos = None
-        try:
-            if getattr(bot_config.ml, "CHRONOS_ENABLED", True):
-                from ml.chronos_forecaster import ChronosForecaster
-                self._chronos = ChronosForecaster(
-                    model_name=bot_config.ml.CHRONOS_MODEL_NAME,
-                    device=bot_config.ml.CHRONOS_DEVICE,
-                    prediction_length=bot_config.ml.CHRONOS_PREDICTION_LENGTH,
-                    context_length=bot_config.ml.CHRONOS_CONTEXT_LENGTH,
-                    verbose=1,
-                )
-                if not self._chronos.is_available:
-                    print(f"⚠️ [Bot] Chronos ยังไม่พร้อม — obs[27,28] จะเป็น 0 (neutral)")
-            else:
-                print(f"ℹ️ [Bot] Chronos disabled via config — obs[27,28] = 0")
-        except Exception as e:
-            print(f"⚠️ [Bot] Chronos init fail: {e} — obs[27,28] = 0")
-            self._chronos = None
 
         # === News Calendar Auto-Scheduler (อัพเดททุกอาทิตย์ 23:30 EET) ===
         # _project_root กำหนดข้างบนแล้ว
@@ -537,65 +518,45 @@ class FTMOTradingBot:
         target_amount = initial * 0.10
         progress = (profit / target_amount) * 100.0 if target_amount > 0 else 0.0
 
-        # Signal features (7 original)
+        # Signal features
         confluence_norm = (sig.confluence_score - 50.0) / 50.0
         rr_norm = (sig.rr_ratio - 1.0) / 4.0
         direction = 1.0 if sig.signal_type.value == "BUY" else -1.0
         atr_val = max(sig.atr_value, 1e-8)
         atr_pips = atr_val / (0.01 if sig.entry_price > 50 else 0.0001)
         atr_norm = (atr_pips - 15.0) / 10.0
-        # v8.0 — obs[4] reinterprets ob_norm as bb_extreme (MR signal strength)
-        # MR signals carry `bb_extreme` in [0, 1]; SMC fallback uses ob_score/100
         ob_norm = float(getattr(sig, "bb_extreme", None) or sig.ob_score / 100.0)
         bias_align = direction * sig.market_bias
         sl_atr = sig.sl_distance / atr_val
-
-        # Signal features — momentum & context (4)
         rsi_norm = (sig.rsi_value - 50.0) / 50.0
         macd_norm = sig.macd_histogram / atr_val
         trend_str = sig.trend_strength / 100.0
-        # v8.0 — obs[10] reinterprets ob_size_atr as bb_band_width_atr/3
-        # MR signals carry `bb_band_width_atr`; SMC fallback uses OB body / ATR
         bb_bw_atr = float(getattr(sig, "bb_band_width_atr", 0.0) or 0.0)
-        if bb_bw_atr > 0.0:
-            ob_size_atr = min(bb_bw_atr / 3.0, 1.0)
-        else:
-            ob_range = (
-                abs(sig.ob_high - sig.ob_low)
-                if sig.ob_high is not None and sig.ob_low is not None
-                else 0.0
-            )
-            ob_size_atr = ob_range / atr_val
-
-        # Signal features — market regime (5 ใหม่)
+        ob_size_atr = min(bb_bw_atr / 3.0, 1.0) if bb_bw_atr > 0.0 else 0.0
         adx_norm = sig.adx / 100.0
         stoch_norm = (sig.stoch_k - 50.0) / 50.0
         bb_pctb = sig.bb_pctb
         atr_chg = sig.atr_change_ratio
         price_roc = sig.price_roc
 
-        # ML quality score — GBM P(win), AUC 0.59 ⭐
+        # ML quality
         if self._quality_model is not None:
             try:
-                # ต้องแปลง TradeSignal → dict หรือให้ model อ่าน attrs ตรง ๆ
                 ml_score = float(self._quality_model.score(sig))
             except Exception:
                 ml_score = 0.5
         else:
             ml_score = 0.5
-        ml_score_norm = (ml_score - 0.5) * 2.0  # map [0,1] → [-1,+1]
+        ml_score_norm = (ml_score - 0.5) * 2.0
 
-        # Portfolio features
-        # v6.10b: ใช้ broker date (EEST) — กัน timezone offset จาก VPS local time
+        # Portfolio
         try:
             challenge_day = self._get_challenge_day(TimeManager.get_server_time().date())
         except Exception:
             challenge_day = 0
         day_progress = float(challenge_day) / 45.0
-
         open_positions = len(self._connector.get_open_positions() or [])
         trades_today_n = min(open_positions, 3) / 3.0
-
         recent_wr_norm = 0.0
         consec_losses = 0
         try:
@@ -611,23 +572,6 @@ class FTMOTradingBot:
                         break
         except Exception:
             pass
-
-        # === v7 (2026-05-01): Chronos 2 forecast features [27-28] ===
-        # ใช้ M15 cache ของ strategy (อัปเดตทุก scan รอบ ~60s)
-        # cache key (symbol, last_bar_ts) ใน ChronosForecaster → hit ทุก ~15min/symbol
-        chronos_align = 0.0
-        chronos_unc = 0.0
-        if self._chronos is not None and self._chronos.is_available:
-            try:
-                ltf_df = getattr(self._strategy, "_ltf_data", None)
-                if ltf_df is not None and len(ltf_df) >= 32:
-                    chronos_align, chronos_unc = self._chronos.forecast_features(
-                        sig.symbol, ltf_df, float(direction), float(atr_val)
-                    )
-            except Exception as e:
-                if not getattr(self, "_chronos_warned", False):
-                    print(f"⚠️ [main] Chronos forecast failed: {e} — fallback 0")
-                    self._chronos_warned = True
 
         obs = np.array([
             # Signal core [0-11]
@@ -648,7 +592,7 @@ class FTMOTradingBot:
             float(np.clip(bb_pctb, -0.5, 1.5)),
             float(np.clip(atr_chg, -1.0, 1.0)),
             float(np.clip(price_roc, -3.0, 3.0)),
-            # ML quality [16] ⭐
+            # ML quality [16]
             float(np.clip(ml_score_norm, -1.0, 1.0)),
             # Portfolio [17-23]
             float(np.clip(-total_dd / 0.10, -5.0, 0.0)),
@@ -658,22 +602,20 @@ class FTMOTradingBot:
             float(np.clip(trades_today_n, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
             float(np.clip(consec_losses / 5.0, 0.0, 1.0)),
-            # v6 Cost/Flip/HTF [24-26] — match FTMOSignalFilterEnv (v8.0 MR semantics)
+            # Cost/Flip/HTF [24-26]
             float(np.clip(self._build_spread_pct_of_atr(sig, atr_pips), 0.0, 3.0)),
             float(self._has_opposite_recently_closed(sig)),
-            # obs[26] — v8.0 MR: adx_inverse_norm (1.0 when ADX low = ranging =
-            # favorable for MR). Falls back to bias_align when ADX missing.
             float(np.clip(1.0 - sig.adx / 50.0, 0.0, 1.0))
             if hasattr(sig, "adx") and sig.adx is not None
             else float(np.clip(bias_align, -1.0, 1.0)),
-            # v7 Chronos forecast [27-28]
-            float(np.clip(chronos_align, -1.0, 1.0)),
-            float(np.clip(chronos_unc, 0.0, 3.0)),
-            # v7.1 Portfolio realtime + session timing [29-31]
+            # Chronos [27-28] (disabled — always 0)
+            0.0,
+            0.0,
+            # Portfolio realtime + session [29-31]
             float(np.clip(self._compute_floating_pnl_norm(), -3.0, 1.0)),
             float(np.clip(self._compute_open_losing_count_norm(), 0.0, 1.0)),
             float(np.clip(self._compute_mins_since_session_norm(), 0.0, 1.0)),
-            # v8.0.74 Keltner / ATR Band features [32-34]
+            # Keltner [32-34]
             float(np.clip(getattr(sig, "kc_distance_norm", 0.0), -1.0, 1.0)),
             float(np.clip(getattr(sig, "ema_slope_norm", 0.0), -1.0, 1.0)),
             float(np.clip(getattr(sig, "band_squeeze_ratio", 0.5), 0.0, 1.0)),
@@ -805,25 +747,7 @@ class FTMOTradingBot:
             "mtf_bias": int(getattr(sig, "market_bias", 0)),
             "d1_bias": int(getattr(sig, "d1_bias", 0)),
             "balance_at_entry": 0.0,
-            # v7 Chronos forecast features (mirror obs[27,28]) — for Excel logging
-            "chronos_align": 0.0,
-            "chronos_unc": 0.0,
         }
-
-        # v7: Chronos forecast — same compute path as _build_signal_observation
-        if self._chronos is not None and self._chronos.is_available:
-            try:
-                ltf_df = getattr(self._strategy, "_ltf_data", None)
-                atr_val = max(float(getattr(sig, "atr_value", 0.0) or 0.0), 1e-8)
-                direction = 1.0 if sig.signal_type.value == "BUY" else -1.0
-                if ltf_df is not None and len(ltf_df) >= 32:
-                    a, u = self._chronos.forecast_features(
-                        sig.symbol, ltf_df, direction, atr_val
-                    )
-                    ctx["chronos_align"] = float(a)
-                    ctx["chronos_unc"] = float(u)
-            except Exception:
-                pass
 
         # v7.1 — compute temporal/regime features (สำหรับ GBM input + RL obs)
         try:

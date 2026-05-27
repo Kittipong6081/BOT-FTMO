@@ -136,8 +136,10 @@ class FTMOConfig:
     # FLIP_LOCK_MAX_MINUTES = MAX TTL — หลังจากนี้ unlock อัตโนมัติ (ไม่ต้องรอ retrace)
     # กัน case Friday ปิด SELL XAUUSD @ 4746 → Monday ราคา 4673 (ลงต่อ ไม่ retrace)
     # → ก่อน fix: lock ค้างถาวร; หลัง fix: TTL 4 ชม. ล้าง lock ทิ้งเอง
-    FLIP_LOCK_MIN_MINUTES: int = 5      # เวลาขั้นต่ำก่อน unlock ได้
-    FLIP_LOCK_MAX_MINUTES: int = 240    # TTL (4 ชม.) — auto-expire ไม่ว่าราคาจะ retrace หรือไม่
+    # v8.0.74: FLIP_LOCK disabled — cluster cooldown 300s + opposing theme block ครอบแล้ว
+    FLIP_LOCK_ENABLED: bool = False
+    FLIP_LOCK_MIN_MINUTES: int = 5      # legacy — kept for revert
+    FLIP_LOCK_MAX_MINUTES: int = 240
 
     # === Daily Profit Cap (v8.0.17, DISABLED v8.0.48) ===
     # v8.0.48: ปิด — ปล่อย momentum winning days ลุยต่อ (model strong พอ)
@@ -159,7 +161,8 @@ class FTMOConfig:
 
     # === Anti-Overtrading Guardrails ===
     MAX_TRADES_PER_DAY: Optional[int] = None    # None = ปิด cap (ใช้ filter ชั้นอื่นคุม); revert: ใส่เลขกลับ (เช่น 5)
-    MAX_CORRELATED_POSITIONS: int = 1           # 1 ตำแหน่งต่อกลุ่ม correlation
+    # v8.0.74: disabled — OPPOSING_THEME_BLOCK ทำหน้าที่เดียวกันแต่ฉลาดกว่า
+    MAX_CORRELATED_POSITIONS: int = 99          # effectively disabled
     # v7.1.10b (2026-05-05): 70 → 65 ทดลองผ่อน filter — eval Pass 4.9% (worse than v7.1.9 6.1%)
     #   borderline signals ทำให้ agent ระมัดระวังเกิน + Daily DD แตะ 4.00% (FTMO limit)
     # v7.1.11 (2026-05-05): 65 → 70 — กลับ filter เข้ม + push reward ดัน TAKE
@@ -226,14 +229,17 @@ class FTMOConfig:
     # ยังถูก block ที่ 30%, แต่ normal-spread signals กลับมา)
     # v7.1.10b (2026-05-05): 0.30 → 0.40 — Pass drop 6.1% → 4.9% (borderline signals confuse agent)
     # v7.1.11 (2026-05-05): 0.40 → 0.30 — กลับเข้มเดิม + push reward แทน
-    SPREAD_ATR_RATIO_LIMIT: float = 0.30
+    # v8.0.74: disabled — _check_spread_spike (rolling median) ทำหน้าที่เดียวกันแต่ adaptive
+    SPREAD_ATR_RATIO_LIMIT: float = 99.0        # effectively disabled
 
     # === Post-TP Pullback Lock ===
     # หลัง TP hit บน (symbol, direction) ใดก็ตาม block การเข้าทิศเดิมใน symbol นั้น
     # จนกว่า price เด้งกลับ (เกิน TP + ATR buffer) หรือแตะ EMA20 M15 หรือ TTL หมด
     # เหตุผล: หลัง TP ราคา extended แล้ว เข้าทิศเดิมทันที = ไล่จับก้นเหว
-    POST_TP_LOCK_TTL_MIN: int = 60                # TTL 60 นาทีหลัง TP hit
-    POST_TP_ATR_BUFFER: float = 0.3               # ต้อง pullback ≥ 0.3×ATR จาก TP price
+    # v8.0.74: disabled — RL เรียนรู้แล้ว + cluster cooldown 300s ครอบ
+    POST_TP_LOCK_ENABLED: bool = False
+    POST_TP_LOCK_TTL_MIN: int = 60                # legacy
+    POST_TP_ATR_BUFFER: float = 0.3
     POST_TP_EMA_PERIOD: int = 20                  # EMA20 (คำนวณบน M15)
     POST_TP_EMA_TIMEFRAME: str = "M15"
     POST_TP_EMA_LOOKBACK_BARS: int = 3            # เช็ค EMA touch ใน 3 bars ล่าสุด (~45 นาที)

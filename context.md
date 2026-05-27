@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-05-27 (v8.0.74 — Keltner Channel ATR Band anti-whipsaw) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-05-27 (v8.0.74b — obs 35→26 trimmed + Phase B/C cleanup) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
@@ -57,7 +57,7 @@
 - **Goal**: pass the FTMO 2-step Standard Challenge (10 % profit, 4 % daily DD, 8 % total DD).
 - **3 brains + 1 forecaster (v8.0+)**: `LiveMRScanner` (Mean Reversion rules — BB+RSI+ADX) → `SignalQualityModel` (GBM + Isotonic calibrator) → **`ChronosForecaster`** (Amazon Chronos 2 zero-shot, optional) → `SelfLearningAgent` (PPO + Auxiliary Task — TAKE/SKIP).
 - **Live entry**: `python main.py` → `FTMOTradingBot.run` loops every 5 s. Console runs in **quiet mode** (announce-once for idle states; per-signal SKIP/NO_AGENT logged to Excel `Signals` sheet, not console).
-- **Obs = 35 dims** (v8.0.74, 2026-05-27 — adds `kc_distance_norm` + `ema_slope_norm` + `band_squeeze_ratio`). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
+- **Obs = 26 dims** (v8.0.74b, 2026-05-27 — trimmed 9 dead/duplicate dims from 35). Must stay in sync across three places: `FTMOSignalFilterEnv._get_obs` / `FTMOTradingBot._build_signal_observation` / `SelfLearningAgent.OBS_DIM`.
 - **Runs on**: macOS/Linux (train + backtest), Windows + MT5 (live).
 - **Live logging**: `TradeLogger` (re-enabled v6.9, schema bumped v6.10) writes Excel — Trades 64 cols (incl. `Obs27 JSON` for retrain), Signals 21 cols (per-scan log), Daily, Stats.
 - **v6.11 SMC overhaul (2026-04-29)**: Counter-D1 hard veto + Sweep within 8 bars + Fresh M15 BOS within 6 bars + ADX H4 ≥ 22 + Quiet-vol × off-overlap blocker + IDM detector + OB grading (Extreme/Decisional/Internal). BE trigger ใช้ `best_price` (rolling MFE). Per-component pts populate ใน TradeSignal → Trades sheet เห็น HTF/MTF/OB/FVG/Sweep pts จริง. ดู [`wiki/05-invariants.md` v6.11 Version Log](wiki/05-invariants.md#-version-log-reverse-chronological).

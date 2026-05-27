@@ -34,8 +34,8 @@ from stable_baselines3 import PPO
 class SelfLearningAgent:
     """AI Agent สำหรับกรอง signal จาก SMC Strategy — ตัดสินใจ TAKE/SKIP"""
 
-    # v7.1 — 29 → 32 (เพิ่ม floating_pnl_norm, open_losing_count_norm, mins_since_session_norm)
     # v8.0.74 — 32 → 35 (เพิ่ม kc_distance_norm, ema_slope_norm, band_squeeze_ratio)
+    # v8.0.74b — ทดลอง 35→26 (Pass 69.5%) แพ้ 35 dims (73.5%) → revert กลับ 35
     OBS_DIM: int = 35
 
     def __init__(

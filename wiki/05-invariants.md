@@ -1,5 +1,17 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-27 | Scope: red flags, version log, migration notes (latest: **v8.0.74** — Keltner Channel ATR Band anti-whipsaw, obs 32→35)
+> Last Updated: 2026-05-27 | Scope: red flags, version log, migration notes (latest: **v8.0.74b** — obs 35→26 trimmed + Phase B/C cleanup)
+
+## 📝 Version Log Entry — v8.0.74b (2026-05-27) — Obs 35→26 trimmed + Chronos removed + 4 risk rules disabled
+
+**Phase A — Dead dims trimmed (35→26)**: Removed 9 dims: [5] bias_align (always -1), [9] trend_strength (dup of ema_slope), [10] bb_width (dup of squeeze_ratio), [11] adx_norm (dup of adx_inverse), [27-28] chronos (disabled/zero), [29-30] floating_pnl/losing_count (zero since v7.2.1), [4] bb_extreme (replaced by kc_distance).
+
+**Phase B — 4 redundant risk rules disabled**: `FLIP_LOCK_ENABLED=False` (cluster cooldown + opposing theme ครอบ), `POST_TP_LOCK_ENABLED=False` (RL + cooldown ครอบ), `MAX_CORRELATED_POSITIONS=99` (opposing theme block ฉลาดกว่า), `SPREAD_ATR_RATIO_LIMIT=99.0` (spread_spike rolling median ดีกว่า).
+
+**Phase C — Chronos removed**: Deleted init + forecast compute in `main.py`. `CHRONOS_ENABLED=False` already set. obs no longer has chronos slots.
+
+**⚠️ RETRAIN REQUIRED**: OBS_DIM 35→26.
+
+---
 
 ## 📝 Version Log Entry — v8.0.74 (2026-05-27) — Keltner Channel / ATR Band anti-whipsaw (obs 32→35)
 

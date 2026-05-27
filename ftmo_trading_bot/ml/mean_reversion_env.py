@@ -105,30 +105,16 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
     # ─── Override observation builder (semantic only — same shape) ─────
 
     def _get_obs(self) -> np.ndarray:
-        """35-dim obs — parent's 35 slots + MR reinterpretation of three.
-
-        Slots reinterpreted:
-          obs[4]  = bb_extreme           (replaces ob_norm)
-          obs[10] = bb_band_width_atr/3  (replaces ob_size_atr; clipped 0..1)
-          obs[26] = adx_inverse_norm     (1.0 when ADX low = ranging = MR-friendly)
-        New v8.0.74 slots (populated by parent from sig dict):
-          obs[32] = kc_distance_norm     (ATR band distance)
-          obs[33] = ema_slope_norm       (EMA slope steepness)
-          obs[34] = band_squeeze_ratio   (band squeeze detection)
-        """
+        """35-dim obs — reinterpret three SMC slots for MR semantics."""
         obs = super()._get_obs()
         if self._signal_idx >= len(self._signals):
             return obs
         sig = self._signals[self._signal_idx]
-
         obs[4] = float(np.clip(sig.get("bb_extreme", 0.0), 0.0, 1.0))
-
         bbw_atr = float(sig.get("bb_band_width_atr", 0.0))
         obs[10] = float(np.clip(bbw_atr / 3.0, 0.0, 1.0))
-
         adx = float(sig.get("adx", 0.0))
         obs[26] = float(np.clip(1.0 - adx / 50.0, 0.0, 1.0))
-
         return obs
 
     # ─── Override step() — same plumbing, MR-specific reward ───────────

@@ -28,21 +28,10 @@ scikit-learn==1.8.0
 # === TensorBoard สำหรับดู training curves ===
 tensorboard==2.20.0
 
-# === Time Series Foundation Model (Amazon Chronos 2 — Zero-shot Forecast) ===
-# v7 (2026-05-01): obs[27] chronos_alignment + obs[28] chronos_uncertainty_norm
-# โหลดโมเดลครั้งแรก ~200MB จาก Hugging Face Hub (cache ใน ~/.cache/huggingface)
-# ⚠️ chronos-forecasting 1.5.2 require transformers>=4.48 (peer dep)
-chronos-forecasting==1.5.2
-transformers==4.48.3
-accelerate==1.2.1
-# Transitive deps (pin per Dependency Pin Protocol — VPS ↔ train sync)
-huggingface-hub==0.36.2     # Hugging Face Hub client (model download/cache)
-tokenizers==0.21.4          # transformers peer (text tokenization, ไม่ใช้กับ chronos แต่ install มา)
-safetensors==0.7.0          # model weight format ของ chronos
-hf-xet==1.4.3               # Hugging Face Hub xet protocol (chunked model download)
-regex==2026.4.4              # transformers peer
-pyyaml==6.0.3                # transformers config parsing
-psutil==7.2.2                # accelerate peer (memory monitor)
+# === Chronos (REMOVED v8.0.74b — ไม่มีประโยชน์สำหรับ MR, obs ไม่มี chronos slots แล้ว) ===
+# ลบ: chronos-forecasting, transformers, accelerate, huggingface-hub, tokenizers,
+#      safetensors, hf-xet, regex, pyyaml (chronos peer), psutil (accelerate peer)
+# ประหยัด: ~1.5GB disk + ~30s pip install + ไม่ต้องโหลด model 200MB ตอน boot
 
 # === Trade Logger (Excel output — Trades + Signals + Daily + Stats) ===
 openpyxl==3.1.5
