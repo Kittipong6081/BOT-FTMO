@@ -1,5 +1,37 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.72** — Silent probe for nonexistent conversion symbols)
+> Last Updated: 2026-05-26 | Scope: red flags, version log, migration notes (latest: **v8.0.73** — Stage 2 TP extension 1.5R removed, SL lock kept)
+
+## 📝 Version Log Entry — v8.0.73 (2026-05-26) — Stage 2 TP extension removed (keep SL lock only)
+
+**Trigger**: User asked "TP-chase logic ต่อไปควรมีไว้ไหม" after 2-day Micro-RCA showed 0/13 trades reaching TP (Stage 2 always extends TP to 1.5R, but continuation rate to 1.5R is effectively 0% in current regime).
+
+**Evidence**:
+- **2-day live audit (25-26 พ.ค. 2026, n=13)**:
+  - **0/13 trades hit TP** (currently chased to 1.5R via Stage 2).
+  - Only 1/13 reached peak MFE ≥ 1.0R (EURUSD 1.155R → trail caught 0.928R).
+  - 2/13 triggered Stage 2 @ 0.8R; both retraced and exited at Stage 2 SL lock @ 0.5R, never reaching 1.5R TP.
+- **Consistent with v8.0.61 M1 replay**: continuation rate 1.0R→1.5R = 26.9% (well below 40% gate).
+
+**Hypothesis**: Stage 2's TP extension (1.0R → 1.5R) is "dead code" — adds no captured value because MR strategy doesn't continue that far. The Stage 2 SL→0.5R lock IS valuable (caught XAU 8631 at +0.5R when it would have reverted to BE).
+
+**Fix** (live-only, no retrain):
+- `TradeManager.TP_STEP_NEW_TP_RR`: **1.5 → 1.0** — TP stays at original 1.0R after Stage 2 triggers.
+- `TradeManager._tp_step()`: drop TP-invariant check (`new_tp <= trade.tp_price`) so SL lock still fires even though TP doesn't change. Pass current TP price to `_modify_sl` (no-op on TP side).
+- Print message updated: `Stage 2 SL-Lock` (was `Stage 2 TP-Step`) for clarity.
+
+**Side effect**: Stage 3 (`TRAIL_ACTIVATION_RR=1.0`) now rarely fires in normal flow — because TP fills at 1.0R first. Stage 3 stays in code as a safety net for gap/slippage scenarios where price overshoots 1.0R before TP executes.
+
+**Expected impact (sim on 2-day n=13)**:
+- EURUSD 4286 (peak 1.155R): TP would now fill at 1.0R = +1.0R (vs current 0.928R via trail) → **+0.07R**
+- XAU 8631 (peak 0.835R): same outcome, Stage 2 SL@0.5R still locks → no change.
+- Other trades: no change (Peak < 0.8R never triggers Stage 2).
+- Net: minor +0.07R / 2 days (within noise). Real benefit is **simplicity** — removes dead TP-extension path.
+
+**No retrain** — RL pool uses R-multiple outcomes computed against `outcome_partial` (peak MFE at SL hit). Trail/TP logic is live-only. Pool/GBM/RL stay v8.0.52 baseline.
+
+**Files changed**: `ftmo_trading_bot/execution/trade_manager.py` (constant + `_tp_step` method).
+
+**No backup needed** — single-constant revert: set `TP_STEP_NEW_TP_RR = 1.5` to restore.
 
 ## 📝 Version Log Entry — v8.0.72 (2026-05-26) — Silent probe for nonexistent conversion symbols
 

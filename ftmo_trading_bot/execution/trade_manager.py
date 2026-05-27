@@ -87,11 +87,13 @@ class TradeManager:
 
     # === v8.0.48 Stepwise Trail (user-requested) ===
     # Stage 1 @ 0.5R: Partial 50% + BE (เดิม v8.0.14)
-    # Stage 2 @ 0.8R: TP shift 1.0R → 1.5R, SL shift BE → 0.5R (lock partial price)
+    # Stage 2 @ 0.8R: SL shift BE → 0.5R (lock partial price). TP stays at 1.0R.
     # Stage 3 @ 1.0R: SL shift 0.5R → 1.0R + Trail activate (chase)
     # Trail mode: SL = max(1.0R floor, best - 0.5R), TP = best + 1R
+    # v8.0.73 (2026-05-26): Stage 2 TP extension 1.0R→1.5R removed (continuation rate 26.9% < 40% gate
+    # per v8.0.61 M1 replay + 2-day live audit 0/13 reached 1.5R). Keeps SL lock at 0.5R.
     TP_STEP_TRIGGER_RR: float = 0.8     # Stage 2 trigger
-    TP_STEP_NEW_TP_RR: float = 1.5      # v8.0.54: revert v8.0.53 Stage 2 TP back to 1.5R
+    TP_STEP_NEW_TP_RR: float = 1.0      # v8.0.73: 1.5 → 1.0 — TP คงเดิม ไม่ลุ้น tail ที่ไม่มา
     TP_STEP_NEW_SL_RR: float = 0.5      # Stage 2: SL shift to 0.5R from entry (lock partial price)
     TRAIL_ACTIVATION_RR: float = 1.0    # v8.0.48: Stage 3 trigger (จาก 0.9)
     TRAIL_SL_FLOOR_RR: float = 1.0      # v8.0.52: revert 0.7→1.0 (v8.0.51 Pass 55.1% < v8.0.48b 68.8%)
@@ -533,41 +535,36 @@ class TradeManager:
 
     def _tp_step(self, trade: ExecutedTrade, state: TrailingState):
         """
-        v8.0.48 Stage 2: เมื่อกำไรถึง 0.8R
-        - TP: 1.0R → 1.5R (extend chase)
-        - SL: BE (entry) → 0.5R (lock partial close price)
+        v8.0.48 Stage 2: เมื่อกำไรถึง 0.8R — SL shift BE → 0.5R (lock partial price)
+        v8.0.73: TP extension 1.0R→1.5R removed. TP stays at original 1.0R.
 
-        Mirror สำหรับ BUY/SELL (signs ตรงข้าม). One-time trigger.
+        Mirror สำหรับ BUY/SELL (signs ตรงข้าม). One-time trigger. Only SL moves.
         """
         sl_distance = abs(trade.entry_price - state.initial_sl)
         if sl_distance <= 0:
             return
 
-        new_tp_dist = sl_distance * self.TP_STEP_NEW_TP_RR  # 1.5R from entry
         new_sl_dist = sl_distance * self.TP_STEP_NEW_SL_RR  # 0.5R from entry
 
         if trade.trade_type == "BUY":
-            new_tp = trade.entry_price + new_tp_dist
             new_sl = trade.entry_price + new_sl_dist
-            # Invariants: SL up, TP up
-            if new_sl <= state.current_sl or new_tp <= trade.tp_price:
+            if new_sl <= state.current_sl:
                 state.tp_step_done = True  # mark done even if no improvement (don't retry)
                 return
         else:  # SELL
-            new_tp = trade.entry_price - new_tp_dist
             new_sl = trade.entry_price - new_sl_dist
-            if new_sl >= state.current_sl or new_tp >= trade.tp_price:
+            if new_sl >= state.current_sl:
                 state.tp_step_done = True
                 return
 
-        if self._modify_sl(trade.ticket, trade.symbol, new_sl, new_tp):
+        # TP unchanged — pass current TP price to _modify_sl (no-op on TP side)
+        if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
             state.current_sl = new_sl
-            trade.tp_price = new_tp
             trade.final_sl_at_close = new_sl
             state.tp_step_done = True
             digits = 5 if state.pip_size <= 0.0001 else 3
-            print(f"🎯 [Trade Manager] Stage 2 TP-Step: Ticket {trade.ticket} "
-                  f"SL→{new_sl:.{digits}f} (0.5R) TP→{new_tp:.{digits}f} (1.5R)")
+            print(f"🎯 [Trade Manager] Stage 2 SL-Lock: Ticket {trade.ticket} "
+                  f"SL→{new_sl:.{digits}f} (0.5R lock, TP unchanged at 1.0R)")
             self._save_trail_states()
 
     # =========================================================================
