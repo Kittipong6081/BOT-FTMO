@@ -283,7 +283,14 @@ class FTMOConfig:
     KC_ENTRY_FILTER_ENABLED: bool = True
     # Block if EMA slope is too steep (trending, not mean-reverting)
     KC_SLOPE_FILTER_ENABLED: bool = True
-    KC_SLOPE_THRESHOLD: float = 0.15    # |slope| > 0.15 ATR/bar = strong trend
+    KC_SLOPE_THRESHOLD: float = 0.15    # |slope| > 0.15 ATR/bar = strong trend (baseline cap)
+    # v8.0.75 — Dynamic Slope (ATR-adaptive cap)
+    # ATR regime สูง (volatile) → ขยายเพดาน (อนุญาตชันได้มากขึ้น noise)
+    # ATR regime ต่ำ (เงียบ) → หดเพดาน (slope เล็กๆ ก็ trend จริง)
+    KC_SLOPE_ATR_ADAPTIVE: bool = True
+    KC_SLOPE_ATR_GAIN: float = 0.15     # scale = 1 + atr_z * GAIN (clipped by MIN/MAX)
+    KC_SLOPE_ATR_SCALE_MIN: float = 0.7
+    KC_SLOPE_ATR_SCALE_MAX: float = 1.6
     # Block if price has been outside band >= N consecutive bars (sustained trend)
     KC_CONSEC_OUTSIDE_FILTER_ENABLED: bool = True
     KC_CONSEC_OUTSIDE_MAX: int = 3      # >= 3 bars outside = trend, not spike

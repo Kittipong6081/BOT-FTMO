@@ -1027,20 +1027,39 @@ class TradeExecutor:
                     )
 
         # 5. EMA slope ต้องไม่ชันเกิน (trending = ไม่ใช่ MR environment)
+        # v8.0.75 — Dynamic cap: scale baseline by ATR z-score regime
+        #   volatile (atr_z > 0)  → ขยายเพดาน (อนุญาตชันได้มากขึ้น, ลด missed trades ช่วงข่าว)
+        #   quiet    (atr_z < 0)  → หดเพดาน (slope เล็กๆ ก็ trend จริง, ลด whipsaw ช่วง Asian)
         if getattr(cfg, "KC_SLOPE_FILTER_ENABLED", False):
             slope = getattr(signal, "ema_slope_norm", None)
-            slope_thresh = float(getattr(cfg, "KC_SLOPE_THRESHOLD", 0.15))
+            base_thresh = float(getattr(cfg, "KC_SLOPE_THRESHOLD", 0.15))
             if slope is not None:
                 slope_val = float(slope)
+                if getattr(cfg, "KC_SLOPE_ATR_ADAPTIVE", False):
+                    atr_z = float(getattr(signal, "atr_zscore_30bars", 0.0))
+                    gain = float(getattr(cfg, "KC_SLOPE_ATR_GAIN", 0.15))
+                    scale = float(np.clip(
+                        1.0 + atr_z * gain,
+                        float(getattr(cfg, "KC_SLOPE_ATR_SCALE_MIN", 0.7)),
+                        float(getattr(cfg, "KC_SLOPE_ATR_SCALE_MAX", 1.6)),
+                    ))
+                    slope_thresh = base_thresh * scale
+                    regime_tag = f" (base {base_thresh:.2f} × {scale:.2f}, atr_z={atr_z:+.2f})"
+                else:
+                    slope_thresh = base_thresh
+                    regime_tag = ""
+
                 if direction == "BUY" and slope_val < -slope_thresh:
                     return (
                         False,
-                        f"KC slope: {slope_val:.2f} < -{slope_thresh:.2f} — EMA falling too fast for BUY"
+                        f"KC slope: {slope_val:.2f} < -{slope_thresh:.2f}{regime_tag} "
+                        f"— EMA falling too fast for BUY"
                     )
                 if direction == "SELL" and slope_val > slope_thresh:
                     return (
                         False,
-                        f"KC slope: {slope_val:.2f} > {slope_thresh:.2f} — EMA rising too fast for SELL"
+                        f"KC slope: {slope_val:.2f} > {slope_thresh:.2f}{regime_tag} "
+                        f"— EMA rising too fast for SELL"
                     )
 
         # 6. ราคาอยู่นอกกรอบต่อเนื่อง >= N แท่ง = เทรนด์จริง ไม่ใช่ spike

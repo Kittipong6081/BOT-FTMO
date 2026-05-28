@@ -1,5 +1,34 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-27 | Scope: red flags, version log, migration notes (latest: **v8.0.74b** — obs 35→26 trimmed + Phase B/C cleanup)
+> Last Updated: 2026-05-28 | Scope: red flags, version log, migration notes (latest: **v8.0.75** — Dynamic Slope cap (ATR-adaptive, live-only))
+
+## 📝 Version Log Entry — v8.0.75 (2026-05-28) — Dynamic Slope cap (ATR-adaptive, live-only)
+
+**Trigger**: v8.0.74 introduced a fixed `KC_SLOPE_THRESHOLD = 0.15` on `ema_slope_norm`. The feature is already ATR-normalised at compute time (`(ema - ema.shift(5)) / (atr*5)` then `/0.3` and clipped) but the cap itself was static — so in **volatile regimes** (NFP/CPI) the bot SKIPs too many setups, and in **quiet regimes** (Asian) small slopes still pass and feed whipsaw.
+
+**Fix** (3 files, live-only — **no retrain**):
+
+- `config/settings.py`: NEW `FTMOConfig.KC_SLOPE_ATR_ADAPTIVE = True`, `KC_SLOPE_ATR_GAIN = 0.15`, `KC_SLOPE_ATR_SCALE_MIN = 0.7`, `KC_SLOPE_ATR_SCALE_MAX = 1.6`. Baseline `KC_SLOPE_THRESHOLD = 0.15` unchanged.
+- `strategy/mean_reversion_strategy.py`: NEW field `MRSignal.atr_zscore_30bars` computed via `TechnicalIndicators.compute_atr_zscore_30bars(ltf_df)` at signal build.
+- `execution/trade_executor.py`: `_check_entry_confirmation` slope check now computes `slope_thresh = base × clip(1 + atr_z × GAIN, SCALE_MIN, SCALE_MAX)`. SKIP log line now shows base × scale × atr_z for transparency.
+
+**Effective cap table** (with default GAIN/MIN/MAX):
+
+| atr_z | scale | effective cap |
+|-------|-------|---------------|
+| -2 (quiet)    | 0.70 | 0.105 |
+| -1            | 0.85 | 0.128 |
+|  0 (neutral)  | 1.00 | 0.150 |
+| +1            | 1.15 | 0.172 |
+| +2 (volatile) | 1.30 | 0.195 |
+| +4 (extreme)  | 1.60 | 0.240 (capped) |
+
+**Why live-only**: The slope filter lives entirely in `TradeExecutor._check_entry_confirmation`, not in `MeanReversionBacktester` (same pattern as v8.0.55 cluster cooldown + entry-confirm + spread-spike). The RL model never sees this filter during training. Changing the cap only affects which signals get blocked at execute time — pool/GBM/RL stay valid.
+
+**Disable / rollback**: set `FTMOConfig.KC_SLOPE_ATR_ADAPTIVE = False` → restores v8.0.74 fixed-cap behaviour (0.15 flat).
+
+**Watch**: After 3-5 days live, compare SKIP-rate by reason `KC slope` against v8.0.74 baseline. Expected: ~25-40% fewer SKIPs during high-vol sessions (London open, NY open), ~15-25% more SKIPs during Asian-quiet hours. If Pass Rate drifts > 5pp either direction → tune `KC_SLOPE_ATR_GAIN` (lower = less adaptive).
+
+---
 
 ## 📝 Version Log Entry — v8.0.74b (2026-05-27) — Obs 35→26 trimmed + Chronos removed + 4 risk rules disabled
 

@@ -113,6 +113,9 @@ class MRSignal:
     consecutive_outside: int = 0        # bars consecutively outside KC band
     band_squeeze_ratio: float = 0.5     # [0, 1] how squeezed the band is
 
+    # v8.0.75: ATR z-score (regime) — used by dynamic slope filter (live-only)
+    atr_zscore_30bars: float = 0.0
+
     reasons: List[str] = field(default_factory=list)
 
     @property
@@ -454,6 +457,12 @@ class MeanReversionStrategy:
             consecutive_outside_val = int(ltf_df["consecutive_outside"].iloc[-1] or 0)
             band_squeeze_ratio_val = float(ltf_df["band_squeeze_ratio"].iloc[-1] or 0.5)
 
+        # v8.0.75 — ATR z-score for dynamic slope cap (live-only filter)
+        # Computed here so MRSignal carries regime context to TradeExecutor.
+        atr_zscore_val = float(
+            TechnicalIndicators.compute_atr_zscore_30bars(ltf_df)
+        )
+
         if score < self.MIN_CONFLUENCE_SCORE:
             return self._no_signal(
                 symbol, atr_value,
@@ -491,6 +500,7 @@ class MeanReversionStrategy:
             ema_slope_norm=ema_slope_norm_val,
             consecutive_outside=consecutive_outside_val,
             band_squeeze_ratio=band_squeeze_ratio_val,
+            atr_zscore_30bars=atr_zscore_val,
             reasons=[
                 f"BB%B={bb_pctb:.2f} (extreme={bb_extreme:.2f})",
                 f"RSI={rsi_value:.1f} (extreme={rsi_extreme:.2f})",
