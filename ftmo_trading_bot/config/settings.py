@@ -281,6 +281,15 @@ class FTMOConfig:
     # === Keltner / ATR Band Live Filter (v8.0.74 — anti-whipsaw) ===
     # Block MR entry if price is NOT outside Keltner band (not overextended)
     KC_ENTRY_FILTER_ENABLED: bool = True
+    KC_DIST_THRESHOLD_BASE: float = 0.60   # |kc_distance_norm| ≥ 0.60 ATR = overextended (baseline)
+    # v8.0.76 — Dynamic KC distance (ATR-adaptive threshold)
+    # ATR regime สูง (volatile) → ขยาย threshold ให้ลึกขึ้น (รอราคาล้นกรอบจริงค่อยสวน)
+    # ATR regime ต่ำ (เงียบ)   → หด threshold ให้ตื้นขึ้น (เก็บรอบสั้น sideway แคบๆ ได้)
+    KC_DIST_ATR_ADAPTIVE: bool = True
+    KC_DIST_ATR_GAIN: float = 0.20         # scale = 1 + atr_z * GAIN (clipped by MIN/MAX)
+    KC_DIST_ATR_SCALE_MIN: float = 0.6     # quiet regime: 0.60 × 0.6 = 0.36 (ตื้น)
+    KC_DIST_ATR_SCALE_MAX: float = 1.5     # volatile regime: 0.60 × 1.5 = 0.90 (ลึก)
+
     # Block if EMA slope is too steep (trending, not mean-reverting)
     KC_SLOPE_FILTER_ENABLED: bool = True
     KC_SLOPE_THRESHOLD: float = 0.15    # |slope| > 0.15 ATR/bar = strong trend (baseline cap)

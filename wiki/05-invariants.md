@@ -1,5 +1,37 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-28 | Scope: red flags, version log, migration notes (latest: **v8.0.75** — Dynamic Slope cap (ATR-adaptive, live-only))
+> Last Updated: 2026-05-28 | Scope: red flags, version log, migration notes (latest: **v8.0.76** — Dynamic KC distance (ATR-adaptive, live-only))
+
+## 📝 Version Log Entry — v8.0.76 (2026-05-28) — Dynamic KC distance (ATR-adaptive, live-only)
+
+**Trigger**: v8.0.74 used a fixed `|kc_distance_norm| ≥ 0.60` threshold for the "price overextended" gate. In **quiet regimes** (Asian sideways) price rarely reaches ±0.6 → bot misses small swings; in **volatile regimes** (US open / news) price hits ±0.6 mid-trend → bot enters before the real extreme and gets dragged.
+
+**Fix** (2 files, live-only — **no retrain**, mirrors v8.0.75 slope pattern):
+
+- `config/settings.py`: NEW `FTMOConfig.KC_DIST_THRESHOLD_BASE = 0.60` (replaces hard-coded -0.6/0.6), `KC_DIST_ATR_ADAPTIVE = True`, `KC_DIST_ATR_GAIN = 0.20`, `KC_DIST_ATR_SCALE_MIN = 0.6`, `KC_DIST_ATR_SCALE_MAX = 1.5`.
+- `execution/trade_executor.py`: `_check_entry_confirmation` KC-distance block now computes `dist_thresh = base × clip(1 + atr_z × 0.20, 0.6, 1.5)`. Reject log shows base × scale × atr_z.
+
+**Direction is opposite to slope**: slope dynamic *loosens* in volatile regimes (atr_z high → cap larger → allow steeper slope as noise). Distance dynamic *tightens* in volatile regimes (atr_z high → threshold deeper → require more extreme entry). Together they form a coherent MR gate — accept noise spikes in vol but only at true extremes; tolerate shallow extremes only when trend is genuinely weak.
+
+**Effective threshold table** (with default GAIN/MIN/MAX):
+
+| atr_z | scale | effective threshold |
+|-------|-------|---------------------|
+| -2 (quiet)    | 0.60 | 0.360 |
+| -1            | 0.80 | 0.480 |
+|  0 (neutral)  | 1.00 | 0.600 |
+| +1            | 1.20 | 0.720 |
+| +2 (volatile) | 1.40 | 0.840 |
+| +3 (extreme)  | 1.50 | 0.900 (capped) |
+
+**Live cases that motivated this** (28 May logs):
+- USDJPY BUY blocked at `dist=-0.49 > -0.60`. With dynamic and atr_z ≤ -0.92 the threshold drops to ≤ 0.49 → would pass (Asian-quiet regime).
+- NZDUSD SELL blocked at `dist=0.33 < 0.60`. Would still block under dynamic unless atr_z deeply negative — correct because price wasn't extreme enough.
+
+**Disable / rollback**: set `KC_DIST_ATR_ADAPTIVE = False` → restores v8.0.74 fixed-threshold behaviour (0.60 flat). Or set `KC_ENTRY_FILTER_ENABLED = False` to disable the gate entirely.
+
+**Watch**: After 3-5 days live, compare KC-filter SKIP-rate by session. Expected: ~30-50% fewer SKIPs during Asian-quiet hours (smaller swings now pass), ~10-20% more SKIPs during London/NY-open (require deeper extremes). If filtered-signal WR doesn't improve after Asian-quiet rescues → tune `KC_DIST_ATR_GAIN` lower (less adaptive).
+
+---
 
 ## 📝 Version Log Entry — v8.0.75 (2026-05-28) — Dynamic Slope cap (ATR-adaptive, live-only)
 

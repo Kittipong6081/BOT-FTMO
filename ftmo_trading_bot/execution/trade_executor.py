@@ -1012,18 +1012,38 @@ class TradeExecutor:
         # BB %B recheck ลบแล้ว v8.0.74 — KC distance ทำหน้าที่เดียวกันแต่ดีกว่า
         # (ปรับตามความผันผวนจริง ไม่โดน outlier บิดเหมือน BB std dev)
         # 4. ราคาต้องอยู่นอก Keltner Band (overextended) ถึงจะเข้า MR
+        # v8.0.76 — Dynamic threshold: ATR regime สูง = require deeper extreme,
+        #          ATR regime ต่ำ = allow shallower extreme (catch sideway swings)
         if getattr(cfg, "KC_ENTRY_FILTER_ENABLED", False):
             kc_dist = getattr(signal, "kc_distance_norm", None)
             if kc_dist is not None:
-                if direction == "BUY" and float(kc_dist) > -0.6:
+                base_thresh = float(getattr(cfg, "KC_DIST_THRESHOLD_BASE", 0.60))
+                if getattr(cfg, "KC_DIST_ATR_ADAPTIVE", False):
+                    atr_z = float(getattr(signal, "atr_zscore_30bars", 0.0))
+                    gain = float(getattr(cfg, "KC_DIST_ATR_GAIN", 0.20))
+                    scale = float(np.clip(
+                        1.0 + atr_z * gain,
+                        float(getattr(cfg, "KC_DIST_ATR_SCALE_MIN", 0.6)),
+                        float(getattr(cfg, "KC_DIST_ATR_SCALE_MAX", 1.5)),
+                    ))
+                    dist_thresh = base_thresh * scale
+                    regime_tag = f" (base {base_thresh:.2f} × {scale:.2f}, atr_z={atr_z:+.2f})"
+                else:
+                    dist_thresh = base_thresh
+                    regime_tag = ""
+
+                kc_dist_f = float(kc_dist)
+                if direction == "BUY" and kc_dist_f > -dist_thresh:
                     return (
                         False,
-                        f"KC filter: dist {kc_dist:.2f} > -0.6 — price not overextended down"
+                        f"KC filter: dist {kc_dist_f:.2f} > -{dist_thresh:.2f}{regime_tag} "
+                        f"— price not overextended down"
                     )
-                if direction == "SELL" and float(kc_dist) < 0.6:
+                if direction == "SELL" and kc_dist_f < dist_thresh:
                     return (
                         False,
-                        f"KC filter: dist {kc_dist:.2f} < 0.6 — price not overextended up"
+                        f"KC filter: dist {kc_dist_f:.2f} < {dist_thresh:.2f}{regime_tag} "
+                        f"— price not overextended up"
                     )
 
         # 5. EMA slope ต้องไม่ชันเกิน (trending = ไม่ใช่ MR environment)
