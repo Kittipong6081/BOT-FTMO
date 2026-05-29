@@ -241,9 +241,9 @@ def audit_obs_dim() -> int:
         # VPS / no-OHLCV path — fall back to class-level check (live uses MT5 not CSV)
         print(f"  ⚠️  env init skipped (no OHLCV — VPS-style env): {e}")
         # Read observation_space from class (gym Box defined as class attr at __init__)
-        # Without instance, just compare agent OBS_DIM to expected production value 32.
-        if agent_dim != 32:
-            print(f"  ❌ SelfLearningAgent.OBS_DIM = {agent_dim}, expected 32")
+        # Without instance, just compare agent OBS_DIM to expected production value 35.
+        if agent_dim != 35:
+            print(f"  ❌ SelfLearningAgent.OBS_DIM = {agent_dim}, expected 35")
             fails += 1
         else:
             print(f"  ✓ SelfLearningAgent.OBS_DIM = {agent_dim} (class-level check only)")
@@ -349,7 +349,7 @@ def audit_vec_normalize() -> int:
             with open(vecn, "rb") as f:
                 vn = pickle.load(f)
             mean = vn.obs_rms.mean if hasattr(vn, "obs_rms") else None
-            if mean is None or len(mean) != 32:
+            if mean is None or len(mean) != 35:
                 print(f"  ❌ vec_normalize_mr.pkl obs_rms invalid")
                 fails += 1
             else:

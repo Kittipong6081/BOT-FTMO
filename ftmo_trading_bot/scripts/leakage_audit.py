@@ -218,8 +218,8 @@ def audit_dynamic_obs() -> int:
 
     obs, info = env.reset(seed=42)
     print(f"  obs.shape = {obs.shape}")
-    if obs.shape[0] != 32:
-        print(f"     ❌ obs dim mismatch: {obs.shape[0]} != 32")
+    if obs.shape[0] != 35:
+        print(f"     ❌ obs dim mismatch: {obs.shape[0]} != 35")
         return 1
 
     # Verify obs values are bounded reasonably (not raw outcome ratios)
