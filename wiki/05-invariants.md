@@ -1,5 +1,17 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-28 | Scope: red flags, version log, migration notes (latest: **v8.0.76** — Dynamic KC distance (ATR-adaptive, live-only))
+> Last Updated: 2026-05-29 | Scope: red flags, version log, migration notes (latest: **v8.0.77** — Entry-confirm de-restriction (live-only))
+
+## 📝 Version Log Entry — v8.0.77 (2026-05-29) — Entry-confirm de-restriction (live-only, no retrain)
+
+**Trigger**: Live reject-funnel audit of `logs/ftmo_trades.xlsx` Signals sheet (953 scans, 24-28 May). RL issued **689 TAKE intents but only 23 opened (3.3% pass at the executor)** — the bottleneck is the entry-confirmation layer, not the MR strategy. Gate breakdown of the 666 `AGENT_TAKE_FAIL`: correlation 336, risk_manager 186, **entry_confirm 142** (M1-direction **82**, KC-slope 35, KC-distance 25). Three entry-confirm issues stood out as false-rejecting MR's best setups.
+
+**Fixes (all live-only, single-line rollback each, improve train/live parity since `MeanReversionBacktester` applies no KC hard gate)**:
+
+- **RF-1 — `TradeExecutor._check_entry_confirmation` M1 block → wick-aware**. MR is a falling-knife entry (`market_bias = -direction`); the strict "M1 last closed bar must close in-direction" rule contradicted that and was the #1 entry-confirm killer (82/142). New rule: pass if the M1 bar body is in-direction **OR** shows a rejection wick on the favorable side ≥ `FTMOConfig.ENTRY_CONFIRM_M1_REJECT_WICK_MIN` (0.40); reject only a clean strong opposite-body bar with no reject-wick. Mirrors the M15 reversal-wick logic on M1.
+- **RF-2 — KC distance relaxed**. `FTMOConfig.KC_DIST_THRESHOLD_BASE` 0.60 → **0.35**, `KC_DIST_ATR_SCALE_MAX` 1.5 → **1.3**. `kc_distance_norm` clips at ±1.0 (= 3.75 ATR; band edge = 0.667). Old volatile threshold 0.60×1.5 = 0.90 left only a 0.10-wide acceptance window against the clip ceiling (near-degenerate) and re-gated the BB %B "extended" condition 2-4× stricter than BB itself. New window is 0.545-0.79 across all regimes; volatile still requires a deeper extreme than quiet (directional intent preserved).
+- **RF-3 — KC slope cap raised**. `FTMOConfig.KC_SLOPE_THRESHOLD` 0.15 → **0.35**. `ema_slope_norm` = (slope/0.3) clipped ±1.0; the 0.15 cap rejected EMA drift of only ~0.045 ATR/bar (normal even inside ranges) and saturated at ±1.0 (35 rejects mostly `-1.00`). ADX-H1 > 30 remains the primary trend veto.
+
+**Invariant**: these are pre-execution **live filters only** — they do not touch obs dims (still 32-trained / 26-runtime), GBM features, reward, or the training pool, so **no retrain**. Rollback: restore the four `FTMOConfig` values (`KC_DIST_THRESHOLD_BASE=0.60`, `KC_DIST_ATR_SCALE_MAX=1.5`, `KC_SLOPE_THRESHOLD=0.15`) and the M1 block. Pre-existing `leakage_audit`/`parity_audit` failures (obs 35≠32 env sanity, vec_normalize artifact) are unrelated to this change.
 
 ## 📝 Version Log Entry — v8.0.76 (2026-05-28) — Dynamic KC distance (ATR-adaptive, live-only)
 

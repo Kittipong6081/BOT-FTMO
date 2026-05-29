@@ -976,33 +976,48 @@ class TradeExecutor:
                 f"SL dist {sl_distance:.5f})"
             )
 
-        # ─── เช็ค 2: M1 last closed candle direction match ──────────────
+        # ─── เช็ค 2: M1 last closed candle — wick-aware (v8.0.77 RF-1 fix) ──
+        # MR = "รับมีดที่กำลังตก": แท่ง M1 สุดท้ายที่ก้นจริงมักยังแดง (เพิ่งสวนลงก่อนเด้ง)
+        # เดิมบังคับ body ตรงทิศ → ตัดไม้กลับตัว edge สูงทิ้ง (82/142 entry-confirm rejects).
+        # ใหม่: ผ่านถ้า body ตรงทิศ "หรือ" มี rejection wick ฝั่งที่เด้งกลับ ≥ REJECT_WICK_MIN.
+        # ตัดทิ้งเฉพาะแท่งวิ่งสวนแรง + ไม่มีหางเด้ง (clean opposite body) = โมเมนตัมสวนยังแรงจริง
         if getattr(cfg, "ENTRY_CONFIRM_M1_DIRECTION_MATCH", True):
             try:
                 m1_df = self._connector.get_ohlcv(symbol, "M1", count=100)
                 if m1_df is not None and len(m1_df) >= 2:
                     # iloc[-1] = แท่งกำลังก่อตัว (อาจ partial), iloc[-2] = แท่งล่าสุดที่ปิด
                     last_closed = m1_df.iloc[-2]
-                    bar_body = float(last_closed["close"]) - float(last_closed["open"])
+                    o = float(last_closed["open"])
+                    c = float(last_closed["close"])
+                    h = float(last_closed["high"])
+                    lo = float(last_closed["low"])
+                    bar_body = c - o
+                    rng = h - lo
                     # อนุญาต doji (body ≈ 0) ผ่าน — ไม่ใช่ contra signal
-                    body_threshold = max(
-                        abs(float(last_closed["close"]) - float(last_closed["open"])),
-                        float(last_closed["high"]) - float(last_closed["low"]),
-                    ) * 0.05  # ต้องมี body ≥ 5% ของ range ถึงจะนับเป็น directional bar
-                    if abs(bar_body) > body_threshold:
-                        if direction == "BUY" and bar_body < 0:
+                    body_threshold = max(abs(bar_body), rng) * 0.05
+                    wick_min = float(getattr(cfg, "ENTRY_CONFIRM_M1_REJECT_WICK_MIN", 0.40))
+                    if rng > 0 and abs(bar_body) > body_threshold:
+                        # หางล่าง = ราคาสวนลงแล้วถูกดันกลับขึ้น (rejection ที่ดีต่อ BUY)
+                        lower_wick_ratio = (min(o, c) - lo) / rng
+                        # หางบน = ราคาสวนขึ้นแล้วถูกดันกลับลง (rejection ที่ดีต่อ SELL)
+                        upper_wick_ratio = (h - max(o, c)) / rng
+                        # BUY: ตัดเฉพาะแท่งแดงชัด + หางล่างเด้งน้อย (วิ่งลงแรง ไม่มีสัญญาณกลับ)
+                        if (direction == "BUY" and bar_body < 0
+                                and lower_wick_ratio < wick_min):
                             return (
                                 False,
-                                f"M1 last bar bearish "
-                                f"(O={last_closed['open']:.5f} > C={last_closed['close']:.5f}) "
-                                f"— BUY needs bullish confirm"
+                                f"M1 last bar strong bearish, no reject-wick "
+                                f"(O={o:.5f} C={c:.5f}, lower_wick {lower_wick_ratio:.2f} "
+                                f"< {wick_min:.2f}) — BUY momentum still falling"
                             )
-                        if direction == "SELL" and bar_body > 0:
+                        # SELL: ตัดเฉพาะแท่งเขียวชัด + หางบนเด้งน้อย
+                        if (direction == "SELL" and bar_body > 0
+                                and upper_wick_ratio < wick_min):
                             return (
                                 False,
-                                f"M1 last bar bullish "
-                                f"(O={last_closed['open']:.5f} < C={last_closed['close']:.5f}) "
-                                f"— SELL needs bearish confirm"
+                                f"M1 last bar strong bullish, no reject-wick "
+                                f"(O={o:.5f} C={c:.5f}, upper_wick {upper_wick_ratio:.2f} "
+                                f"< {wick_min:.2f}) — SELL momentum still rising"
                             )
             except Exception:
                 # fail-open: ดึง M1 ไม่ได้ก็ผ่าน (network glitch ฯลฯ)

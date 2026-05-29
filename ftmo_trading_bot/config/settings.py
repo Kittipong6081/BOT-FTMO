@@ -253,6 +253,12 @@ class FTMOConfig:
     ENTRY_CONFIRM_ENABLED: bool = True
     ENTRY_CONFIRM_MAX_SLIP_R: float = 0.30        # 30% ของ SL distance = max adverse slip
     ENTRY_CONFIRM_M1_DIRECTION_MATCH: bool = True # require M1 last bar wick/body confirm
+    # v8.0.77 — M1 gate wick-aware (RF-1 fix): MR เป็น "รับมีดที่กำลังตก" → แท่ง M1
+    # สุดท้ายที่ก้นจริงมักยังแดงอยู่. เดิมบังคับ body ตรงทิศ → false-reject 82/142
+    # ของ entry-confirm rejects (นักฆ่าอันดับ 1). ใหม่: รับถ้า body ตรงทิศ "หรือ" มี
+    # rejection wick ฝั่งที่เด้งกลับ ≥ MIN (mirror M15 reversal-wick ลงมา M1).
+    # ตัดทิ้งเฉพาะแท่งที่วิ่งสวนแรง+ตัน (clean body สวน + wick เด้งน้อย) = โมเมนตัมยังแรง
+    ENTRY_CONFIRM_M1_REJECT_WICK_MIN: float = 0.40  # lower/upper wick ratio ที่ถือว่า "เด้ง"
     # BB recheck ลบแล้ว v8.0.74 — KC distance filter ทดแทน (ดีกว่า: ปรับตาม ATR)
     # ENTRY_CONFIRM_BB_BUY_MAX / BB_SELL_MIN removed — kept as comment for revert reference
     # ENTRY_CONFIRM_BB_BUY_MAX: float = 0.35
@@ -281,18 +287,28 @@ class FTMOConfig:
     # === Keltner / ATR Band Live Filter (v8.0.74 — anti-whipsaw) ===
     # Block MR entry if price is NOT outside Keltner band (not overextended)
     KC_ENTRY_FILTER_ENABLED: bool = True
-    KC_DIST_THRESHOLD_BASE: float = 0.60   # |kc_distance_norm| ≥ 0.60 ATR = overextended (baseline)
+    # v8.0.77 — RF-2 fix: base 0.60 → 0.35. norm clip ที่ ±1.0 (= 3.75 ATR), ขอบ band = 0.667.
+    # ของเดิม base 0.60 × scale_max 1.5 = 0.90 → ช่วงผันผวนเหลือช่องผ่าน [0.90,1.0] กว้างแค่ 0.10
+    # = "เกือบเป็นด่านตาย" + กรองซ้ำ BB %B (เข้มกว่า BB เดิม 2-4×). 0.35 ≈ ระดับ BB %B 0.30 (~1.1 ATR)
+    # → เป็น freshness re-check "ยังล้นพอควร" ไม่ใช่กรองซ้ำ. revert: ใส่ 0.60 กลับ
+    KC_DIST_THRESHOLD_BASE: float = 0.35   # was 0.60 (v8.0.76) — too strict, double-gated BB
     # v8.0.76 — Dynamic KC distance (ATR-adaptive threshold)
     # ATR regime สูง (volatile) → ขยาย threshold ให้ลึกขึ้น (รอราคาล้นกรอบจริงค่อยสวน)
     # ATR regime ต่ำ (เงียบ)   → หด threshold ให้ตื้นขึ้น (เก็บรอบสั้น sideway แคบๆ ได้)
     KC_DIST_ATR_ADAPTIVE: bool = True
     KC_DIST_ATR_GAIN: float = 0.20         # scale = 1 + atr_z * GAIN (clipped by MIN/MAX)
-    KC_DIST_ATR_SCALE_MIN: float = 0.6     # quiet regime: 0.60 × 0.6 = 0.36 (ตื้น)
-    KC_DIST_ATR_SCALE_MAX: float = 1.5     # volatile regime: 0.60 × 1.5 = 0.90 (ลึก)
+    KC_DIST_ATR_SCALE_MIN: float = 0.6     # quiet regime: 0.35 × 0.6 = 0.21 (ตื้น, เก็บ swing เงียบ)
+    # v8.0.77 — RF-2: scale_max 1.5 → 1.3 → volatile cap = 0.35 × 1.3 = 0.455 (1.71 ATR)
+    # ห่างเพดาน clip 1.0 = 0.545 (window กว้างพอ ไม่ degenerate). revert: ใส่ 1.5 กลับ
+    KC_DIST_ATR_SCALE_MAX: float = 1.3     # was 1.5 — capped to keep workable acceptance window
 
     # Block if EMA slope is too steep (trending, not mean-reverting)
     KC_SLOPE_FILTER_ENABLED: bool = True
-    KC_SLOPE_THRESHOLD: float = 0.15    # |slope| > 0.15 ATR/bar = strong trend (baseline cap)
+    # v8.0.77 — RF-3 fix: base 0.15 → 0.35. ema_slope_norm = (slope/0.3) clip[-1,1].
+    # 0.15 = EMA ขยับแค่ ~0.045 ATR/bar ก็ตัด → sideway ปกติก็เกินบ่อย + norm อิ่มตัว ±1.0 เร็ว
+    # (35/142 entry-confirm rejects, ส่วนใหญ่ค่า -1.00 saturated). 0.35 = ~0.105 ATR/bar
+    # ยอม drift ปานกลาง แต่ยัง veto เทรนด์ชันจริง (ADX H1>30 เป็นด่านเทรนด์หลักอยู่แล้ว). revert: 0.15
+    KC_SLOPE_THRESHOLD: float = 0.35    # was 0.15 (v8.0.75) — too tight, saturated at ±1.0
     # v8.0.75 — Dynamic Slope (ATR-adaptive cap)
     # ATR regime สูง (volatile) → ขยายเพดาน (อนุญาตชันได้มากขึ้น noise)
     # ATR regime ต่ำ (เงียบ) → หดเพดาน (slope เล็กๆ ก็ trend จริง)
