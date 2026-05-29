@@ -752,7 +752,14 @@ class FTMOTradingBot:
         # v7.1 — compute temporal/regime features (สำหรับ GBM input + RL obs)
         try:
             from ml.signal_quality import compute_temporal_features
-            ltf_df_for_temp = getattr(self._strategy, "_ltf_data", None)
+            # v8.0.79: อ่าน M15 ของ sig.symbol โดยตรง (กัน cross-symbol contamination —
+            # เดิมใช้ _ltf_data ที่ค้างเป็นคู่สุดท้ายที่สแกน → atr_zscore/regime เพี้ยน)
+            ltf_df_for_temp = None
+            _get_ltf = getattr(self._strategy, "get_ltf_data", None)
+            if callable(_get_ltf):
+                ltf_df_for_temp = _get_ltf(sig.symbol)
+            if ltf_df_for_temp is None:
+                ltf_df_for_temp = getattr(self._strategy, "_ltf_data", None)
             symbol_info = self._connector.get_symbol_info(sig.symbol)
             pip = 0.0001 if symbol_info and symbol_info.get("digits", 5) >= 4 else 0.01
             is_metal = "XAU" in sig.symbol.upper() or "XAG" in sig.symbol.upper()
@@ -814,9 +821,17 @@ class FTMOTradingBot:
             pass
 
         # Market context — read from strategy state
+        # v8.0.79: อ่าน H1/H4 ของ sig.symbol โดยตรง (กัน cross-symbol contamination —
+        # เดิม _mtf_data/_htf_data ค้างเป็นคู่สุดท้าย → ADX H1/H4 ที่ log เป็นของคู่อื่น)
         try:
-            mtf = self._strategy._mtf_data
-            htf = self._strategy._htf_data
+            _get_mtf = getattr(self._strategy, "get_mtf_data", None)
+            _get_htf = getattr(self._strategy, "get_htf_data", None)
+            mtf = _get_mtf(sig.symbol) if callable(_get_mtf) else None
+            htf = _get_htf(sig.symbol) if callable(_get_htf) else None
+            if mtf is None:
+                mtf = self._strategy._mtf_data
+            if htf is None:
+                htf = self._strategy._htf_data
             if mtf is not None and "adx" in mtf.columns:
                 ctx["adx_h1"] = float(mtf["adx"].iloc[-1])
             if htf is not None and "adx" in htf.columns:

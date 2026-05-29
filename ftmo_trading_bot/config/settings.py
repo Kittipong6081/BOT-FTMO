@@ -223,6 +223,14 @@ class FTMOConfig:
     # MAX_USD_THEME_POSITIONS = cap "ฝั่ง USD เดียวกัน" ข้าม group (USD_SHORT/USD_LONG virtual)
     MAX_USD_THEME_POSITIONS: int = 2
 
+    # === Non-USD Currency-Leg Cap (v8.0.79) ===
+    # ปัญหา 2026-05-29: EURUSD SELL + EURJPY SELL = short EUR ทั้งคู่ ห่าง 8 นาที → EUR เด้ง → แพ้คู่ −$140.
+    # USD theme guard ครอบเฉพาะ leg USD → EURJPY (ไม่มี leg USD) หลุด. Group guard เดิมปิดอยู่
+    # (MAX_CORRELATED_POSITIONS=99). เพิ่ม cap ฝั่ง currency-leg ที่ "ไม่ใช่ USD" (EUR/GBP/JPY/AUD/
+    # NZD/CHF/CAD/XAU) — กันเปิดซ้อนทิศเดียวกันบน leg เดียวกัน.
+    # ค่า 1 = ห้าม double-bet (กันเคส 29 พ.ค.); ตั้ง 99 = ปิด guard นี้
+    MAX_SAME_CURRENCY_LEG_POSITIONS: int = 1
+
     # === Spread/ATR Liquidity Guard (v7.1, relaxed v7.1.1, v7.1.10) ===
     # ถ้า spread > SPREAD_ATR_RATIO_LIMIT × ATR → reject signal (สภาพคล่องแย่ / ตลาดเปิดผันผวน)
     # v7.1.1 (2026-05-04): 0.20 → 0.30 — เดิมตึงเกิน ตัด pool 90% (Trade 3 GBPJPY 91% ratio

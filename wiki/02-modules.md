@@ -45,7 +45,7 @@
 | File | Key symbols | Role |
 |------|-------------|------|
 | `indicators.py` | `TechnicalIndicators.atr`, `.ema`, `.rsi`, `.macd`, `.adx`, `.stoch`, `.bb` | Indicator calculation on numpy arrays |
-| `mean_reversion_strategy.py` (v8.0+) | `MeanReversionStrategy.analyze_with_data`, `MRSignal`, `MRSignalType`, `LiveMRScanner` (live entry), `TradeSignal=MRSignal` (legacy alias), `SignalType=MRSignalType` (legacy alias) | The whole strategy stack: BB %B extreme + RSI confirm + ADX H1 trend block + reversal-wick. RR 1:1, SL = 1.0×ATR (tight). `LiveMRScanner` is the drop-in replacement for `SMCStrategy` in main.py. |
+| `mean_reversion_strategy.py` (v8.0+) | `MeanReversionStrategy.analyze_with_data`, `MRSignal`, `MRSignalType`, `LiveMRScanner` (live entry), `TradeSignal=MRSignal` (legacy alias), `SignalType=MRSignalType` (legacy alias) | The whole strategy stack: BB %B extreme + RSI confirm + ADX H1 trend block + reversal-wick. RR 1:1, SL = 1.0×ATR (tight). `LiveMRScanner` is the drop-in replacement for `SMCStrategy` in main.py. **v8.0.79**: per-symbol caches `_{ltf,mtf,htf}_by_symbol` + accessors `get_{ltf,mtf,htf}_data(symbol)` — context/obs builders MUST read these by `sig.symbol` (legacy single slots `_ltf_data`/`_mtf_data`/`_htf_data` = last-scanned symbol → cross-symbol contamination). |
 
 **v8.0.6 cleanup (2026-05-07)** — SMC source files deleted: `smc_strategy.py` (and `.bak_v6.13`), `order_blocks.py`, `fair_value_gaps.py`, `liquidity_sweeps.py`, `inducement.py`, `market_structure.py`, plus `tests/test_order_blocks.py`. Live runtime uses MR exclusively. `TradeSignal` and `SignalType` are still importable from `mean_reversion_strategy` as legacy aliases (for `trade_executor` and historical test code).
 

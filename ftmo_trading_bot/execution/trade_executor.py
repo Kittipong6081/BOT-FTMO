@@ -320,6 +320,12 @@ class TradeExecutor:
     }
     MAX_USD_THEME_POSITIONS: int = getattr(bot_config.ftmo, "MAX_USD_THEME_POSITIONS", 2)
 
+    # === Non-USD Currency-Leg Cap (v8.0.79) ===
+    # USD_THEME_DIR ครอบเฉพาะ leg USD. เคส 29 พ.ค. (EURUSD SELL + EURJPY SELL = short EUR ทั้งคู่)
+    # หลุดเพราะ EURJPY ไม่มี leg USD + group guard ปิด (MAX_CORRELATED_POSITIONS=99).
+    # cap นี้กันการซ้อนทิศเดียวกันบน currency-leg ที่ไม่ใช่ USD (EUR/GBP/JPY/AUD/NZD/CHF/CAD/XAU).
+    MAX_SAME_CURRENCY_LEG_POSITIONS: int = getattr(bot_config.ftmo, "MAX_SAME_CURRENCY_LEG_POSITIONS", 1)
+
     def __init__(
         self,
         connector: MT5Connector,
@@ -860,7 +866,67 @@ class TradeExecutor:
                     f"(จำกัด {self.MAX_USD_THEME_POSITIONS}) — กัน double-bet on USD direction"
                 )
 
+        # === 4. Non-USD Currency-Leg Check (v8.0.79) ===
+        # กันการซ้อนทิศเดียวกันบน currency-leg ที่ไม่ใช่ USD (USD ถูกคุมโดย #3 แล้ว).
+        # เคส 29 พ.ค.: EURUSD SELL (short EUR) + EURJPY SELL (short EUR) → leg EUR_SHORT ซ้อน.
+        new_legs = self._non_usd_legs(symbol_upper, tt_upper)
+        if new_legs:
+            for trade in self._active_trades.values():
+                if not trade.is_open:
+                    continue
+                ex_legs = self._non_usd_legs(
+                    trade.symbol.upper(), trade.trade_type.upper()
+                )
+                shared = new_legs & ex_legs
+                if not shared:
+                    continue
+                # นับไม้ active ที่แชร์ leg+direction เดียวกัน (รวมที่กำลังเทียบ)
+                for leg in shared:
+                    cnt = sum(
+                        1 for t in self._active_trades.values()
+                        if t.is_open and leg in self._non_usd_legs(
+                            t.symbol.upper(), t.trade_type.upper()
+                        )
+                    )
+                    if cnt >= self.MAX_SAME_CURRENCY_LEG_POSITIONS:
+                        ccy, side = leg
+                        return (
+                            False,
+                            f"Currency-leg {ccy} {side} เปิดแล้ว {cnt} ตำแหน่ง "
+                            f"(จำกัด {self.MAX_SAME_CURRENCY_LEG_POSITIONS}) — "
+                            f"กัน double-bet on {ccy} (correlated: {symbol} vs {trade.symbol})"
+                        )
+
         return (True, "ผ่านการตรวจ Correlation Risk")
+
+    @staticmethod
+    def _non_usd_legs(symbol: str, trade_type: str) -> set:
+        """v8.0.79: แตก symbol+direction เป็น currency-leg ที่ "ไม่ใช่ USD".
+
+        คืน set ของ (currency, "LONG"/"SHORT") — เช่น
+          EURUSD SELL → {("EUR","SHORT")}   (leg USD ตัดออก, คุมโดย USD theme guard)
+          EURJPY SELL → {("EUR","SHORT"), ("JPY","LONG")}
+          XAUUSD BUY  → {("XAU","LONG")}
+        BUY = long base / short quote, SELL = short base / long quote.
+        """
+        s = symbol.upper()
+        if "XAU" in s:
+            base, quote = "XAU", "USD"
+        elif "XAG" in s:
+            base, quote = "XAG", "USD"
+        elif len(s) >= 6 and s[:3].isalpha() and s[3:6].isalpha():
+            base, quote = s[:3], s[3:6]
+        else:
+            return set()
+        tt = trade_type.upper()
+        base_dir = "LONG" if tt == "BUY" else "SHORT"
+        quote_dir = "SHORT" if tt == "BUY" else "LONG"
+        legs = set()
+        if base != "USD":
+            legs.add((base, base_dir))
+        if quote != "USD":
+            legs.add((quote, quote_dir))
+        return legs
 
     # =========================================================================
     # 🕯️ Entry Confirmation + Spread Spike (v8.0.55 — pre-execution gates)

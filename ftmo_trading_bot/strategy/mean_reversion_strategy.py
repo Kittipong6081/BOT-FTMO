@@ -542,9 +542,15 @@ class LiveMRScanner:
         self._indicators = TechnicalIndicators()
         self._strategy = MeanReversionStrategy(indicators=self._indicators)
         # Internal state mirrors SMCStrategy attrs that main.py reads
-        self._ltf_data = None      # last M15 dataframe (for Chronos)
+        self._ltf_data = None      # last M15 dataframe (back-compat — last symbol scanned)
         self._mtf_data = None      # last H1
         self._htf_data = None      # last H4
+        # v8.0.79: per-symbol cache — กัน cross-symbol contamination.
+        # main loop สแกนครบทุกคู่ก่อน แล้วค่อยอ่าน context/obs → ต้องอ่านตาม symbol
+        # ไม่ใช่ slot เดียวที่ค้างเป็นคู่สุดท้าย (เดิม _ltf_data/_mtf_data ปนข้ามคู่)
+        self._ltf_by_symbol: Dict[str, pd.DataFrame] = {}
+        self._mtf_by_symbol: Dict[str, pd.DataFrame] = {}
+        self._htf_by_symbol: Dict[str, pd.DataFrame] = {}
         self._htf_bias = 0
         self._d1_bias_cache = {}
         # Accept the symbols list from settings — same as SMC
@@ -593,10 +599,14 @@ class LiveMRScanner:
         except Exception:
             return None
 
-        # Cache for context (Chronos forecaster + obs builders)
+        # Cache for context (obs builders). v8.0.79: เก็บทั้ง last-value (back-compat)
+        # และ per-symbol — main.py อ่าน per-symbol ตาม sig.symbol กัน contamination
         self._ltf_data = m15
         self._mtf_data = h1
         self._htf_data = h4
+        self._ltf_by_symbol[symbol] = m15
+        self._mtf_by_symbol[symbol] = h1
+        self._htf_by_symbol[symbol] = h4
 
         # Build price_info from the freshest bid/ask if available
         try:
@@ -613,6 +623,20 @@ class LiveMRScanner:
             }
 
         return self._strategy.analyze_with_data(symbol, h4, h1, m15, price_info)
+
+    # ─── Per-symbol cache accessors (v8.0.79 — กัน cross-symbol contamination) ───
+
+    def get_ltf_data(self, symbol: str) -> Optional[pd.DataFrame]:
+        """M15 dataframe ของ symbol ที่ระบุ (จากสแกนล่าสุด). None ถ้าไม่มี."""
+        return self._ltf_by_symbol.get(symbol)
+
+    def get_mtf_data(self, symbol: str) -> Optional[pd.DataFrame]:
+        """H1 dataframe ของ symbol ที่ระบุ (จากสแกนล่าสุด). None ถ้าไม่มี."""
+        return self._mtf_by_symbol.get(symbol)
+
+    def get_htf_data(self, symbol: str) -> Optional[pd.DataFrame]:
+        """H4 dataframe ของ symbol ที่ระบุ (จากสแกนล่าสุด). None ถ้าไม่มี."""
+        return self._htf_by_symbol.get(symbol)
 
     # ─── Methods main.py expects from SMCStrategy ───────────────────
 
