@@ -1202,6 +1202,12 @@ class TradeExecutor:
             # v6.10b: ใช้ broker time (EEST) — same as open_time
             trade.close_time = TimeManager.get_server_time().replace(tzinfo=None)
             trade.close_reason = reason
+            # v8.0.78: คำนวณ time_in_trade ที่นี่ด้วย (เดิมมีแค่ใน record_external_close
+            # → ไม้ที่ปิดผ่าน close_trade เช่น Pre-news/Friday close โชว์ Time-in-Trade=0)
+            if trade.open_time:
+                trade.time_in_trade = int((trade.close_time - trade.open_time).total_seconds())
+            if not trade.exit_path:
+                trade.exit_path = reason
             # v6.9: capture balance + final SL at close
             try:
                 rs = self._risk_manager.get_risk_status()

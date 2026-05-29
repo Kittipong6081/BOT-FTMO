@@ -809,9 +809,9 @@ class TradeManager:
         ถ้า symbol อยู่ใน window [event - no_trade_before_news_minutes, event] →
         ปิดทุก position ของ symbol นั้น
 
-        - window_before = bot_config.sessions.no_trade_before_news_minutes (default 30)
+        - window_before = bot_config.sessions.news_close_before_minutes (v8.0.78: 30,
+          แยกจาก entry block 60 → ไม้มี runway ≥30 นาที ไม่โดนเปิดแล้วปิดทันที)
         - window_after = 0 (หลังข่าวออกปล่อยให้ trailing/SL/TP ทำงานปกติ)
-        - Buffer = 0 — ปิดที่ T-30 ตรงเดียวกับ block สัญญาณใหม่
 
         Returns:
             int: จำนวน position ที่ปิดสำเร็จ
@@ -821,7 +821,13 @@ class TradeManager:
             return 0
 
         now_utc = TimeManager.get_server_time().astimezone(pytz.UTC)
-        window_before = getattr(bot_config.sessions, "no_trade_before_news_minutes", 30)
+        # v8.0.78: ใช้ window ปิด (news_close_before_minutes=30) แยกจาก window เปิด
+        # (no_trade_before_news_minutes=60). กัน "เปิดแล้วโดนปิดทันที": ไม้เปิดได้เมื่อ
+        # ข่าว >60 นาที → ปิดที่ T-30 → ทุกไม้มี runway ≥30 นาที. ตกมา 60 ถ้าไม่ตั้งค่า
+        window_before = getattr(
+            bot_config.sessions, "news_close_before_minutes",
+            getattr(bot_config.sessions, "no_trade_before_news_minutes", 30),
+        )
         closed_count = 0
 
         for ticket in active_tickets:

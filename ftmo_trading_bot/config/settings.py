@@ -461,8 +461,17 @@ class SessionConfig:
     # v8.0.38 (2026-05-19): ขยาย news blackout window (Path A: Entry precision)
     #   เดิม 30/15 → ใหม่ 60/45 — หลีกเลี่ยง volatility spike + aftermath
     #   NFP/FOMC: ผลกระทบจริง ~2-3 ชม. ปกติเดิม 45 min ครอบไม่พอ
-    no_trade_before_news_minutes: int = 60   # หยุดเทรด 60 นาที ก่อนข่าว (เดิม 30)
-    no_trade_after_news_minutes: int = 45    # หยุดเทรด 45 นาที หลังข่าว (เดิม 15)
+    # v8.0.78 (2026-05-29): แยก "ด่านปิด" ออกจาก "ด่านเปิด" (news_close_before_minutes)
+    #   ENTRY block คง 60 (กัน entry เข้า NFP aftermath ตาม v8.0.38)
+    #   หลังข่าว 45 → 20 (กลับมาเทรดเร็วขึ้น — MR fade post-news chop ได้)
+    no_trade_before_news_minutes: int = 60   # ENTRY: หยุดเปิด 60 นาที ก่อนข่าว
+    no_trade_after_news_minutes: int = 20    # ENTRY: หยุดเปิด 20 นาที หลังข่าว (เดิม 45, v8.0.38)
+    # v8.0.78: ด่านปิด (force-close) แยกจากด่านเปิด — เดิม check_news_close ใช้ 60
+    #   ทำให้ไม้ที่เปิดช่วง 60-90 นาทีก่อนข่าวโดนปิดทันที (runway = 0) + ตัดไม้ที่กำลัง
+    #   ทำงานทิ้งก่อนเวลา 1 ชม. ลดเป็น 10 → entry 60 − close 10 = runway ≥50 นาที
+    #   (ปิดที่ T-10 ก็ flat ทันก่อนราคากระชากตอนข่าว). revert: ใส่ 60
+    #   ⚠️ ต้อง < no_trade_before_news_minutes (60) เสมอ ไม่งั้น bug เปิดแล้วปิดทันทีกลับมา
+    news_close_before_minutes: int = 10      # CLOSE: บังคับปิด 10 นาที ก่อนข่าว (แยกจาก entry 60)
     
     # === FTMO Friday Rule (บังคับปิดออเดอร์วันศุกร์) ===
     # กฎ FTMO: ห้ามถือออเดอร์ข้ามสัปดาห์ในสุดสัปดาห์

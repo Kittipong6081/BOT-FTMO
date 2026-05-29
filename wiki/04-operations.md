@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-29 (v8.0.77 — Entry-confirm de-restriction) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-29 (v8.0.78 — News close-window decoupled) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 
 ## TL;DR (30-second scan)
 
@@ -205,8 +205,8 @@ In `RiskManager` + `TradeExecutor`:
 - `config/news_calendar.json` (schema: `updated_at`, `valid_until`, `events[]`).
 - Each event: `datetime_utc`, `currency`, `name`, `impact`.
 - Auto-imported every Sunday 23:30 EET via `NewsCalendarScheduler.check_and_run`.
-- Blocks signals inside the window `[event − 30 min, event + 15 min]` (`no_trade_before_news_minutes`, `no_trade_after_news_minutes`).
-- **v7.1.10 — Pre-news position close**: `TradeManager.check_news_close()` ปิด position ที่เปิดอยู่ก่อนข่าว 30 นาที (window_before sync กับ scan-signal block, window_after = 0). USD news → ปิด EURUSD/GBPUSD/USDJPY/AUDUSD/USDCAD/USDCHF/NZDUSD + **XAUUSD** (ทอง spike แรงตาม USD strength). Close reason = `"Pre-news close"`
+- **Entry block** — blocks NEW signals inside `[event − no_trade_before_news_minutes (60), event + no_trade_after_news_minutes (20)]`. (after-window was 45 pre-v8.0.78; before-window 60 kept for NFP/FOMC aftermath per v8.0.38.)
+- **v7.1.10 / v8.0.78 — Pre-news position close**: `TradeManager.check_news_close()` ปิด position ที่เปิดอยู่ก่อนข่าว **`news_close_before_minutes` (v8.0.78 = 10, decoupled from the 60 entry-window)**, window_after = 0. ⚠️ **Invariant**: close-window MUST be `< no_trade_before_news_minutes` by a runway margin — เดิมทั้งคู่ = 60 → ไม้ที่เปิดช่วง 60-90 นาทีก่อนข่าวโดนปิดทันที (runway 0). 60 − 10 = runway ≥50 นาที. USD news → ปิด EURUSD/GBPUSD/USDJPY/AUDUSD/USDCAD/USDCHF/NZDUSD + **XAUUSD**. Close reason = `"Pre-news close"`
 
 ### Priority 2: Hardcoded fallback
 

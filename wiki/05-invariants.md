@@ -1,5 +1,18 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-29 | Scope: red flags, version log, migration notes (latest: **v8.0.77** — Entry-confirm de-restriction (live-only))
+> Last Updated: 2026-05-29 | Scope: red flags, version log, migration notes (latest: **v8.0.78** — News close-window decoupled (live-only))
+
+## 📝 Version Log Entry — v8.0.78 (2026-05-29) — News close-window decoupled from entry-window (live-only, no retrain)
+
+**Trigger**: User saw a trade opened and force-closed 4 minutes later by "Pre-news close" (GBPJPY BUY, 29 May 10:15:41 → 10:20:00, −$8.18). Log confirmed 3 `Pre-news close` trades; two others (GBPUSD/XAUUSD) were closed at exactly T-60 holding only scratch +$12-13, i.e. killed an hour early for no benefit.
+
+**Root cause**: the entry gate (`RiskManager.can_open_trade` news block) and the close gate (`TradeManager.check_news_close`) both read `no_trade_before_news_minutes` (= 60). A position can only OPEN when news is >60 min away, but `check_news_close` then closes it the instant news enters the same 60-min window. So a trade opened at T-61..T-90 has **0–30 min of runway** and is force-closed almost immediately — and any working position is cut a full hour before the event.
+
+**Fix** (live-only, single-line rollback):
+- New `SessionConfig.news_close_before_minutes = 10` decouples the **close** window from the **entry** window. `check_news_close` now uses it (falls back to `no_trade_before_news_minutes` if unset). Entry stays at 60 (preserves the v8.0.38 NFP/FOMC-aftermath entry protection); close drops to 10 → **guaranteed runway = 60 − 10 = ≥50 min**, and working positions aren't cut an hour early (T-10 is still flat before the release spike).
+- `no_trade_after_news_minutes` 45 → 20 (entry resumes sooner post-news; MR fades post-news chop).
+- Bonus: `TradeExecutor.close_trade` now computes `time_in_trade` (previously only `record_external_close` did → trades closed via close_trade, e.g. Pre-news/Friday, logged `Time-in-Trade (s) = 0`).
+
+**Invariant**: ⚠️ `news_close_before_minutes` MUST stay **< `no_trade_before_news_minutes`** by a runway margin (≥30 min recommended) — if they are equal again, the open-then-immediately-closed bug returns. Affected: `config/settings.py` (`SessionConfig`), `execution/trade_manager.py` (`check_news_close`), `execution/trade_executor.py` (`close_trade`). No obs/reward/pool touched → no retrain; audits stay green.
 
 ## 📝 Version Log Entry — v8.0.77 (2026-05-29) — Entry-confirm de-restriction (live-only, no retrain)
 
