@@ -49,6 +49,7 @@ class TrailingState:
     trail_distance: float       # ระยะ Trailing (ราคา)
     pip_size: float = 0.0001    # cache pip_size → กันเรียก get_symbol_info ทุก tick
     tp_step_done: bool = False  # v8.0.48 Stage 2: TP shift to 1.5R + SL to 0.5R triggered แล้วหรือยัง
+    strategy_id: str = "MR"     # v8.1: which strategy owns this position (MR / TF)
 
 
 class TradeManager:
@@ -252,6 +253,7 @@ class TradeManager:
                 trail_distance=trade.atr_value * self.TRAIL_ATR_MULTIPLIER,
                 pip_size=pip_sz,
                 tp_step_done=False,  # v8.0.48
+                strategy_id=getattr(trade, "strategy_id", "MR"),  # v8.1
             )
 
         state = self._trail_states[trade.ticket]

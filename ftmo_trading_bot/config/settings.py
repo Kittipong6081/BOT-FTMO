@@ -96,6 +96,17 @@ class FTMOConfig:
     #   Risk math: 3 × 0.70% = 2.1% max concurrent (vs DAILY_LOSS_CAP 2.5%, FTMO 4%)
     MAX_OPEN_POSITIONS: int = 3
 
+    # === Per-strategy allocation (v8.1 Phase 2 — dual-strategy MR+TF) ===
+    # Used only when bot_config.tf.enabled. Each strategy gets a distinct MT5
+    # magic (broker positions attributable), its own daily-loss sub-budget, slot
+    # cap, and risk-per-trade. The FTMO 4% hard breach guard + 3.0% global soft
+    # cap sit ABOVE these (portfolio-level). A strategy that hits its sub-budget
+    # halts ITSELF for the day without halting the other.
+    STRATEGY_MAGIC: dict = field(default_factory=lambda: {"MR": 123456, "TF": 123457})
+    STRATEGY_SUB_BUDGET_PCT: dict = field(default_factory=lambda: {"MR": 0.020, "TF": 0.015})
+    STRATEGY_SLOT_CAP: dict = field(default_factory=lambda: {"MR": 2, "TF": 1})  # sum=3=MAX_OPEN_POSITIONS
+    STRATEGY_RISK_PCT: dict = field(default_factory=lambda: {"MR": 0.0070, "TF": 0.0060})  # both ∈ [0.5%,0.85%]
+
     # === Min Seconds Between Opens (v8.0.26, DISABLED v8.0.74) ===
     # v8.0.74: ปิด — CLUSTER_COOLDOWN_ANY_SEC=300 ครอบ 60s อยู่แล้ว (ซ้ำซ้อน)
     # เดิม: กัน bulk-trading flag จาก The5ers (เปิดหลายไม้ในวินาทีเดียว)
@@ -155,6 +166,11 @@ class FTMOConfig:
     #   HARD_STOP 4% (daily_start_equity, FTMO-aligned) = ยังเป็น hard cap สำหรับ breach
     DAILY_LOSS_CAP_ENABLED: bool = True
     DAILY_LOSS_CAP_PCT: float = 0.025       # 2.5% — soft cap (1.5pp buffer ก่อน FTMO 4%)
+    # v8.1 Phase 2: when dual-strategy (tf.enabled) is ON, the global soft cap is
+    # raised to this so a single strategy can halt itself (sub-budget MR 2.0% /
+    # TF 1.5%) BEFORE the portfolio cap trips and stops BOTH. Only applies when
+    # tf.enabled → single-strategy MR keeps the 2.5% cap unchanged.
+    DAILY_LOSS_CAP_PCT_DUAL: float = 0.030  # 3.0% — global soft cap in dual-strategy mode
     
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน

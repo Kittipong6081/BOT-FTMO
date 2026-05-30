@@ -1,5 +1,11 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-30 (v8.1-phase1 — Regime gate + Router + TF rules scanner, behind `tf.enabled` flag) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-30 (v8.1-phase2 — per-strategy magic + conflict filter + risk ledger, bot_state schema 9) | Scope: every module + key class / method / variable
+>
+> **v8.1-phase2 additions (execution + risk machinery; gated behind `tf.enabled`, default OFF = MR unchanged)**:
+> - NEW `core/strategy_risk_book.py` → `StrategyRiskBook` (held by `RiskManager._strategy_book`): per-strategy realized (recorded at close) + floating (live from magic) P/L; `is_halted(sid, init_bal)` self-halt at sub-budget; `remaining_budget`; `to_dict`/`from_dict` (bot_state schema 9).
+> - `ExecutedTrade.strategy_id` + `TrailingState.strategy_id` (NEW fields). `TradeExecutor`: `_check_strategy_conflict(signal)` (regime-exclusivity + slot cap), `_magic_for(sid)` / `_strategy_for_magic(magic)` / `_bot_magics()`, per-strategy magic at send, MR-only `_check_entry_confirmation` dispatch, orphan filter via `_bot_magics()`.
+> - `RiskManager.can_open_trade(strategy_id=...)` sub-budget gate; `update_daily_pnl(strategy_id=...)`; `_effective_daily_loss_cap_pct()` (3.0% dual / 2.5% single); `_strategy_book` reset in `_on_new_day`; save/load schema **9**.
+> - `config/settings.py` `FTMOConfig`: `STRATEGY_MAGIC`, `STRATEGY_SUB_BUDGET_PCT` (MR 0.020 / TF 0.015), `STRATEGY_SLOT_CAP` (MR 2 / TF 1), `STRATEGY_RISK_PCT` (MR 0.0070 / TF 0.0060), `DAILY_LOSS_CAP_PCT_DUAL=0.030`.
 >
 > **v8.1-phase1 additions (regime + router + TF rules; `bot_config.tf.enabled` default OFF = MR unchanged)**:
 > - NEW `strategy/regime_classifier.py` → `MarketRegimeClassifier` (`classify` / `classify_all(open_owner)` / `_raw_regime`); `Regime` enum (RANGING/TRENDING/AMBIGUOUS); `RegimeResult`. ADX H1 primary + choppiness + slope; dead-zone ADX 20-27; hysteresis (confirm_bars + min_dwell + lock).
@@ -211,11 +217,12 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 | `RiskManager.get_risk_status` | Returns dict: `daily_loss_pct`, `overall_drawdown_pct`, `current_balance` |
 | `RiskManager._initial_balance` | FTMO anchor — total DD is measured against this |
 | `RiskManager._daily_start_balance` | Daily anchor — daily DD is measured against this |
-| `RiskManager._save_state` / `._load_state` | Persistence via `logs/bot_state.json` (schema v4) |
+| `RiskManager._save_state` / `._load_state` | Persistence via `logs/bot_state.json` (**schema 9** — v8.1 added `strategy_book`; schema-8 files load as empty book → no migration) |
+| `RiskManager._strategy_book` (v8.1) | `StrategyRiskBook` — per-strategy daily P/L + self-halt at sub-budget (dual-strategy only) |
 
 **State file schema** (`logs/bot_state.json`):
 
-- `initial_balance`, `state`, `highest_balance`, `current_day`, `daily_closed_pnl`, `consecutive_losses`, `halt_until`, `daily_pnl_history`, `mt5_login` (v4), `challenge_start_date` (v4), `schema_version` (v4).
+- `initial_balance`, `state`, `highest_balance`, `current_day`, `daily_closed_pnl`, `consecutive_losses`, `halt_until`, `daily_pnl_history`, `mt5_login` (v4), `challenge_start_date` (v4), `last_open_theme` (v8), `strategy_book` (v9 — `{daily_realized_pnl, strategy_halted, day}`), `schema_version` (now **9**).
 - **Validation**: `mt5_login` mismatch → reset; balance diff > 20 % → warn only (never auto-reset).
 
 ### `mt5_connector.py` — MT5 API wrapper

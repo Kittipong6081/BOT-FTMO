@@ -1,5 +1,27 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase1** — Regime gate + StrategyRouter + TF rules scanner (paper-mode, behind `tf.enabled` flag, default OFF))
+> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase2** — per-strategy magic + conflict filter + risk ledger (bot_state schema 9); TF still paper, MR unchanged when `tf.enabled` OFF)
+
+## 📝 Version Log Entry — v8.1-phase2 (2026-05-30) — Per-strategy magic + Order Conflict Filter + StrategyRiskBook (bot_state schema 9)
+
+**Trigger**: Phase 2 of the dual-strategy plan — build the execution + risk machinery so MR & TF positions are attributable and budgeted separately. **All Phase-2 behaviour is gated behind `bot_config.tf.enabled` (default OFF) → single-strategy MR is byte-identical.** TF stays `paper_mode` (real TF execution waits for the Phase 3 TF RL model).
+
+**Per-strategy attribution (magic = source of truth)**:
+- `ExecutedTrade.strategy_id` + `TrailingState.strategy_id` (NEW fields, default "MR"). `execute_signal` sends with `magic = STRATEGY_MAGIC[strategy_id]` (MR 123456 / TF 123457) via `_send_order_with_retry(magic=...)`. Orphan recovery: filter `magic not in TradeExecutor._bot_magics()` (was hardcoded `!= 123456` → would drop TF orphans); `_rebuild_executed_trade_from_mt5` sets `strategy_id` via `_strategy_for_magic(magic)`.
+- Helpers: `TradeExecutor._magic_for(sid)`, `._strategy_for_magic(magic)`, `._bot_magics()`.
+
+**Order Conflict Filter** — `TradeExecutor._check_strategy_conflict(signal)` (NEW, first gate in `execute_signal`): (1) regime exclusivity — a symbol held by the OTHER strategy is blocked; (2) per-strategy slot cap (`STRATEGY_SLOT_CAP` MR 2 / TF 1). **No-op when `tf.enabled=False`** (so MR keeps the global `MAX_OPEN_POSITIONS=3`). Same-symbol / opposing-theme / currency-leg stay PORTFOLIO-LEVEL in `_check_correlation_risk` + `can_open_trade` (cross-strategy already — ⛔ never filter strategy_id there).
+
+**Gate dispatch**: `_check_entry_confirmation` (slip + M1-wick + Keltner — tuned for MR "falling-knife" entries) now runs **MR-only**; TF skips it (would block trend-continuation). Broker-agnostic gates (spread-spike, re-anchor, min-stop, final_validation, SL-existence) run for both.
+
+**Per-strategy risk ledger** — NEW `core/strategy_risk_book.py` `StrategyRiskBook` (held by `RiskManager._strategy_book`): realized P/L recorded at close (`update_daily_pnl(strategy_id=...)`), floating P/L computed live from open positions' magic (never drifts on restart). `is_halted(sid)` self-halts a strategy at its sub-budget WITHOUT touching global `BotState` → the other strategy keeps trading. `can_open_trade(strategy_id=...)` gains the sub-budget gate (active only when `tf.enabled`). Reset in `_on_new_day`; persisted in `bot_state.json` **schema 9** (`strategy_book` key; schema-8 files load as empty → no migration needed).
+
+**Per-strategy sizing**: `STRATEGY_RISK_PCT` MR 0.70% (= `DEFAULT_RISK_PER_TRADE_PCT` → MR identical) / TF 0.60%, passed to `PositionSizer.calculate_lot_size(risk_pct=...)`. Global soft cap: `_effective_daily_loss_cap_pct()` = 3.0% (`DAILY_LOSS_CAP_PCT_DUAL`) when `tf.enabled` else 2.5% (`DAILY_LOSS_CAP_PCT`, unchanged).
+
+**Risk hierarchy** (top wins): [1] FTMO 4% hard breach guard (global) → [2] global soft cap 3.0%/2.5% → [3] per-strategy sub-budget MR 2.0% / TF 1.5%. worst-case both halt = 3.5% < FTMO 4%.
+
+**Verification**: flag OFF → `leakage_audit` + `parity_audit` exit 0 (MR identical, risk 0.70% matches training). Unit tests: ledger per-strategy realized+floating + isolated self-halt + persistence; magic helpers; conflict filter (regime-exclusivity + slot cap dual-ON, no-op OFF); effective cap 2.5/3.0; RiskManager builds + schema-8→9 migration safe.
+
+**⛔ New invariants**: (1) MT5 magic ↔ strategy_id is the attribution source of truth — orphan recovery uses `_bot_magics()`, never a hardcoded magic. (2) correlation / opposing-theme / currency-leg are PORTFOLIO-LEVEL — count across BOTH strategies, never filter strategy_id. (3) per-strategy halt ≠ global `BotState` (one strategy halting must not stop the other). (4) global FTMO 4% breach guard sits ABOVE per-strategy halt. (5) every Phase-2 risk change is gated behind `tf.enabled` — flipping it OFF must restore exact single-strategy MR behaviour (cap 2.5%, no slot cap, risk 0.70%).
 
 ## 📝 Version Log Entry — v8.1-phase1 (2026-05-30) — Market Regime gate + StrategyRouter + Trend Following scanner (rules-only, paper-mode, flag OFF by default)
 
