@@ -1,5 +1,12 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-30 (v8.1-phase2 — per-strategy magic + conflict filter + risk ledger, bot_state schema 9) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-30 (v8.1-phase3 — TF 3-brain training pipeline; code ready, not yet trained) | Scope: every module + key class / method / variable
+>
+> **v8.1-phase3 additions (TF training pipeline — mirror of MR; TF still paper until trained)**:
+> - NEW `ml/trend_following_backtester.py` → `TrendFollowingBacktester(StrategyBacktester)`: H1 entry, `generate_episode_signals(symbol, h1_start_bar, ...)`, `_resample_h4_to_d1`, wide-RR resolve (tp_step disabled, trail runners), pool extras `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`/`is_runner`. Constants `TF_SCAN_POINTS_PER_DAY=12`, `TF_FUTURE_BARS=120`, `TF_LOOKBACK_H1=300`.
+> - NEW `ml/trend_following_env.py` → `TrendFollowingFilterEnv(FTMOSignalFilterEnv)`: 35-dim obs (tf_v1, 3 slots reinterpreted) + inverted reward (RUNNER_BONUS/LATE_ENTRY_PENALTY).
+> - NEW scripts `build_tf_signal_pool.py`, `train_tf_signal_quality.py` (27 TF FEATURE_KEYS → `data/tf_signal_quality_model.pkl`), `train_tf_signal_filter.py` (→ `models/tf/ppo_tf_filter.zip`+`vec_normalize_tf.pkl`), `auto_train_pipeline_tf.py` (slim orchestrator).
+> - `TrendFollowingStrategy`: `resuming`+MACD now SOFT confluence (not hard gates); `pullback_max_atr` 1.5→2.5.
+> - `FTMOTradingBot`: `_rl_agents`/`_quality_models` dicts + `_rl_agent_for`/`_quality_model_for`/`_build_obs_tf`/`_build_obs_for`; TF executes only when `paper_mode=False AND "TF" in _rl_agents`.
 >
 > **v8.1-phase2 additions (execution + risk machinery; gated behind `tf.enabled`, default OFF = MR unchanged)**:
 > - NEW `core/strategy_risk_book.py` → `StrategyRiskBook` (held by `RiskManager._strategy_book`): per-strategy realized (recorded at close) + floating (live from magic) P/L; `is_halted(sid, init_bal)` self-halt at sub-budget; `remaining_budget`; `to_dict`/`from_dict` (bot_state schema 9).

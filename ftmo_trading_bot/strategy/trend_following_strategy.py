@@ -191,7 +191,13 @@ class TrendFollowingStrategy:
         d1_raw = self._d1_bias(d1_df)
         d1_align = 1 if d1_raw == trend else (-1 if d1_raw == -trend else 0)
 
-        # 4) pullback-resume toward EMA21
+        # 4) pullback toward EMA21 (HARD) + RSI not stretched (HARD).
+        # `resuming` (last bar ticking back in trend dir) and MACD agreement are
+        # SOFT confluence (not hard gates) — a strict conjunction yields almost no
+        # signals (ADX>27 ∧ EMA-stack ∧ pullback ∧ resume ∧ MACD); making resume +
+        # MACD confluence bonuses keeps the population wide for both train + live
+        # (same gate structure → no train/live distribution gap) and lets the GBM
+        # + RL filter rank them. Thresholds are Phase-4 tunable.
         dist_to_ema_atr = abs(close - ema21) / max(atr, 1e-9)
         if dist_to_ema_atr > self.PULLBACK_MAX_ATR:
             return self._no_signal(
@@ -202,19 +208,14 @@ class TrendFollowingStrategy:
             resuming = close > float(prev["close"])
             rsi_ok = rsi < self.RSI_BUY_MAX
             pullback_depth = (float(last["low"]) - ema21) / max(atr, 1e-9)
+            macd_ok = macd_h > 0
         else:
             resuming = close < float(prev["close"])
             rsi_ok = rsi > self.RSI_SELL_MIN
             pullback_depth = (ema21 - float(last["high"])) / max(atr, 1e-9)
-        if not resuming:
-            return self._no_signal(symbol, atr, ["not resuming in trend direction"])
+            macd_ok = macd_h < 0
         if not rsi_ok:
             return self._no_signal(symbol, atr, [f"RSI {rsi:.1f} stretched against entry"])
-
-        # 5) MACD confirmation
-        if self.MACD_CONFIRM:
-            if (direction == "BUY" and macd_h <= 0) or (direction == "SELL" and macd_h >= 0):
-                return self._no_signal(symbol, atr, [f"MACD hist {macd_h:.5f} opposes"])
 
         # ─── SL / TP (wide) ───
         sl_mult = self.SL_ATR_MULT_XAU if "XAU" in symbol.upper() else self.SL_ATR_MULT
@@ -231,13 +232,15 @@ class TrendFollowingStrategy:
             tp_price = entry - sl_distance * self.RR_RATIO
 
         # ─── confluence score ───
-        score = 50.0
+        score = 40.0
         score += min(max(adx - self.ADX_ENTRY_MIN, 0.0), 20.0)        # trend strength up to +20
         score += min(float(last.get("trend_strength", 0.0)) * 0.2, 10.0)  # EMA spread up to +10
         score += 10.0 if htf_align == 1 else 0.0                       # H4 agree
         score += 5.0 if d1_align == 1 else (-5.0 if d1_align == -1 else 0.0)  # D1 bias
         # tighter pullback (closer to EMA) = better entry → up to +10
         score += max(0.0, (self.PULLBACK_MAX_ATR - dist_to_ema_atr)) / max(self.PULLBACK_MAX_ATR, 1e-9) * 10.0
+        score += 8.0 if resuming else 0.0                             # SOFT: resuming in trend dir
+        score += 7.0 if macd_ok else 0.0                              # SOFT: MACD momentum agrees
         score = float(np.clip(score, 0.0, 100.0))
 
         if score < self.MIN_CONFLUENCE:

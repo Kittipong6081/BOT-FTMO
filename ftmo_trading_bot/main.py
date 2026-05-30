@@ -154,6 +154,29 @@ class FTMOTradingBot:
         if self._rl_agent is None:
             print(f"⚠️ [Bot] AI Signal Filter ไม่พร้อม — ใช้ MR strategy โดยตรง")
 
+        # === v8.1 Phase 3: per-strategy RL agents (MR + TF) ===
+        # MR agent above stays as self._rl_agent (back-compat). TF agent loads from
+        # models/tf/ if the trained model exists (Phase 3 training output). If
+        # absent, TF has no agent → TF execution is impossible → forced paper.
+        self._rl_agents = {"MR": self._rl_agent} if self._rl_agent is not None else {}
+        _tf_model_dir = os.path.join(bot_config.paths.model_dir, "tf")
+        for _tfd in ([os.path.join(_tf_model_dir, "best"), _tf_model_dir]):
+            _tf_zip = os.path.join(_tfd, "ppo_tf_filter.zip")
+            _tf_vec = os.path.join(_tfd, "vec_normalize_tf.pkl")
+            if not os.path.exists(_tf_zip):
+                continue
+            try:
+                _tf_agent = SelfLearningAgent(model_dir=_tfd, verbose=1)
+                _tf_agent.model_path = _tf_zip
+                if os.path.exists(_tf_vec):
+                    _tf_agent.vec_normalize_path = _tf_vec
+                _tf_agent.initialize_model(strict=True)
+                self._rl_agents["TF"] = _tf_agent
+                print(f"   ✅ TF RL agent loaded from {_tfd}")
+                break
+            except Exception as e:
+                print(f"   ⚠️ TF RL agent load from {_tfd} failed: {e}")
+
         # === ML Signal Quality Model (GBM, AUC ~0.59) ===
         # ให้ probability ว่า signal จะ win → feed เป็น obs feature ให้ RL agent
         # v8.0: prefer MR-trained GBM (mr_signal_quality_model.pkl) over legacy SMC GBM
@@ -176,6 +199,18 @@ class FTMOTradingBot:
                 print(f"⚠️ [Bot] ML Quality Model ไม่พบที่ {_mpath} — obs[ml_score]=0.5 (neutral)")
         except Exception as e:
             print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
+
+        # === v8.1 Phase 3: per-strategy GBM quality models (MR + TF) ===
+        self._quality_models = {"MR": self._quality_model} if self._quality_model is not None else {}
+        try:
+            from ml.signal_quality import SignalQualityModel as _SQM
+            _tf_gbm = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "data", "tf_signal_quality_model.pkl")
+            if os.path.exists(_tf_gbm):
+                self._quality_models["TF"] = _SQM(_tf_gbm)
+                print(f"✅ [Bot] โหลด TF ML Quality Model สำเร็จ")
+        except Exception as e:
+            print(f"⚠️ [Bot] TF ML Quality Model load fail: {e}")
 
         # v8.0.74: Chronos removed — obs[27,28] hardwired 0.0 (live OBS_DIM=35, ดู
         # _build_signal_observation; chronos slots ยังอยู่ในเวกเตอร์แต่เป็น 0)
@@ -791,6 +826,33 @@ class FTMOTradingBot:
             pass
         return owners
 
+    def _rl_agent_for(self, sig):
+        """v8.1: RL agent for the signal's strategy (MR/TF). None if not loaded."""
+        return self._rl_agents.get(getattr(sig, "strategy_id", "MR")) if self._rl_agents else None
+
+    def _quality_model_for(self, sig):
+        """v8.1: GBM quality model for the signal's strategy (MR/TF)."""
+        sid = getattr(sig, "strategy_id", "MR")
+        return self._quality_models.get(sid, self._quality_model) if getattr(self, "_quality_models", None) else self._quality_model
+
+    def _build_obs_tf(self, sig, live_context: Optional[Dict] = None) -> np.ndarray:
+        """v8.1: TF obs (tf_v1) — base 35-dim builder + 3 TF slot reinterpretations,
+        mirroring TrendFollowingFilterEnv._get_obs (obs[4]/[10]/[26])."""
+        obs = self._build_signal_observation(sig, live_context=live_context)
+        try:
+            obs[4] = float(np.clip(getattr(sig, "trend_strength", 0.0) / 100.0, 0.0, 1.0))
+            obs[10] = float(np.clip(getattr(sig, "trend_age_bars", 0) / 30.0, 0.0, 1.0))
+            obs[26] = float(np.clip(getattr(sig, "adx", 0.0) / 50.0, 0.0, 1.0))
+        except Exception:
+            pass
+        return obs
+
+    def _build_obs_for(self, sig, live_context: Optional[Dict] = None) -> np.ndarray:
+        """v8.1: dispatch obs build by strategy_id (MR mr_v8 / TF tf_v1)."""
+        if getattr(sig, "strategy_id", "MR") == "TF":
+            return self._build_obs_tf(sig, live_context=live_context)
+        return self._build_signal_observation(sig, live_context=live_context)
+
     def _build_live_context(self, sig) -> Dict:
         """v6.9 — สร้าง dict ของ live context สำหรับ logging + executor.
 
@@ -860,31 +922,33 @@ class FTMOTradingBot:
         # ML scores (calibrated via SignalQualityModel + raw via base GBM)
         # v7.1 — augment sig ด้วย temporal_feats ก่อน score (GBM ต้องการ 24 features)
         try:
-            if self._quality_model is not None:
+            # v8.1: route to the strategy's GBM (MR / TF)
+            _qm = self._quality_model_for(sig)
+            if _qm is not None:
                 # สร้าง dict รวม sig attrs + temporal_feats สำหรับ GBM
                 score_input = {
-                    k: self._quality_model._extract(sig, k)
-                    for k in self._quality_model.keys
+                    k: _qm._extract(sig, k)
+                    for k in _qm.keys
                 }
                 # Override ด้วย temporal feats ที่เพิ่ง compute (กัน 0.0 fallback)
                 for k, v in ctx.get("_temporal_feats", {}).items():
-                    if k in self._quality_model.keys:
+                    if k in _qm.keys:
                         score_input[k] = float(v)
-                ctx["ml_score"] = float(self._quality_model.score(score_input))
+                ctx["ml_score"] = float(_qm.score(score_input))
                 # raw probability (skip calibrator)
-                if self._quality_model.calibrator is not None:
-                    raw = self._quality_model.model.predict_proba(
-                        np.array([[score_input[k] for k in self._quality_model.keys]],
+                if _qm.calibrator is not None:
+                    raw = _qm.model.predict_proba(
+                        np.array([[score_input[k] for k in _qm.keys]],
                                  dtype=np.float64)
                     )[0, 1]
                     ctx["ml_score_raw"] = float(raw)
                 else:
                     ctx["ml_score_raw"] = ctx["ml_score"]
 
-                # v7.1 — record live signal สำหรับ drift monitor
-                # (record_input = score_input ที่เพิ่งคำนวณ — re-use เพื่อหลีก redundancy)
+                # v7.1 — record live signal สำหรับ drift monitor (MR only — TF drift later)
                 try:
-                    self._quality_model.record_live_signal(score_input)
+                    if getattr(sig, "strategy_id", "MR") == "MR":
+                        _qm.record_live_signal(score_input)
                 except Exception:
                     pass
         except Exception:
@@ -1281,14 +1345,16 @@ class FTMOTradingBot:
                             # === v6.9: Build live_context สำหรับ logging + executor ===
                             live_context = self._build_live_context(sig)
 
-                            # === v8.1 Phase 1: TF paper-trade (log-only) ===
-                            # TF signals are observed but NOT executed until the
-                            # per-strategy magic + conflict filter + risk ledger
-                            # land in Phase 2. paper_mode (default True) gates this.
-                            if getattr(sig, "strategy_id", "MR") == "TF" and \
-                                    getattr(bot_config.tf, "paper_mode", True):
-                                self._log_signal_scan(sig, live_context, result="TF_PAPER")
-                                continue
+                            # === v8.1: TF paper-trade (log-only) ===
+                            # TF executes for real only when paper_mode is OFF AND a
+                            # trained TF RL agent is loaded (Phase 3 output). Otherwise
+                            # log TF_PAPER + skip (observe regime separation safely).
+                            if getattr(sig, "strategy_id", "MR") == "TF":
+                                _tf_ready = ("TF" in self._rl_agents
+                                             and not getattr(bot_config.tf, "paper_mode", True))
+                                if not _tf_ready:
+                                    self._log_signal_scan(sig, live_context, result="TF_PAPER")
+                                    continue
 
                             # === ML quality gate (live ↔ training distribution sync, v8.0.3) ===
                             # FTMOSignalFilterEnv กรอง signals ที่ ml_score < 0.30 ตอน train
@@ -1302,10 +1368,12 @@ class FTMOTradingBot:
                             agent_decision = "NO_AGENT"
                             agent_action_value = 0.0
 
-                            if self._rl_agent:
-                                signal_obs = self._build_signal_observation(sig, live_context=live_context)
-                                take = self._rl_agent.should_take_signal(signal_obs)
-                                confidence = self._rl_agent.get_action_confidence(signal_obs)
+                            # v8.1: route to the strategy's RL agent + obs layout (MR/TF)
+                            _agent = self._rl_agent_for(sig)
+                            if _agent:
+                                signal_obs = self._build_obs_for(sig, live_context=live_context)
+                                take = _agent.should_take_signal(signal_obs)
+                                confidence = _agent.get_action_confidence(signal_obs)
                                 agent_action_value = float(confidence)
                                 agent_decision = "TAKE" if take else "SKIP"
                                 live_context["agent_action_value"] = agent_action_value

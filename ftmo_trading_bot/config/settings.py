@@ -720,7 +720,7 @@ class TrendFollowingConfig:
     adx_entry_min: float = 27.0        # require strong trend (mirror regime gate)
     macd_confirm: bool = True
     pullback_ema: int = 21             # pullback toward EMA21 then resume
-    pullback_max_atr: float = 1.5      # price within N×ATR of EMA21 = valid pullback
+    pullback_max_atr: float = 2.5      # price within N×ATR of EMA21 = valid pullback (v8.1: 1.5→2.5 for signal density)
     rsi_pullback_buy_max: float = 55.0  # BUY: RSI dipped (not overbought) on pullback
     rsi_pullback_sell_min: float = 45.0 # SELL: RSI bounced (not oversold) on pullback
 

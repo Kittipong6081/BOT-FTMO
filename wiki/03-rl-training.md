@@ -1,5 +1,12 @@
 # 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-30 (v8.0.80 — train/live parity: C3 entry-confirm gate in MR env, H6 HTF-per-scan pool anchor, H3/H4 live obs[16]/obs[21]) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-05-30 (v8.1-phase3 — TF training pipeline added; TWO obs layouts now) | Scope: RL env, obs space, reward shaping (MR + TF), PPO hyperparams, curriculum, aux task.
+>
+> **⚠️ TWO obs layouts (v8.1-phase3)** — both 35-dim (same shape, same PPO net + VecNormalize), different slot semantics + separate models:
+> - **MR (mr_v8)** → `MeanReversionFilterEnv._get_obs` ↔ `FTMOTradingBot._build_signal_observation` ↔ `models/mr/`. obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=1−adx/50.
+> - **TF (tf_v1)** → `TrendFollowingFilterEnv._get_obs` ↔ `FTMOTradingBot._build_obs_tf` ↔ `models/tf/`. obs[4]=trend_strength/100, obs[10]=trend_age_bars/30, obs[26]=adx/50 (trending=good).
+> Each layout must stay synced across its 3 places independently.
+>
+> **TF training pipeline (v8.1-phase3, mirror of MR — entry on H1):** `build_tf_signal_pool.py` → `train_tf_signal_quality.py` (27 features incl. `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry` → `data/tf_signal_quality_model.pkl`) → `train_tf_signal_filter.py` (2-phase `AuxAwarePPO` on `TrendFollowingFilterEnv` → `models/tf/ppo_tf_filter.zip`+`vec_normalize_tf.pkl`) | orchestrator `auto_train_pipeline_tf.py`. **TF reward INVERTED vs MR**: RUNNER_BONUS (outcome≥2R, scales) + SLOW_WIN_BONUS; loss + LATE_ENTRY_PENALTY (trend_age≥60); SKIP-oracle penalizes missing runners most. `TrendFollowingBacktester` resolve keeps `tp_step_trigger_r=99` (Stage-2 1.5R cap OFF) so winners run. **Code ready; not yet trained → TF paper.** See [`05-invariants.md` v8.1-phase3](05-invariants.md#-version-log-entry--v81-phase3-2026-05-30--tf-training-pipeline-3-brain-backtester--env--scripts--agent-wiring).
 >
 > **⚠️ Obs dim = 35** (index 0-34). The "26 dims" once cited for v8.0.74b never reached the live `OBS_DIM` — `SelfLearningAgent.OBS_DIM`, `MeanReversionFilterEnv.observation_space`, and `models/mr/vec_normalize_mr.pkl` all agree at **35** (verified by `parity_audit` 3-way sync). obs[27,28] (chronos) hardwired 0.
 >

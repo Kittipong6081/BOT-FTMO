@@ -1,5 +1,22 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase2** — per-strategy magic + conflict filter + risk ledger (bot_state schema 9); TF still paper, MR unchanged when `tf.enabled` OFF)
+> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase3** — TF 3-brain training pipeline (backtester/env/scripts/agent wiring); code ready to train, models not yet trained, TF still paper)
+
+## 📝 Version Log Entry — v8.1-phase3 (2026-05-30) — TF training pipeline (3-brain): backtester + env + scripts + agent wiring
+
+**Trigger**: Phase 3 of the dual-strategy plan — build the full TF training pipeline (mirror of MR) so TF gets its own pool + GBM + RL. **Code is ready to train; no model trained yet → TF still paper (forced).** MR untouched (audits exit 0).
+
+**New modules**:
+- **`ml/trend_following_backtester.py` → `TrendFollowingBacktester(StrategyBacktester)`**: entry on **H1** (not M15), trend filter H4 + D1 (D1 resampled from H4 via `_resample_h4_to_d1` since no D1 CSV — soft bias only). `generate_episode_signals(symbol, h1_start_bar, num_days, rng)` scans 12/day (TF_SCAN_POINTS_PER_DAY), 120-H1 resolution window (TF_FUTURE_BARS), wide-RR resolve with **Stage-2 1.5R cap DISABLED** (`tp_step_trigger_r=99`) + trail (1R behind, TP chases 2R) → winners RUN. Pool dict = MR schema (so `FTMOSignalFilterEnv._get_obs` reads it) + TF extras `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`/`is_runner`; `entry_confirm_passed=True` always (TF has no entry-confirm gate).
+- **`ml/trend_following_env.py` → `TrendFollowingFilterEnv(FTMOSignalFilterEnv)`**: same 35-dim obs (tf_v1) — 3 slots reinterpreted: obs[4]=trend_strength/100, obs[10]=trend_age/30, obs[26]=adx/50 (trending=good; MR used 1−adx/50). Reward INVERTED vs MR: RUNNER_BONUS (outcome≥2R, scales with size) > SLOW_WIN_BONUS; loss penalty + LATE_ENTRY_PENALTY (trend_age≥60); SKIP-oracle penalizes missing runners most.
+- **Scripts**: `build_tf_signal_pool.py` (H1-anchored task sampling), `train_tf_signal_quality.py` (27 TF features, `data/tf_signal_quality_model.pkl`, strategy="trend_following"), `train_tf_signal_filter.py` (`TrendFollowingFilterEnv`, 2-phase, `models/tf/ppo_tf_filter.zip`+`vec_normalize_tf.pkl`), `auto_train_pipeline_tf.py` (slim orchestrator: build→quality→filter→eval→gate→snapshot `models/tf/best/`).
+
+**Strategy gate change (`TrendFollowingStrategy`)**: `resuming` + MACD moved from HARD gates to SOFT confluence bonuses (+8/+7) — strict conjunction (ADX>27 ∧ EMA-stack ∧ pullback ∧ resume ∧ MACD) yielded ~0 signals; soft makes the population usable for both train + live (same gate structure → no distribution gap). `pullback_max_atr` 1.5→2.5. Hard gates remain: ADX≥27, EMA-stack, H4 not-opposing, pullback-dist, RSI not-stretched. (Tuning = Phase 4.)
+
+**main.py wiring**: `self._rl_agents` dict (MR + TF if `models/tf` present) + `self._quality_models` dict (MR + TF if `data/tf_signal_quality_model.pkl` present); helpers `_rl_agent_for/_quality_model_for/_build_obs_tf/_build_obs_for` route by `sig.strategy_id`. `_build_live_context` scores TF via the TF GBM. TF executes ONLY when `paper_mode=False AND "TF" in _rl_agents` — until then logs `TF_PAPER`.
+
+**Verification**: full pipeline runs end-to-end on a 60-episode smoke pool (build 0.6min → GBM trains/saves/rescores → PPO 2-phase learn + eval returns metrics → env consumes pool, obs reinterpret correct). `leakage_audit` + `parity_audit` exit 0 (MR obs dim 35 3-way sync intact). No D1 CSV → D1 bias is H4-resampled (soft).
+
+**⛔ New invariants**: (1) obs-sync now has TWO layouts — MR (mr_v8: obs[4]=bb_extreme, [10]=bb_width, [26]=1−adx/50) and TF (tf_v1: obs[4]=trend_strength, [10]=trend_age, [26]=adx/50). Each must stay synced across its env `_get_obs` ↔ live `_build_obs_*` ↔ its model. (2) TF pool entry is H1; `TrendFollowingBacktester` start bars index H1, not M15. (3) TF resolve MUST keep `tp_step_trigger_r=99` (disabling it caps runners at 1.5R = defeats TF). (4) D1 bias is soft/resampled in training — do not promote it to a hard gate without real D1 data.
 
 ## 📝 Version Log Entry — v8.1-phase2 (2026-05-30) — Per-strategy magic + Order Conflict Filter + StrategyRiskBook (bot_state schema 9)
 
