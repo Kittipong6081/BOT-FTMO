@@ -86,6 +86,21 @@ ftmo_trading_bot/data/mr_signal_pool_*.pkl
 ftmo_trading_bot/data/tf_signal_pool_*.pkl
 !ftmo_trading_bot/data/tf_signal_pool_*.pkl.gz
 
+# OHLCV bars (~110 MB) — regenerate via scripts/fetch_mt5_data.py.
+# Live fetches rates from MT5 directly (ไม่อ่าน CSV) → live ไม่ต้องการ; training re-fetch ได้
+ftmo_trading_bot/data/ohlcv/
+ftmo_trading_bot/data/ohlcv_*/
+# Local data snapshots / forensic backups
+ftmo_trading_bot/data/backup*/
+# Trade-log workbooks (history/privacy; bot สร้างใหม่บนเครื่อง live เอง)
+ftmo_trading_bot/logs/*.xlsx
+ftmo_trading_bot/logs/eval/
+# Raw news downloads (parsed → news_calendar.json which IS tracked)
+ftmo_trading_bot/config/news_inbox/*.csv
+# Model backup / validation variants (track เฉพาะ best/ + live zips)
+*_validated
+*.pre_trim*
+
 # Legacy models (v1-v5, ไม่ใช้แล้ว — keep เฉพาะ ppo_signal_filter.zip + vec_normalize_sf.pkl)
 ftmo_trading_bot/models/best_model.zip
 ftmo_trading_bot/models/ppo_ftmo_agent.zip
