@@ -82,6 +82,9 @@ ftmo_trading_bot/data/signal_pool_*.pkl
 # v8.0 MR pool (~309 MB) — rebuild ได้บน Mac ผ่าน auto_train_pipeline
 ftmo_trading_bot/data/mr_signal_pool_*.pkl
 !ftmo_trading_bot/data/mr_signal_pool_*.pkl.gz
+# v8.1 TF pool (~36 MB @ 3000) — rebuild ได้ผ่าน auto_train_pipeline_tf
+ftmo_trading_bot/data/tf_signal_pool_*.pkl
+!ftmo_trading_bot/data/tf_signal_pool_*.pkl.gz
 
 # Legacy models (v1-v5, ไม่ใช้แล้ว — keep เฉพาะ ppo_signal_filter.zip + vec_normalize_sf.pkl)
 ftmo_trading_bot/models/best_model.zip

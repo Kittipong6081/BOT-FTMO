@@ -1,5 +1,12 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-30 (v8.1-phase3 — TF 3-brain training pipeline; code ready, not yet trained) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-30 (v8.1-phase4 — TF LIVE canary; go-live audit fixes) | Scope: every module + key class / method / variable
+>
+> **v8.1-phase4 changes (go-live: 9 audit fixes; TF now executes live)**:
+> - `TradeManager._exit_profile(strategy_id)` (NEW) — MR keeps quick-exit constants; TF rides (no partial/BE/tp_step; trail activation 1.5R / behind 2.0R / floor 1.0R / TP-ahead 2.0R from `bot_config.tf.mgmt_*`). `_manage_single_position` + `_update_trailing_stop(prof)` branch on it. `TrendFollowingBacktester._resolve_trade` reads the SAME `bot_config.tf.mgmt_*` (single source → train==live exit).
+> - `FTMOTradingBot._quality_model_for` — no MR fallback for non-MR; `_build_obs_for` logs strategy-correct obs (was empty for TF); `_build_live_context` sets TF `adx_h1` from `sig.adx`; `_log_signal_scan` + `ExecutedTrade.to_dict` carry `strategy_id`/`obs_layout_id`; run-loop `_tf_ready` requires TF agent AND TF GBM; pre-scan `sync_with_mt5` (dual only).
+> - `TradeExecutor._check_strategy_conflict` slot cap counts BROKER magic-tagged positions.
+> - `TradeLogger` — `TRADE_HEADERS` 58→60, `SIGNAL_HEADERS` 20→22 (+`Strategy`,`Obs Layout`); old xlsx auto-archives.
+> - `TrendFollowingConfig` + `mgmt_*` live trade-mgmt params; `enabled=True`/`paper_mode=False`; `FTMOConfig.DAILY_LOSS_CAP_PCT_DUAL` 0.030→0.035.
 >
 > **v8.1-phase3 additions (TF training pipeline — mirror of MR; TF still paper until trained)**:
 > - NEW `ml/trend_following_backtester.py` → `TrendFollowingBacktester(StrategyBacktester)`: H1 entry, `generate_episode_signals(symbol, h1_start_bar, ...)`, `_resample_h4_to_d1`, wide-RR resolve (tp_step disabled, trail runners), pool extras `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`/`is_runner`. Constants `TF_SCAN_POINTS_PER_DAY=12`, `TF_FUTURE_BARS=120`, `TF_LOOKBACK_H1=300`.

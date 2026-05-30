@@ -156,6 +156,7 @@ class ExecutedTrade:
             "symbol": self.symbol,
             "type": self.trade_type,
             "strategy_id": self.strategy_id,
+            "obs_layout_id": "tf_v1" if self.strategy_id == "TF" else "mr_v8",
             "entry_price": self.entry_price,
             "sl_price": self.sl_price,
             "tp_price": self.tp_price,
@@ -895,13 +896,26 @@ class TradeExecutor:
                 return (False,
                         f"regime_exclusive: {sym} ถือโดย {getattr(t, 'strategy_id', 'MR')} อยู่")
 
-        # (2) per-strategy slot cap
+        # (2) per-strategy slot cap — v8.1 Phase4 fix-F: count from BROKER (magic)
+        # too, not just in-memory _active_trades. An unrecovered orphan (sync
+        # raised, or post-restart before recovery) would otherwise be invisible →
+        # TF could open past its 1-slot canary cap. Take max(broker, in-memory).
         cap = bot_config.ftmo.STRATEGY_SLOT_CAP.get(sid)
         if cap is not None:
-            sid_open = sum(
+            mem_open = sum(
                 1 for t in self._active_trades.values()
                 if t.is_open and getattr(t, "strategy_id", "MR") == sid
             )
+            broker_open = mem_open
+            try:
+                magic = self._magic_for(sid)
+                broker_open = sum(
+                    1 for p in (self._connector.get_open_positions() or [])
+                    if int(p.get("magic", 0)) == int(magic)
+                )
+            except Exception:
+                pass
+            sid_open = max(mem_open, broker_open)
             if sid_open >= int(cap):
                 return (False, f"slot_cap: {sid} เต็ม ({sid_open}/{cap})")
 

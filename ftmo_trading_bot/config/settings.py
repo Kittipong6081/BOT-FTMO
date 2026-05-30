@@ -170,7 +170,11 @@ class FTMOConfig:
     # raised to this so a single strategy can halt itself (sub-budget MR 2.0% /
     # TF 1.5%) BEFORE the portfolio cap trips and stops BOTH. Only applies when
     # tf.enabled → single-strategy MR keeps the 2.5% cap unchanged.
-    DAILY_LOSS_CAP_PCT_DUAL: float = 0.030  # 3.0% — global soft cap in dual-strategy mode
+    # v8.1 Phase4 fix-G: 0.030 → 0.035 = exactly the sub-budget sum (MR 2.0% + TF 1.5%)
+    #   so each strategy can fully consume its allowance before the portfolio cap
+    #   binds (preserves the per-strategy isolation the design promises). Still < FTMO
+    #   4% hard breach guard (0.5pp buffer), which always closes everything first.
+    DAILY_LOSS_CAP_PCT_DUAL: float = 0.035  # 3.5% — global soft cap in dual-strategy mode
     
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน
@@ -702,8 +706,12 @@ class TrendFollowingConfig:
     routing, no TF). `paper_mode` logs TF signals without sending orders
     (Phase 1 canary — observe regime separation before real TF execution).
     """
-    enabled: bool = False              # master switch (Phase 1 default OFF = MR only)
-    paper_mode: bool = True            # True = log TF signals, do NOT execute (Phase 1)
+    # v8.1 Phase4 (1a canary go-live): dual-strategy ON, TF executes LIVE.
+    # ⚠️ enabling this ALSO regime-gates MR to RANGING-only (router). Revert to
+    # single-strategy MR instantly by setting enabled=False (or paper_mode=True to
+    # keep the regime split but stop TF orders).
+    enabled: bool = True               # master switch (Phase4: ON = dual-strategy MR+TF)
+    paper_mode: bool = False           # Phase4: TF executes live (canary: slot 1, sub-budget 1.5%)
 
     # Entry timeframe = H1; trend filter = H4/D1
     entry_timeframe: str = "H1"
@@ -730,6 +738,19 @@ class TrendFollowingConfig:
     rr_ratio: float = 2.5
     min_confluence_score: float = 60.0
     min_confluence_score_training: float = 30.0
+
+    # === Live trade-management (v8.1 Phase4 fix-A) — MUST mirror
+    # TrendFollowingBacktester._resolve_trade kwargs so live exits == training.
+    # TF RIDES: NO early break-even, NO partial close, NO Stage-2 TP-cap; only a
+    # wide trail (activate 1.5R, SL 2R behind best with a 1R floor, TP chase 2R).
+    # (MR keeps TradeManager's own quick-exit constants — this block is TF-only.)
+    mgmt_use_partial: bool = False
+    mgmt_use_breakeven: bool = False
+    mgmt_use_tp_step: bool = False
+    mgmt_trail_activation_r: float = 1.5
+    mgmt_trail_sl_behind_r: float = 2.0
+    mgmt_trail_sl_floor_r: float = 1.0
+    mgmt_trail_tp_ahead_r: float = 2.0
 
     # Reward shaping (TF env, Phase 3) — reward holding winners, penalize early cut
     runner_bonus: float = 0.50         # winner that runs far → bonus

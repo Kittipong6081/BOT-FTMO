@@ -38,7 +38,8 @@
 | Pause / Halt counts (v6.13) | 3 / 4 consec losses | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT/HALT_COUNT` |
 | Post-TP lock TTL | 60 min | `FTMOConfig.POST_TP_LOCK_TTL_MIN` |
 | Consistency threshold | 1.0 (off, 2-step Standard) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
-| **Dual-strategy (v8.1)** | `tf.enabled` **False** (default → MR only). ON = regime router arms MR(RANGING)/TF(TRENDING)/none(AMBIGUOUS ADX 20-27). TF `paper_mode=True` (log `TF_PAPER`, no orders) until Phase 3 (TF RL model) | `bot_config.tf.enabled/paper_mode`, `bot_config.regime`, `StrategyRouter` |
+| **Dual-strategy (v8.1-phase4 — LIVE)** | `tf.enabled` **True** + `paper_mode` **False** → TF executes live (canary). Regime router arms MR(RANGING ADX<20)/TF(TRENDING ADX>27)/none(AMBIGUOUS 20-27). ⚠️ enabling this regime-gates MR to RANGING only. Revert: `tf.enabled=False` | `bot_config.tf.enabled/paper_mode`, `bot_config.regime`, `StrategyRouter` |
+| **TF live exit (v8.1-phase4)** | TF RIDES — no BE/partial/Stage-2; trail activation **1.5R**, SL **2R** behind (floor 1R), TP chase 2R — from `bot_config.tf.mgmt_*` (== backtester resolve → train==live). MR keeps its 0.3R BE / 0.8R partial / 1.0R trail | `TradeManager._exit_profile` |
 | **Per-strategy risk (v8.1 Phase 2, dual only)** | magic MR 123456 / TF 123457; sub-budget MR **2.0%** / TF **1.5%** (self-halt, not global); slot cap MR **2** / TF **1**; risk MR 0.70% / TF 0.60%; global soft cap **3.0%** (dual) vs 2.5% (single). Hierarchy: FTMO 4% hard > 3.0% global soft > per-strategy sub-budget | `FTMOConfig.STRATEGY_*`, `StrategyRiskBook`, `RiskManager.can_open_trade(strategy_id=)` |
 
 ---

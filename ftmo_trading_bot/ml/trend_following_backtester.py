@@ -36,8 +36,9 @@ class TrendFollowingBacktester(StrategyBacktester):
     # Scan every 2 H1 bars (= 2h) → 12 scans/day. TF setups (pullback-resume in a
     # trend) are less transient than MR extremes, so coarser than MR's 48/day.
     TF_SCAN_POINTS_PER_DAY: int = 12
-    # Resolution window: 120 H1 bars = ~5 trading days — runners need room.
-    TF_FUTURE_BARS: int = 120
+    # Resolution window: 180 H1 bars = ~7.5 trading days — runners need room.
+    # (v8.1 runner-tune: 120→180 so long trends can fully develop before timeout.)
+    TF_FUTURE_BARS: int = 180
     # Dedup same-direction within 6 H1 bars.
     DEDUP_BARS: int = 6
     # H1 lookback fed to the strategy (calculate_all needs >= 200).
@@ -170,17 +171,27 @@ class TrendFollowingBacktester(StrategyBacktester):
                     continue
 
                 # TF resolve: let winners RUN. Disable MR's Stage-2 1.5R cap
-                # (tp_step_trigger_r=99) → trade reaches Stage-3 trail at 1.0R,
-                # TP chases (best + 2R), SL trails 1R behind with a 1R floor.
+                # (tp_step_trigger_r=99). v8.1 runner-tune: LOOSER trail so normal
+                # pullbacks don't stop a runner out —
+                #   activation 1.0→1.5R (establish trend before trailing),
+                #   behind 1.0→2.0R (ride through 2R pullbacks instead of 1R),
+                #   floor stays 1.0R (lock +1R once trailing). This shifts the
+                #   outcome distribution from "many +1R floor wins" toward fewer
+                #   but bigger runners (true TF profile: lower win%, higher avg R).
+                # v8.1 Phase4 fix-A: read trail geometry from bot_config.tf.mgmt_*
+                # — the SAME source live TradeManager._exit_profile("TF") uses, so
+                # train resolve == live exit (no parity drift). tp_step disabled (99).
+                from config.settings import bot_config as _bc
+                _tf = _bc.tf
                 risk_amount = 1.0
                 trade_pnl = self._resolve_trade(
                     signal, actual_sl, actual_tp, future, risk_amount, pip_size, rng,
                     enable_trail_after_tp=True,
-                    trail_sl_behind_r=1.0,
-                    trail_tp_ahead_r=2.0,
-                    trail_activation_r=1.0,
+                    trail_sl_behind_r=float(getattr(_tf, "mgmt_trail_sl_behind_r", 2.0)),
+                    trail_tp_ahead_r=float(getattr(_tf, "mgmt_trail_tp_ahead_r", 2.0)),
+                    trail_activation_r=float(getattr(_tf, "mgmt_trail_activation_r", 1.5)),
                     tp_step_trigger_r=99.0,   # DISABLE Stage-2 cap (let TF run)
-                    trail_sl_floor_r=1.0,
+                    trail_sl_floor_r=float(getattr(_tf, "mgmt_trail_sl_floor_r", 1.0)),
                 )
 
                 bars_to_resolution = self._bars_to_first_hit(

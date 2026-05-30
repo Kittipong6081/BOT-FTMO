@@ -298,25 +298,62 @@ class TradeManager:
             best_profit = trade.entry_price - state.best_price
         best_rr = best_profit / sl_distance if sl_distance > 0 else 0
 
+        # === v8.1 Phase4 fix-A: per-strategy exit profile ===
+        # MR keeps its quick-exit (partial@0.8R/BE@0.3R/Stage-2 lock/trail@1.0R).
+        # TF RIDES — skip partial/BE/Stage-2 entirely, trail only (1.5R activation,
+        # 2R behind, 1R floor, 2R TP-chase) to mirror the trainer's _resolve_trade.
+        prof = self._exit_profile(state.strategy_id)
+
         # === Stage 1a: Partial Close (ใช้ best_rr) — v8.0.14: ทำก่อน BE ===
-        # เหตุผล: ถ้า MFE peak ที่ trigger threshold แล้ว revert ทันที
-        # → Partial ปิด 50% เก็บกำไร, BE lock entry → revert มาได้ +0.25R แน่
-        if not state.partial_closed and best_rr >= self.PARTIAL_TRIGGER_RR:
+        if prof["use_partial"] and not state.partial_closed and best_rr >= self.PARTIAL_TRIGGER_RR:
             self._partial_close(trade, state)
 
         # === Stage 1b: Break-Even Move (หลัง Partial — กัน spike-then-revert) ===
-        if not state.breakeven_moved and best_rr >= self.BE_TRIGGER_RR:
+        if prof["use_be"] and not state.breakeven_moved and best_rr >= self.BE_TRIGGER_RR:
             self._move_to_breakeven(trade, state, price_info)
 
-        # === Stage 2 (v8.0.48): TP shift 1.0R→1.5R + SL shift BE→0.5R @ 0.8R ===
-        if not state.tp_step_done and best_rr >= self.TP_STEP_TRIGGER_RR:
+        # === Stage 2 (v8.0.48): TP shift + SL lock @ 0.8R ===
+        if prof["use_tp_step"] and not state.tp_step_done and best_rr >= self.TP_STEP_TRIGGER_RR:
             self._tp_step(trade, state)
 
-        # === Stage 3 (v8.0.48): Trail activation @ 1.0R — SL floor at 1.0R + trail chase ===
-        if current_rr >= self.TRAIL_ACTIVATION_RR:
+        # === Stage 3: Trail activation — per-strategy R (MR 1.0R / TF 1.5R) ===
+        if current_rr >= prof["trail_activation_r"]:
             state.trailing_active = True
             trade.trailing_active = True
-            self._update_trailing_stop(trade, state, current_price)
+            self._update_trailing_stop(trade, state, current_price, prof)
+
+    # =========================================================================
+    # 🧭 Per-strategy exit profile (v8.1 Phase4 fix-A)
+    # =========================================================================
+
+    def _exit_profile(self, strategy_id: str) -> Dict:
+        """Exit-management params keyed by strategy.
+
+        MR → TradeManager's own quick-exit constants (byte-identical to before).
+        TF → ride profile from `bot_config.tf` (no partial/BE/Stage-2; wide trail)
+             — MUST mirror TrendFollowingBacktester._resolve_trade so live == train.
+        """
+        if strategy_id == "TF":
+            tf = bot_config.tf
+            return {
+                "use_partial": bool(getattr(tf, "mgmt_use_partial", False)),
+                "use_be": bool(getattr(tf, "mgmt_use_breakeven", False)),
+                "use_tp_step": bool(getattr(tf, "mgmt_use_tp_step", False)),
+                "trail_activation_r": float(getattr(tf, "mgmt_trail_activation_r", 1.5)),
+                "trail_sl_behind_r": float(getattr(tf, "mgmt_trail_sl_behind_r", 2.0)),
+                "trail_sl_floor_r": float(getattr(tf, "mgmt_trail_sl_floor_r", 1.0)),
+                "trail_tp_ahead_r": float(getattr(tf, "mgmt_trail_tp_ahead_r", 2.0)),
+            }
+        # MR / default — current class constants (unchanged)
+        return {
+            "use_partial": True,
+            "use_be": True,
+            "use_tp_step": True,
+            "trail_activation_r": self.TRAIL_ACTIVATION_RR,
+            "trail_sl_behind_r": self.TRAIL_SL_BEHIND_R,
+            "trail_sl_floor_r": self.TRAIL_SL_FLOOR_RR,
+            "trail_tp_ahead_r": self.TRAIL_TP_AHEAD_R,
+        }
 
     # =========================================================================
     # 🔒 Break-Even Move (เลื่อน SL มาจุดคุ้มทุน)
@@ -579,7 +616,8 @@ class TradeManager:
         self,
         trade: ExecutedTrade,
         state: TrailingState,
-        current_price: float
+        current_price: float,
+        prof: Optional[Dict] = None,
     ):
         """
         v8.0.43 Option X: TP-Chase Trail (Plan B Trick)
@@ -601,9 +639,12 @@ class TradeManager:
         if sl_distance <= 0:
             return  # invalid setup — fail-safe
 
-        trail_sl_behind = sl_distance * self.TRAIL_SL_BEHIND_R    # 0.5R
-        trail_tp_ahead = sl_distance * self.TRAIL_TP_AHEAD_R      # 1.0R
-        sl_floor_dist = sl_distance * self.TRAIL_SL_FLOOR_RR      # v8.0.48: 1.0R floor
+        # v8.1 Phase4 fix-A: per-strategy trail R-values (MR 0.5/1.0/1.0 ; TF 2.0/2.0/1.0)
+        if prof is None:
+            prof = self._exit_profile(getattr(state, "strategy_id", "MR"))
+        trail_sl_behind = sl_distance * prof["trail_sl_behind_r"]
+        trail_tp_ahead = sl_distance * prof["trail_tp_ahead_r"]
+        sl_floor_dist = sl_distance * prof["trail_sl_floor_r"]
         min_step = self.TRAIL_MIN_STEP_PIPS * state.pip_size
 
         if trade.trade_type == "BUY":

@@ -1,5 +1,24 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase3** — TF 3-brain training pipeline (backtester/env/scripts/agent wiring); code ready to train, models not yet trained, TF still paper)
+> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase4** — TF runner-tune trained + 9-bug go-live audit fixed → TF LIVE canary (dual-strategy ON))
+
+## 📝 Version Log Entry — v8.1-phase4 (2026-05-30) — TF trained + go-live audit (9 bugs fixed) → TF LIVE canary
+
+**Training**: TF baseline (pool 3000, RL 3M+1.5M) = AUC 0.779 / Win 86% / Profitable 97.7% / DD 1.86% / **Pass 3.5%** (too conservative — locks +1R floor, few runners). **Runner-capture retune** (resolve `trail_sl_behind_r` 1.0→2.0, `trail_activation_r` 1.0→1.5, `TF_FUTURE_BARS` 120→180; env `RUNNER_BONUS` 0.50→0.70, `SLOW_WIN_BONUS` 0.15→0.10) → **Pass 3.5%→7.7%**, DD 1.86%→**1.49%** (better), Profitable 93.9%, Win 84%, Profit +4.0%. Verdict: TF is a low-frequency (~18 signals/episode vs MR ~200), high-quality, low-DD **complement** — the 8% solo-Pass gate doesn't fit it; accepted at 7.7% to run alongside MR.
+
+**🛑 Go-live adversarial audit (multi-agent workflow) — 9 confirmed latent bugs, ALL FIXED before flipping paper off**:
+- **(A, HIGH)** `TradeManager` applied MR exits (BE@0.3R / partial 33%@0.8R / Stage-2 SL-lock@0.5R / trail 0.5R-behind) to TF positions — `strategy_id` was stored on `TrailingState` but never read → TF runners cut short, contradicting the ride profile the model trained on. **Fix**: `TradeManager._exit_profile(strategy_id)` — MR keeps its constants; **TF rides** (no partial/BE/Stage-2; trail activation 1.5R / behind 2.0R / floor 1.0R / TP-ahead 2.0R) read from `TrendFollowingConfig.mgmt_*`. `TrendFollowingBacktester._resolve_trade` now also reads `bot_config.tf.mgmt_*` → **single source of truth, train==live exit**.
+- **(B, HIGH)** `_quality_model_for` fell back to the MR GBM for TF signals (different feature keys → garbage score gating the trade + obs[16] + log). **Fix**: no MR fallback for non-MR; `_tf_ready` gate now requires `"TF" in _quality_models` too (GBM routing as guarded as RL routing).
+- **(C, MED)** TF logged ADX H1 = 0.0 (TF caches H4/D1 raw, no `adx` col). **Fix**: for TF, `_build_live_context` sets `adx_h1` from `sig.adx` (H1 entry ADX).
+- **(D, MED)** TF logged empty obs (obs gate was MR-only). **Fix**: log obs via `_rl_agent_for`/`_build_obs_for` for any strategy with an agent (tf_v1 for TF).
+- **(E, MED)** No Strategy column → MR/TF rows indistinguishable. **Fix**: added `Strategy` + `Obs Layout` cols to `TRADE_HEADERS` (58→60) + `SIGNAL_HEADERS` (20→22); `ExecutedTrade.to_dict` emits `obs_layout_id`. ⚠️ existing `ftmo_trades.xlsx` auto-archives on first run (schema guard).
+- **(F, MED)** TF slot cap counted in-memory `_active_trades` only → an unrecovered TF orphan could over-open past the 1-slot canary. **Fix**: `_check_strategy_conflict` counts broker magic-tagged positions (`max(broker, in-memory)`); main re-syncs broker before scan (dual-strategy only).
+- **(G, MED)** Global soft cap 3.0% (dual) < sub-budget sum 3.5% → one strategy's loss could halt the other. **Fix**: `DAILY_LOSS_CAP_PCT_DUAL` 3.0→**3.5%** (= MR 2.0% + TF 1.5%, still < FTMO 4% hard).
+
+**Verification**: all 7 fixes unit + integration verified (live TF trade routes TF GBM/obs/exit, logs Strategy=TF + correct ADX + obs, slot cap broker-aware); `leakage_audit` + `parity_audit` exit 0 (MR obs 35 3-way sync intact — MR byte-identical when flag OFF).
+
+**🟢 GO-LIVE (1a canary)**: `bot_config.tf.enabled=True`, `paper_mode=False`; TF model promoted to `models/tf/best/`. TF canary = **1 slot, 1.5%/day sub-budget**, magic 123457. **⚠️ enabling dual-strategy ALSO regime-gates MR to RANGING (ADX<20) only** — MR loses ADX 20-30 signals (the v8.0.51 killer zone goes to the dead-zone/TF). MR Pass/volume impact is UNMEASURED in live → monitor. **Instant revert**: `tf.enabled=False` (back to single-strategy MR) or `tf.paper_mode=True` (keep regime split, stop TF orders).
+
+**⛔ New invariants**: (1) TF live exit MUST equal `TrendFollowingBacktester._resolve_trade` — both read `bot_config.tf.mgmt_*`; never hardcode TF trail geometry in TradeManager. (2) `_quality_model_for` never returns the MR GBM for a non-MR signal. (3) per-strategy slot cap counts BROKER magic-tagged positions, not just `_active_trades`. (4) `DAILY_LOSS_CAP_PCT_DUAL` ≥ sub-budget sum and < FTMO 4% hard. (5) every live TF row carries `Strategy`/`Obs Layout` for attribution.
 
 ## 📝 Version Log Entry — v8.1-phase3 (2026-05-30) — TF training pipeline (3-brain): backtester + env + scripts + agent wiring
 

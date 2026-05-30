@@ -88,6 +88,8 @@ class TradeLogger:
         "Obs JSON",
         # --- v7 Chronos forecast @ entry (cols 57-58) ---
         "Chronos Align", "Chronos Unc",
+        # --- v8.1 dual-strategy attribution (cols 59-60) ---
+        "Strategy", "Obs Layout",
     ]
 
     # === คอลัมน์สำหรับ Sheet "Signals" (per-scan log) ===
@@ -106,6 +108,8 @@ class TradeLogger:
         "Executor Reject",
         "Obs JSON",
         "Chronos Align", "Chronos Unc",
+        # --- v8.1 dual-strategy attribution ---
+        "Strategy", "Obs Layout",
     ]
 
     # === คอลัมน์สำหรับ Sheet "Daily" ===
@@ -230,6 +234,9 @@ class TradeLogger:
                 # v7: Chronos forecast features @ entry (mirrors obs[27,28])
                 round(float(trade_data.get("chronos_align", 0.0) or 0.0), 4),
                 round(float(trade_data.get("chronos_unc", 0.0) or 0.0), 4),
+                # v8.1 Phase4 fix-E: per-strategy attribution (MR/TF) + obs layout
+                trade_data.get("strategy_id", "MR"),
+                trade_data.get("obs_layout_id", ""),
             ]
             ws.append(row)
 
@@ -403,6 +410,9 @@ class TradeLogger:
                 str(scan_data.get("obs_27_json", ""))[:600],
                 round(float(scan_data.get("chronos_align", 0.0) or 0.0), 4),
                 round(float(scan_data.get("chronos_unc", 0.0) or 0.0), 4),
+                # v8.1 Phase4 fix-E: per-strategy attribution + obs layout
+                scan_data.get("strategy_id", "MR"),
+                scan_data.get("obs_layout_id", ""),
             ]
             ws.append(row)
 

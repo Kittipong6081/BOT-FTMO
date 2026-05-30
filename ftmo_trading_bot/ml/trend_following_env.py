@@ -39,11 +39,13 @@ class TrendFollowingFilterEnv(FTMOSignalFilterEnv):
     """Trend-following variant — runner bonus + late-entry penalty."""
 
     # ─── TF reward-shaping parameters (override via constructor) ──────
+    # v8.1 runner-tune: favour big runners over small +1R wins so the agent
+    # prefers setups that turn into trends (RUNNER_BONUS↑, SLOW_WIN_BONUS↓).
     RUNNER_R: float = 2.0              # outcome >= 2R counts as a "runner"
-    RUNNER_BONUS: float = 0.50         # base bonus for a runner win
-    RUNNER_SCALE: float = 0.20         # extra per R above RUNNER_R (capped)
-    RUNNER_SCALE_CAP: float = 0.50
-    SLOW_WIN_BONUS: float = 0.15       # modest win (0 < outcome < RUNNER_R)
+    RUNNER_BONUS: float = 0.70         # base bonus for a runner win (was 0.50)
+    RUNNER_SCALE: float = 0.25         # extra per R above RUNNER_R (capped)
+    RUNNER_SCALE_CAP: float = 0.75
+    SLOW_WIN_BONUS: float = 0.10       # modest win (0 < outcome < RUNNER_R) (was 0.15)
     BASE_LOSS_PENALTY: float = 0.10    # any losing trade
     LATE_ENTRY_TREND_AGE: int = 60     # H1 bars — trend "too mature" to enter
     LATE_ENTRY_PENALTY: float = 0.20   # losing trade entered on an aged trend
