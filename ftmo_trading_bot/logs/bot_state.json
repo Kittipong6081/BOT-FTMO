@@ -2,15 +2,19 @@
   "state": "ACTIVE",
   "initial_balance": 10000.0,
   "highest_balance": 10332.13,
-  "daily_start_equity": 9544.0,
-  "daily_start_balance": 9544.0,
-  "peak_daily_equity": 9609.83,
-  "current_day": "2026-05-22",
-  "daily_closed_pnl": 80.63,
-  "daily_trades_count": 2,
+  "daily_start_equity": 9421.82,
+  "daily_start_balance": 9421.82,
+  "peak_daily_equity": 9421.82,
+  "current_day": "2026-05-30",
+  "daily_closed_pnl": 0.0,
+  "daily_trades_count": 0,
+  "daily_trades_by_symbol": {},
   "last_loss_time_per_symbol": {
-    "USDCHF": "2026-05-21T23:30:03.428253+03:00",
-    "GBPUSD": "2026-05-21T16:42:25.896540+03:00"
+    "EURJPY": "2026-05-29T18:18:35.116376+03:00",
+    "NZDUSD": "2026-05-26T23:30:00.261372+03:00",
+    "XAUUSD": "2026-05-27T13:39:48.930805+03:00",
+    "GBPJPY": "2026-05-29T17:46:34.423561+03:00",
+    "EURUSD": "2026-05-29T18:23:16.700653+03:00"
   },
   "consecutive_losses": 0,
   "halt_until": null,
@@ -22,41 +26,26 @@
     "2026-05-18": 1.9599670397130655,
     "2026-05-19": -296.4680952380881,
     "2026-05-20": -304.2599999999976,
-    "2026-05-21": -80.30624725043675
+    "2026-05-21": -80.30624725043675,
+    "2026-05-22": 162.09588587938333,
+    "2026-05-25": 20.32999999999582,
+    "2026-05-26": -61.95046360088815,
+    "2026-05-27": -0.6500000000000057,
+    "2026-05-29": -219.62828569290662
   },
   "mt5_login": 26337318,
   "challenge_start_date": "2026-05-12",
-  "last_tp_per_symbol_dir": {
-    "AUDUSD|BUY": {
-      "tp_price": 0.71408,
-      "tp_time": "2026-05-22T08:55:33.569309+03:00"
-    },
-    "XAUUSD|BUY": {
-      "tp_price": 4522.65,
-      "tp_time": "2026-05-22T09:10:19.810045+03:00"
-    }
-  },
-  "flip_lock": {
-    "AUDUSD": {
-      "closed_direction": "BUY",
-      "close_price": 0.71408,
-      "atr_at_close": 0.00043057133021972134,
-      "unlock_threshold": 0.7138647143348902,
-      "min_unlock_time": "2026-05-22T09:00:33.584947+03:00",
-      "max_expiry_time": "2026-05-22T12:55:33.584947+03:00"
-    },
-    "XAUUSD": {
-      "closed_direction": "BUY",
-      "close_price": 4522.65,
-      "atr_at_close": 8.389438488847672,
-      "unlock_threshold": 4517.616336906691,
-      "min_unlock_time": "2026-05-22T09:15:19.822951+03:00",
-      "max_expiry_time": "2026-05-22T13:10:19.822951+03:00"
-    }
-  },
+  "last_tp_per_symbol_dir": {},
+  "flip_lock": {},
   "daily_profit_locked": false,
   "daily_loss_locked": false,
-  "last_open_time_iso": "2026-05-22T09:34:23.779467",
-  "schema_version": 7,
-  "last_updated": "2026-05-22T13:34:23.779619"
+  "last_open_time_iso": "2026-05-29T18:09:07.046245",
+  "last_open_theme": "JPY_LONG",
+  "strategy_book": {
+    "daily_realized_pnl": {},
+    "strategy_halted": {},
+    "day": null
+  },
+  "schema_version": 9,
+  "last_updated": "2026-05-30T22:34:54.277766"
 }
