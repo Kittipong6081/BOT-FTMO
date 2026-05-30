@@ -1,7 +1,9 @@
 # 01 — Architecture (3-Brain MR Pipeline + Chronos Forecaster)
-> Last Updated: 2026-05-22 (v8.0.55 — 3 pre-execution gates inserted at Execute step) | Scope: system overview + data flow
+> Last Updated: 2026-05-30 (v8.1-phase1 — optional dual-strategy regime router, default OFF) | Scope: system overview + data flow
 
 ## TL;DR (30-second scan)
+
+- **v8.1 dual-strategy (opt-in, `bot_config.tf.enabled`, default OFF)**: when ON, a `StrategyRouter` + `MarketRegimeClassifier` sits BEFORE the scanners — each symbol's H1 regime arms exactly one strategy (RANGING→MR, TRENDING→TF, AMBIGUOUS→none). MR (`LiveMRScanner`, M15) and TF (`TrendFollowingScanner`, H1) own separate per-symbol caches; signals carry `strategy_id` and route obs/context to their producing scanner via `FTMOTradingBot._strategy_for(sig)`. **Default OFF → the flow below is exactly single-strategy MR.** TF is paper-mode until Phase 2. Details → [05-invariants.md v8.1](05-invariants.md).
 
 - Three brains + 1 forecaster: **MR Strategy** (rule-based, BB + RSI + ADX trend filter) → **ML Quality** (GBM + Isotonic calibrator) → **Chronos Forecaster** (Amazon Chronos 2 zero-shot, feeds obs[27,28] when enabled) → **RL Agent** (PPO + Auxiliary Task — TAKE/SKIP).
 - Live entry point: `FTMOTradingBot` in `ftmo_trading_bot/main.py`. Calls `LiveMRScanner.scan_all_symbols()` (drop-in for legacy `SMCStrategy.scan_all_symbols`).

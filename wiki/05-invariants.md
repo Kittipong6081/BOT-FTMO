@@ -1,5 +1,93 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.0.81** — per-dim obs parity tool (proves train↔live) + ADX-penalty reward-bug fix)
+> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase4** — TF runner-tune trained + 9-bug go-live audit fixed → TF LIVE canary (dual-strategy ON))
+
+## 📝 Version Log Entry — v8.1-phase4 (2026-05-30) — TF trained + go-live audit (9 bugs fixed) → TF LIVE canary
+
+**Training**: TF baseline (pool 3000, RL 3M+1.5M) = AUC 0.779 / Win 86% / Profitable 97.7% / DD 1.86% / **Pass 3.5%** (too conservative — locks +1R floor, few runners). **Runner-capture retune** (resolve `trail_sl_behind_r` 1.0→2.0, `trail_activation_r` 1.0→1.5, `TF_FUTURE_BARS` 120→180; env `RUNNER_BONUS` 0.50→0.70, `SLOW_WIN_BONUS` 0.15→0.10) → **Pass 3.5%→7.7%**, DD 1.86%→**1.49%** (better), Profitable 93.9%, Win 84%, Profit +4.0%. Verdict: TF is a low-frequency (~18 signals/episode vs MR ~200), high-quality, low-DD **complement** — the 8% solo-Pass gate doesn't fit it; accepted at 7.7% to run alongside MR.
+
+**🛑 Go-live adversarial audit (multi-agent workflow) — 9 confirmed latent bugs, ALL FIXED before flipping paper off**:
+- **(A, HIGH)** `TradeManager` applied MR exits (BE@0.3R / partial 33%@0.8R / Stage-2 SL-lock@0.5R / trail 0.5R-behind) to TF positions — `strategy_id` was stored on `TrailingState` but never read → TF runners cut short, contradicting the ride profile the model trained on. **Fix**: `TradeManager._exit_profile(strategy_id)` — MR keeps its constants; **TF rides** (no partial/BE/Stage-2; trail activation 1.5R / behind 2.0R / floor 1.0R / TP-ahead 2.0R) read from `TrendFollowingConfig.mgmt_*`. `TrendFollowingBacktester._resolve_trade` now also reads `bot_config.tf.mgmt_*` → **single source of truth, train==live exit**.
+- **(B, HIGH)** `_quality_model_for` fell back to the MR GBM for TF signals (different feature keys → garbage score gating the trade + obs[16] + log). **Fix**: no MR fallback for non-MR; `_tf_ready` gate now requires `"TF" in _quality_models` too (GBM routing as guarded as RL routing).
+- **(C, MED)** TF logged ADX H1 = 0.0 (TF caches H4/D1 raw, no `adx` col). **Fix**: for TF, `_build_live_context` sets `adx_h1` from `sig.adx` (H1 entry ADX).
+- **(D, MED)** TF logged empty obs (obs gate was MR-only). **Fix**: log obs via `_rl_agent_for`/`_build_obs_for` for any strategy with an agent (tf_v1 for TF).
+- **(E, MED)** No Strategy column → MR/TF rows indistinguishable. **Fix**: added `Strategy` + `Obs Layout` cols to `TRADE_HEADERS` (58→60) + `SIGNAL_HEADERS` (20→22); `ExecutedTrade.to_dict` emits `obs_layout_id`. ⚠️ existing `ftmo_trades.xlsx` auto-archives on first run (schema guard).
+- **(F, MED)** TF slot cap counted in-memory `_active_trades` only → an unrecovered TF orphan could over-open past the 1-slot canary. **Fix**: `_check_strategy_conflict` counts broker magic-tagged positions (`max(broker, in-memory)`); main re-syncs broker before scan (dual-strategy only).
+- **(G, MED)** Global soft cap 3.0% (dual) < sub-budget sum 3.5% → one strategy's loss could halt the other. **Fix**: `DAILY_LOSS_CAP_PCT_DUAL` 3.0→**3.5%** (= MR 2.0% + TF 1.5%, still < FTMO 4% hard).
+
+**Verification**: all 7 fixes unit + integration verified (live TF trade routes TF GBM/obs/exit, logs Strategy=TF + correct ADX + obs, slot cap broker-aware); `leakage_audit` + `parity_audit` exit 0 (MR obs 35 3-way sync intact — MR byte-identical when flag OFF).
+
+**🟢 GO-LIVE (1a canary)**: `bot_config.tf.enabled=True`, `paper_mode=False`; TF model promoted to `models/tf/best/`. TF canary = **1 slot, 1.5%/day sub-budget**, magic 123457. **⚠️ enabling dual-strategy ALSO regime-gates MR to RANGING (ADX<20) only** — MR loses ADX 20-30 signals (the v8.0.51 killer zone goes to the dead-zone/TF). MR Pass/volume impact is UNMEASURED in live → monitor. **Instant revert**: `tf.enabled=False` (back to single-strategy MR) or `tf.paper_mode=True` (keep regime split, stop TF orders).
+
+**⛔ New invariants**: (1) TF live exit MUST equal `TrendFollowingBacktester._resolve_trade` — both read `bot_config.tf.mgmt_*`; never hardcode TF trail geometry in TradeManager. (2) `_quality_model_for` never returns the MR GBM for a non-MR signal. (3) per-strategy slot cap counts BROKER magic-tagged positions, not just `_active_trades`. (4) `DAILY_LOSS_CAP_PCT_DUAL` ≥ sub-budget sum and < FTMO 4% hard. (5) every live TF row carries `Strategy`/`Obs Layout` for attribution.
+
+## 📝 Version Log Entry — v8.1-phase3 (2026-05-30) — TF training pipeline (3-brain): backtester + env + scripts + agent wiring
+
+**Trigger**: Phase 3 of the dual-strategy plan — build the full TF training pipeline (mirror of MR) so TF gets its own pool + GBM + RL. **Code is ready to train; no model trained yet → TF still paper (forced).** MR untouched (audits exit 0).
+
+**New modules**:
+- **`ml/trend_following_backtester.py` → `TrendFollowingBacktester(StrategyBacktester)`**: entry on **H1** (not M15), trend filter H4 + D1 (D1 resampled from H4 via `_resample_h4_to_d1` since no D1 CSV — soft bias only). `generate_episode_signals(symbol, h1_start_bar, num_days, rng)` scans 12/day (TF_SCAN_POINTS_PER_DAY), 120-H1 resolution window (TF_FUTURE_BARS), wide-RR resolve with **Stage-2 1.5R cap DISABLED** (`tp_step_trigger_r=99`) + trail (1R behind, TP chases 2R) → winners RUN. Pool dict = MR schema (so `FTMOSignalFilterEnv._get_obs` reads it) + TF extras `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`/`is_runner`; `entry_confirm_passed=True` always (TF has no entry-confirm gate).
+- **`ml/trend_following_env.py` → `TrendFollowingFilterEnv(FTMOSignalFilterEnv)`**: same 35-dim obs (tf_v1) — 3 slots reinterpreted: obs[4]=trend_strength/100, obs[10]=trend_age/30, obs[26]=adx/50 (trending=good; MR used 1−adx/50). Reward INVERTED vs MR: RUNNER_BONUS (outcome≥2R, scales with size) > SLOW_WIN_BONUS; loss penalty + LATE_ENTRY_PENALTY (trend_age≥60); SKIP-oracle penalizes missing runners most.
+- **Scripts**: `build_tf_signal_pool.py` (H1-anchored task sampling), `train_tf_signal_quality.py` (27 TF features, `data/tf_signal_quality_model.pkl`, strategy="trend_following"), `train_tf_signal_filter.py` (`TrendFollowingFilterEnv`, 2-phase, `models/tf/ppo_tf_filter.zip`+`vec_normalize_tf.pkl`), `auto_train_pipeline_tf.py` (slim orchestrator: build→quality→filter→eval→gate→snapshot `models/tf/best/`).
+
+**Strategy gate change (`TrendFollowingStrategy`)**: `resuming` + MACD moved from HARD gates to SOFT confluence bonuses (+8/+7) — strict conjunction (ADX>27 ∧ EMA-stack ∧ pullback ∧ resume ∧ MACD) yielded ~0 signals; soft makes the population usable for both train + live (same gate structure → no distribution gap). `pullback_max_atr` 1.5→2.5. Hard gates remain: ADX≥27, EMA-stack, H4 not-opposing, pullback-dist, RSI not-stretched. (Tuning = Phase 4.)
+
+**main.py wiring**: `self._rl_agents` dict (MR + TF if `models/tf` present) + `self._quality_models` dict (MR + TF if `data/tf_signal_quality_model.pkl` present); helpers `_rl_agent_for/_quality_model_for/_build_obs_tf/_build_obs_for` route by `sig.strategy_id`. `_build_live_context` scores TF via the TF GBM. TF executes ONLY when `paper_mode=False AND "TF" in _rl_agents` — until then logs `TF_PAPER`.
+
+**Verification**: full pipeline runs end-to-end on a 60-episode smoke pool (build 0.6min → GBM trains/saves/rescores → PPO 2-phase learn + eval returns metrics → env consumes pool, obs reinterpret correct). `leakage_audit` + `parity_audit` exit 0 (MR obs dim 35 3-way sync intact). No D1 CSV → D1 bias is H4-resampled (soft).
+
+**⛔ New invariants**: (1) obs-sync now has TWO layouts — MR (mr_v8: obs[4]=bb_extreme, [10]=bb_width, [26]=1−adx/50) and TF (tf_v1: obs[4]=trend_strength, [10]=trend_age, [26]=adx/50). Each must stay synced across its env `_get_obs` ↔ live `_build_obs_*` ↔ its model. (2) TF pool entry is H1; `TrendFollowingBacktester` start bars index H1, not M15. (3) TF resolve MUST keep `tp_step_trigger_r=99` (disabling it caps runners at 1.5R = defeats TF). (4) D1 bias is soft/resampled in training — do not promote it to a hard gate without real D1 data.
+
+## 📝 Version Log Entry — v8.1-phase2 (2026-05-30) — Per-strategy magic + Order Conflict Filter + StrategyRiskBook (bot_state schema 9)
+
+**Trigger**: Phase 2 of the dual-strategy plan — build the execution + risk machinery so MR & TF positions are attributable and budgeted separately. **All Phase-2 behaviour is gated behind `bot_config.tf.enabled` (default OFF) → single-strategy MR is byte-identical.** TF stays `paper_mode` (real TF execution waits for the Phase 3 TF RL model).
+
+**Per-strategy attribution (magic = source of truth)**:
+- `ExecutedTrade.strategy_id` + `TrailingState.strategy_id` (NEW fields, default "MR"). `execute_signal` sends with `magic = STRATEGY_MAGIC[strategy_id]` (MR 123456 / TF 123457) via `_send_order_with_retry(magic=...)`. Orphan recovery: filter `magic not in TradeExecutor._bot_magics()` (was hardcoded `!= 123456` → would drop TF orphans); `_rebuild_executed_trade_from_mt5` sets `strategy_id` via `_strategy_for_magic(magic)`.
+- Helpers: `TradeExecutor._magic_for(sid)`, `._strategy_for_magic(magic)`, `._bot_magics()`.
+
+**Order Conflict Filter** — `TradeExecutor._check_strategy_conflict(signal)` (NEW, first gate in `execute_signal`): (1) regime exclusivity — a symbol held by the OTHER strategy is blocked; (2) per-strategy slot cap (`STRATEGY_SLOT_CAP` MR 2 / TF 1). **No-op when `tf.enabled=False`** (so MR keeps the global `MAX_OPEN_POSITIONS=3`). Same-symbol / opposing-theme / currency-leg stay PORTFOLIO-LEVEL in `_check_correlation_risk` + `can_open_trade` (cross-strategy already — ⛔ never filter strategy_id there).
+
+**Gate dispatch**: `_check_entry_confirmation` (slip + M1-wick + Keltner — tuned for MR "falling-knife" entries) now runs **MR-only**; TF skips it (would block trend-continuation). Broker-agnostic gates (spread-spike, re-anchor, min-stop, final_validation, SL-existence) run for both.
+
+**Per-strategy risk ledger** — NEW `core/strategy_risk_book.py` `StrategyRiskBook` (held by `RiskManager._strategy_book`): realized P/L recorded at close (`update_daily_pnl(strategy_id=...)`), floating P/L computed live from open positions' magic (never drifts on restart). `is_halted(sid)` self-halts a strategy at its sub-budget WITHOUT touching global `BotState` → the other strategy keeps trading. `can_open_trade(strategy_id=...)` gains the sub-budget gate (active only when `tf.enabled`). Reset in `_on_new_day`; persisted in `bot_state.json` **schema 9** (`strategy_book` key; schema-8 files load as empty → no migration needed).
+
+**Per-strategy sizing**: `STRATEGY_RISK_PCT` MR 0.70% (= `DEFAULT_RISK_PER_TRADE_PCT` → MR identical) / TF 0.60%, passed to `PositionSizer.calculate_lot_size(risk_pct=...)`. Global soft cap: `_effective_daily_loss_cap_pct()` = 3.0% (`DAILY_LOSS_CAP_PCT_DUAL`) when `tf.enabled` else 2.5% (`DAILY_LOSS_CAP_PCT`, unchanged).
+
+**Risk hierarchy** (top wins): [1] FTMO 4% hard breach guard (global) → [2] global soft cap 3.0%/2.5% → [3] per-strategy sub-budget MR 2.0% / TF 1.5%. worst-case both halt = 3.5% < FTMO 4%.
+
+**Verification**: flag OFF → `leakage_audit` + `parity_audit` exit 0 (MR identical, risk 0.70% matches training). Unit tests: ledger per-strategy realized+floating + isolated self-halt + persistence; magic helpers; conflict filter (regime-exclusivity + slot cap dual-ON, no-op OFF); effective cap 2.5/3.0; RiskManager builds + schema-8→9 migration safe.
+
+**⛔ New invariants**: (1) MT5 magic ↔ strategy_id is the attribution source of truth — orphan recovery uses `_bot_magics()`, never a hardcoded magic. (2) correlation / opposing-theme / currency-leg are PORTFOLIO-LEVEL — count across BOTH strategies, never filter strategy_id. (3) per-strategy halt ≠ global `BotState` (one strategy halting must not stop the other). (4) global FTMO 4% breach guard sits ABOVE per-strategy halt. (5) every Phase-2 risk change is gated behind `tf.enabled` — flipping it OFF must restore exact single-strategy MR behaviour (cap 2.5%, no slot cap, risk 0.70%).
+
+## 📝 Version Log Entry — v8.1-phase1 (2026-05-30) — Market Regime gate + StrategyRouter + Trend Following scanner (rules-only, paper-mode, flag OFF by default)
+
+**Trigger**: Phase 1 of the dual-strategy plan (`~/.claude/plans/lead-quantitative-portfolio-sequential-curry.md`). Add the regime switch + router + a rules-only TF scanner. **Master switch `bot_config.tf.enabled` defaults False → live behaviour is byte-identical single-strategy MR.** When ON, TF runs in `paper_mode` (log-only, no orders) until Phase 2.
+
+**New modules**:
+- **`strategy/regime_classifier.py` → `MarketRegimeClassifier`**: per-symbol 3-state gate from H1 — `Regime.{RANGING→MR, TRENDING→TF, AMBIGUOUS→none}`. ADX H1 is the PRIMARY separator; the band `[adx_ranging_max=20, adx_trending_min=27]` is a hard dead-zone (no trade) — wiki v8.0.51 proved ADX H1 25-30 = WR 25%, −$679. Choppiness Index + EMA-slope-per-ATR are confirmations. Hysteresis: `confirm_bars=3` debounce + `min_dwell_sec=1800` + the wide AMBIGUOUS band; new symbols start AMBIGUOUS (conservative warmup). Builds on `FTMOTradingBot._compute_symbol_regime`.
+- **`strategy/strategy_router.py` → `StrategyRouter`**: per scan, `classify_all` → group symbols by armed strategy → scan each strategy ONLY on its allowed symbols → merge + rank. Mutual exclusion is structural (one key per symbol). `open_owner` locks symbols with an open position to their owner (regime flip mid-trade can't hand the symbol over).
+- **`strategy/trend_following_strategy.py` → `TrendFollowingStrategy` / `TrendFollowingScanner` / `TFSignal`**: entry on H1 (trend filter H4/D1). Rules: ADX H1 > 27 + EMA21>50>200 + H4 agree + pullback-resume toward EMA21 + RSI not stretched + MACD confirm. SL = ATR×2.0 (XAU 2.5), RR 2.5 (WIDE — let winners run, opposite of MR). `TFSignal(MRSignal)` carries `strategy_id="TF"` + TF telemetry (`trend_age_bars`, `pullback_depth_atr`, `adx_at_entry`). `TrendFollowingScanner` magic = **123457**, OBS layout "tf_v1", own H1/H4/D1 caches.
+- **`TechnicalIndicators.calculate_choppiness(df, period=14)`** (NEW static): Choppiness Index 0-100 (>60 ranging, <40 trending).
+
+**Config (`settings.py`)**: NEW `RegimeConfig` (`bot_config.regime`) + `TrendFollowingConfig` (`bot_config.tf`, `enabled=False`, `paper_mode=True`, `sl_atr_mult=2.0`, `rr_ratio=2.5`, ADX/EMA/MACD/pullback params). No change to existing values.
+
+**main.py wiring**: `self._router` built only when `bot_config.tf.enabled` (else None → legacy MR scan). Scan loop: router scan when enabled, else `self._strategy.scan_all_symbols()` (unchanged). `_open_position_owners()` feeds the regime lock. TF signals with `paper_mode` → logged as `TF_PAPER`, NOT executed. `_build_live_context` builds the MR obs only for MR signals (TF obs layout lands Phase 3 → empty for TF now).
+
+**Verification**: flag OFF → `leakage_audit` + `parity_audit` exit 0 (MR identical, obs dim 35). flag ON → functional tests pass: dead-zone (ADX 20-27 → AMBIGUOUS), RANGING/TRENDING classification, hysteresis warmup (AMBIGUOUS→TRENDING after confirm_bars), router routing + merge, regime lock, TF signal construction (wide-RR geometry, SL=ATR×2). Full `FTMOTradingBot` constructs the router when `tf.enabled=True`.
+
+**⛔ New invariants**: (1) a symbol is armed by exactly ONE strategy (or none) per instant — regime exclusivity + executor same-symbol block. (2) the ADX `[20,27]` dead-zone is intentional (killer zone) — do not "fill it in" to trade more. (3) when `tf.enabled=False` the router is None and MR runs exactly as before — keep this the default until TF has a track record. (4) TF obs layout (tf_v1) ≠ MR (mr_v8); the obs-sync invariant now applies per-layout (TF builder lands Phase 3).
+
+## 📝 Version Log Entry — v8.1-phase0 (2026-05-30) — Strategy abstraction (groundwork for parallel Trend Following)
+
+**Trigger**: Plan to run a Trend Following (TF) strategy in parallel with Mean Reversion (MR) — see `~/.claude/plans/lead-quantitative-portfolio-sequential-curry.md`. Phase 0 = introduce the abstraction with **zero behaviour change to MR**, so it ships independently and audits stay green.
+
+**Changes (live-path indirection only — pool/GBM/RL/env/obs all UNTOUCHED)**:
+- **NEW `strategy/strategy_base.py` → `StrategyBase` (ABC)**: contract every parallel scanner implements — `STRATEGY_ID`, `MAGIC_NUMBER`, `OBS_LAYOUT_ID`, `scan_all_symbols(allowed_symbols=None)`, `get_ltf_data/get_mtf_data/get_htf_data(symbol)`, `get_obs_layout_id/get_strategy_id/get_magic`. Each strategy owns its OWN per-symbol caches (no cross-read).
+- **`LiveMRScanner(StrategyBase)`**: now declares `STRATEGY_ID="MR"`, `MAGIC_NUMBER=123456`, `OBS_LAYOUT_ID="mr_v8"`. `scan_all_symbols` gained `allowed_symbols: Optional[set] = None` (None = legacy = scan all). Cache accessors unchanged (still v8.0.79/80 per-symbol).
+- **`MRSignal.strategy_id: str = "MR"`** (NEW field) — strategy origin tag carried through the whole pipeline (obs routing → executor magic → per-strategy risk ledger in later phases).
+- **`main.py`**: `self._strategies = {self._strategy.STRATEGY_ID: self._strategy}` registry + helper `FTMOTradingBot._strategy_for(sig)`. `_build_live_context` now reads `get_ltf/mtf/htf_data` + `_structure_mtf`/`_get_d1_bias` via `_strategy_for(sig)` instead of the hardcoded `self._strategy` → routes each signal's obs/context to the scanner that produced it. Scan loop still calls `self._strategy.scan_all_symbols()` (MR only — StrategyRouter replaces it in Phase 1).
+
+**Verification**: `leakage_audit.py` exit 0, `parity_audit.py` exit 0 (obs dim 3-way still 35, correlation groups match, ml/risk aligned). MR live behaviour byte-identical (indirection resolves to the same MR scanner; env/obs/model never touched). ⛔ **Invariant (new)**: each signal's obs/context MUST be built from `_strategy_for(sig)` (the producing scanner) — never a global `self._strategy` — to prevent cross-strategy cache contamination (extends the v8.0.79 per-symbol fix to the cross-strategy axis).
 
 ## 📝 Version Log Entry — v8.0.81 (2026-05-30) — Per-dim obs parity tool + ADX-penalty reward fix (follow-up to v8.0.80)
 

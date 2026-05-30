@@ -65,8 +65,9 @@ class ExecutedTrade:
     atr_value: float                # ATR ตอนเปิดเทรด (ใช้สำหรับ Trailing)
     open_time: datetime             # เวลาเปิดเทรด
     signal_reasons: List[str]       # เหตุผลจาก Strategy
-    magic_number: int = 123456      # Magic Number ของ Bot
-    
+    magic_number: int = 123456      # Magic Number ของ Bot (per-strategy: MR 123456 / TF 123457)
+    strategy_id: str = "MR"         # v8.1: which strategy opened this (MR / TF)
+
     # สถานะ
     is_open: bool = True            # ยังเปิดอยู่หรือไม่
     close_price: float = 0.0        # ราคาปิด (เมื่อปิดแล้ว)
@@ -154,6 +155,8 @@ class ExecutedTrade:
             "ticket": self.ticket,
             "symbol": self.symbol,
             "type": self.trade_type,
+            "strategy_id": self.strategy_id,
+            "obs_layout_id": "tf_v1" if self.strategy_id == "TF" else "mr_v8",
             "entry_price": self.entry_price,
             "sl_price": self.sl_price,
             "tp_price": self.tp_price,
@@ -246,8 +249,29 @@ class TradeExecutor:
     MAX_RETRY = 3
     RETRY_DELAY_SEC = 2
 
-    # Magic Number สำหรับระบุว่าเป็นคำสั่งจาก Bot
+    # Magic Number สำหรับระบุว่าเป็นคำสั่งจาก Bot (MR default; TF = 123457 via STRATEGY_MAGIC)
     MAGIC_NUMBER = 123456
+
+    # ─── v8.1 Phase 2: per-strategy magic helpers ────────────────────────
+    @staticmethod
+    def _magic_for(strategy_id: str) -> int:
+        """MT5 magic for a strategy (MR 123456 / TF 123457). Fallback to MR magic."""
+        return int(bot_config.ftmo.STRATEGY_MAGIC.get(strategy_id, TradeExecutor.MAGIC_NUMBER))
+
+    @staticmethod
+    def _strategy_for_magic(magic) -> str:
+        """Reverse-map a broker position's magic → strategy_id (source of truth)."""
+        for sid, m in bot_config.ftmo.STRATEGY_MAGIC.items():
+            if int(m) == int(magic):
+                return sid
+        return "MR"
+
+    @staticmethod
+    def _bot_magics() -> set:
+        """All magics this bot uses — orphan recovery skips anything not in here."""
+        magics = {int(m) for m in bot_config.ftmo.STRATEGY_MAGIC.values()}
+        magics.add(int(TradeExecutor.MAGIC_NUMBER))
+        return magics
 
     # === MT5 DEAL_REASON → human-readable string ===
     # ใช้ตัดสินใจ cooldown policy ใน RiskManager ด้วย (อย่าเปลี่ยน code โดยไม่อัพเดททั้งสองฝั่ง)
@@ -423,6 +447,7 @@ class TradeExecutor:
             open_time=pos.get("time", datetime.now(timezone.utc)),
             signal_reasons=["recovered from MT5 (orphan)"],
             magic_number=int(pos.get("magic", 123456)),
+            strategy_id=self._strategy_for_magic(pos.get("magic", 123456)),  # v8.1
             is_open=True,
             original_lot_size=float(pos["volume"]),
             agent_decision="RECOVERED",
@@ -464,10 +489,20 @@ class TradeExecutor:
             return None
 
         symbol = signal.symbol
+        strategy_id = getattr(signal, "strategy_id", "MR")
         print(f"\n{'━' * 60}")
-        print(f"⚡ [Executor] ดำเนินการ {signal.signal_type.value} {symbol}")
+        print(f"⚡ [Executor] ดำเนินการ {signal.signal_type.value} {symbol} [{strategy_id}]")
         print(f"   Confluence: {signal.confluence_score:.0f}/100 | RR: 1:{signal.rr_ratio:.1f}")
         print(f"{'━' * 60}")
+
+        # === ด่านที่ 1.2 (v8.1): Cross-strategy conflict (regime exclusivity + slot cap) ===
+        # no-op เมื่อ tf.enabled=False → MR เดิมไม่กระทบ
+        conflict_ok, conflict_reason = self._check_strategy_conflict(signal)
+        if not conflict_ok:
+            print(f"🧭 [Executor] Strategy Conflict: {conflict_reason}")
+            self._last_reject_reason = f"strategy_conflict:{conflict_reason}"
+            self._total_rejected += 1
+            return None
 
         # === ด่านที่ 1.5: ตรวจ Duplicate + Correlation ===
         # กัน Over-exposure ต่อ Symbol เดียวกัน หรือกลุ่มที่เคลื่อนไหวไปทางเดียวกัน
@@ -481,9 +516,12 @@ class TradeExecutor:
             return None
 
         # === ด่านที่ 2: คำนวณ Lot Size ===
+        # v8.1: per-strategy risk_pct (MR 0.70% = DEFAULT เดิม → MR identical; TF 0.60%).
+        # .get → None for unknown strategy → calculate_lot_size falls back to default.
         lot_result = self._position_sizer.calculate_lot_size(
             symbol=symbol,
             sl_distance_price=signal.sl_distance,
+            risk_pct=bot_config.ftmo.STRATEGY_RISK_PCT.get(strategy_id),
         )
 
         if lot_result is None:
@@ -505,6 +543,7 @@ class TradeExecutor:
             direction=signal.signal_type.value,
             atr=signal.atr_value,
             confluence_score=signal.confluence_score,  # v8.0.44: Asian conf exception
+            strategy_id=strategy_id,                    # v8.1: per-strategy sub-budget gate
         )
 
         if not allowed:
@@ -552,12 +591,15 @@ class TradeExecutor:
         # === ด่านที่ 4.6: Entry Confirmation (v8.0.55 — pre-execution chart re-check) ===
         # เช็ค 3 อย่างก่อนยิง: slip / M1 direction / BB %B still extreme
         # ปัญหาที่แก้: signal stale ระหว่าง scan → execute (~30-60 วินาที)
-        ec_ok, ec_reason = self._check_entry_confirmation(signal)
-        if not ec_ok:
-            print(f"🚫 [Executor] Entry Confirmation Failed: {ec_reason}")
-            self._last_reject_reason = f"entry_confirm:{ec_reason}"
-            self._total_rejected += 1
-            return None
+        # v8.1: MR-ONLY gate — Keltner/M1-direction ปรับจูนสำหรับ "รับมีดที่ตก" (MR);
+        # ใช้กับ TF จะบีบ trend-continuation ผิดทาง → dispatch ตาม strategy_id
+        if strategy_id == "MR":
+            ec_ok, ec_reason = self._check_entry_confirmation(signal)
+            if not ec_ok:
+                print(f"🚫 [Executor] Entry Confirmation Failed: {ec_reason}")
+                self._last_reject_reason = f"entry_confirm:{ec_reason}"
+                self._total_rejected += 1
+                return None
 
         # === ด่านที่ 5: Final Validation ===
         remaining_budget = self._risk_manager.get_remaining_daily_budget()
@@ -605,12 +647,15 @@ class TradeExecutor:
                       f"— risk สูงกว่า sized เล็กน้อย")
 
         # === ด่านที่ 6: ส่ง Market Order (พร้อม Retry) ===
+        # v8.1: per-strategy magic → broker positions attributable (risk ledger + orphan)
+        exec_magic = self._magic_for(strategy_id)
         order_result = self._send_order_with_retry(
             symbol=symbol,
             order_type=signal.signal_type.value,
             volume=lot_size,
             sl=exec_sl,
             tp=exec_tp,
+            magic=exec_magic,
         )
 
         if order_result is None:
@@ -676,7 +721,8 @@ class TradeExecutor:
             atr_value=signal.atr_value,
             open_time=now,
             signal_reasons=signal.reasons,
-            magic_number=self.MAGIC_NUMBER,
+            magic_number=exec_magic,            # v8.1: per-strategy magic
+            strategy_id=strategy_id,            # v8.1: strategy origin tag
             # --- ML features v2 ---
             session=entry_ctx["session"],
             day_of_week=now.weekday(),
@@ -818,6 +864,62 @@ class TradeExecutor:
             "volatility_regime": vol_regime,
             "dd_pct": round(dd_pct * 100, 2) if dd_pct <= 1 else round(dd_pct, 2),
         }
+
+    # =========================================================================
+    # 🧭 v8.1 Phase 2: Cross-strategy conflict guard (dual-strategy MR+TF)
+    # =========================================================================
+
+    def _check_strategy_conflict(self, signal) -> tuple:
+        """Cross-strategy guard — active ONLY when dual-strategy is enabled.
+
+        Same-symbol / opposing-theme / currency-leg exposure are enforced
+        PORTFOLIO-LEVEL (across both strategies) by `_check_correlation_risk` +
+        `RiskManager.can_open_trade` already — do NOT filter strategy_id there.
+        This adds the two genuinely per-strategy checks:
+          1. regime exclusivity — a symbol held by the OTHER strategy is off-limits
+             (also covered by the same-symbol block, kept here for a clear message)
+          2. per-strategy concurrent-slot cap (MR 2 / TF 1)
+
+        When `bot_config.tf.enabled` is False → no-op so single-strategy MR keeps
+        using the global `MAX_OPEN_POSITIONS` (per-strategy caps would wrongly
+        clamp MR from 3 → 2).
+        """
+        if not getattr(bot_config.tf, "enabled", False):
+            return (True, "single-strategy")
+
+        sid = getattr(signal, "strategy_id", "MR")
+        sym = signal.symbol
+
+        # (1) regime exclusivity — held by the other strategy
+        for t in self._active_trades.values():
+            if t.is_open and t.symbol == sym and getattr(t, "strategy_id", "MR") != sid:
+                return (False,
+                        f"regime_exclusive: {sym} ถือโดย {getattr(t, 'strategy_id', 'MR')} อยู่")
+
+        # (2) per-strategy slot cap — v8.1 Phase4 fix-F: count from BROKER (magic)
+        # too, not just in-memory _active_trades. An unrecovered orphan (sync
+        # raised, or post-restart before recovery) would otherwise be invisible →
+        # TF could open past its 1-slot canary cap. Take max(broker, in-memory).
+        cap = bot_config.ftmo.STRATEGY_SLOT_CAP.get(sid)
+        if cap is not None:
+            mem_open = sum(
+                1 for t in self._active_trades.values()
+                if t.is_open and getattr(t, "strategy_id", "MR") == sid
+            )
+            broker_open = mem_open
+            try:
+                magic = self._magic_for(sid)
+                broker_open = sum(
+                    1 for p in (self._connector.get_open_positions() or [])
+                    if int(p.get("magic", 0)) == int(magic)
+                )
+            except Exception:
+                pass
+            sid_open = max(mem_open, broker_open)
+            if sid_open >= int(cap):
+                return (False, f"slot_cap: {sid} เต็ม ({sid_open}/{cap})")
+
+        return (True, "ok")
 
     # =========================================================================
     # 🔗 ตรวจสอบ Correlation Risk (กัน Over-exposure)
@@ -1216,6 +1318,7 @@ class TradeExecutor:
         volume: float,
         sl: float,
         tp: float,
+        magic: Optional[int] = None,
     ) -> Optional[Dict]:
         """
         ส่ง Market Order พร้อม Retry Logic
@@ -1233,6 +1336,7 @@ class TradeExecutor:
         Returns:
             Dict หรือ None: ผลลัพธ์การส่งคำสั่ง
         """
+        use_magic = int(magic) if magic is not None else self.MAGIC_NUMBER
         for attempt in range(1, self.MAX_RETRY + 1):
             print(f"📤 [Executor] ส่งคำสั่ง {order_type} {symbol} (ครั้งที่ {attempt}/{self.MAX_RETRY})")
 
@@ -1243,7 +1347,7 @@ class TradeExecutor:
                 sl=sl,
                 tp=tp,
                 comment="",  # v8.0.23: empty — bot identified by magic number
-                magic=self.MAGIC_NUMBER,
+                magic=use_magic,
             )
 
             if result is not None:
@@ -1348,6 +1452,7 @@ class TradeExecutor:
                 symbol=trade.symbol,
                 direction=trade.trade_type,
                 close_price=trade.close_price,
+                strategy_id=getattr(trade, "strategy_id", "MR"),
             )
 
             if self._logger:
@@ -1442,6 +1547,7 @@ class TradeExecutor:
                 reason_code=reason_code,
                 direction=trade.trade_type,
                 close_price=close_price,
+                strategy_id=getattr(trade, "strategy_id", "MR"),
             )
 
             if self._logger:
@@ -1490,8 +1596,10 @@ class TradeExecutor:
             ticket = pos["ticket"]
             if ticket in self._active_trades:
                 continue  # already tracked
-            # ข้าม manual orders (magic ไม่ตรง bot magic)
-            if pos.get("magic", 0) != 123456:
+            # ข้าม manual orders (magic ไม่อยู่ในชุด magic ของบอท)
+            # v8.1: BOT_MAGICS set (MR 123456 + TF 123457) — เดิม hardcode != 123456
+            # จะมองข้าม TF orphan ผิดว่าเป็น manual แล้วไม่ recover
+            if int(pos.get("magic", 0)) not in self._bot_magics():
                 continue
             try:
                 self._active_trades[ticket] = self._rebuild_executed_trade_from_mt5(pos)

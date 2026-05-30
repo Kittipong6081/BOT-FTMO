@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-30 (v8.0.80 — audit: FTMO 4% breach guard, per-symbol trade counter, wall-clock periodic gates) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-30 (v8.1-phase2 — per-strategy risk ledger + conflict filter, dual-strategy behind `tf.enabled` OFF default) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 >
 > **v8.0.80 loop/state changes** (→ [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)): (C2) `RiskManager.check_risk` runs an **always-on FTMO 4% daily-breach emergency close** before the state-gated `_check_daily_loss` — so a `DAILY_HALT` set by consec-loss/stop-out (which don't close positions) can no longer let open positions bleed past 4%. (H2) `max_trades_per_day` now uses a per-symbol counter. `main.run()` hourly stats / GBM-drift / periodic-status now fire on **wall-clock gates** (not `_loop_count % 720`), so the v8.0.70 adaptive 1s loop no longer fires them ~5× too often.
 
@@ -38,6 +38,9 @@
 | Pause / Halt counts (v6.13) | 3 / 4 consec losses | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT/HALT_COUNT` |
 | Post-TP lock TTL | 60 min | `FTMOConfig.POST_TP_LOCK_TTL_MIN` |
 | Consistency threshold | 1.0 (off, 2-step Standard) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
+| **Dual-strategy (v8.1-phase4 — LIVE)** | `tf.enabled` **True** + `paper_mode` **False** → TF executes live (canary). Regime router arms MR(RANGING ADX<20)/TF(TRENDING ADX>27)/none(AMBIGUOUS 20-27). ⚠️ enabling this regime-gates MR to RANGING only. Revert: `tf.enabled=False` | `bot_config.tf.enabled/paper_mode`, `bot_config.regime`, `StrategyRouter` |
+| **TF live exit (v8.1-phase4)** | TF RIDES — no BE/partial/Stage-2; trail activation **1.5R**, SL **2R** behind (floor 1R), TP chase 2R — from `bot_config.tf.mgmt_*` (== backtester resolve → train==live). MR keeps its 0.3R BE / 0.8R partial / 1.0R trail | `TradeManager._exit_profile` |
+| **Per-strategy risk (v8.1 Phase 2, dual only)** | magic MR 123456 / TF 123457; sub-budget MR **2.0%** / TF **1.5%** (self-halt, not global); slot cap MR **2** / TF **1**; risk MR 0.70% / TF 0.60%; global soft cap **3.0%** (dual) vs 2.5% (single). Hierarchy: FTMO 4% hard > 3.0% global soft > per-strategy sub-budget | `FTMOConfig.STRATEGY_*`, `StrategyRiskBook`, `RiskManager.can_open_trade(strategy_id=)` |
 
 ---
 
