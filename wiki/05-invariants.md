@@ -1,5 +1,35 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.0.81** — per-dim obs parity tool (proves train↔live) + ADX-penalty reward-bug fix)
+> Last Updated: 2026-05-30 | Scope: red flags, version log, migration notes (latest: **v8.1-phase1** — Regime gate + StrategyRouter + TF rules scanner (paper-mode, behind `tf.enabled` flag, default OFF))
+
+## 📝 Version Log Entry — v8.1-phase1 (2026-05-30) — Market Regime gate + StrategyRouter + Trend Following scanner (rules-only, paper-mode, flag OFF by default)
+
+**Trigger**: Phase 1 of the dual-strategy plan (`~/.claude/plans/lead-quantitative-portfolio-sequential-curry.md`). Add the regime switch + router + a rules-only TF scanner. **Master switch `bot_config.tf.enabled` defaults False → live behaviour is byte-identical single-strategy MR.** When ON, TF runs in `paper_mode` (log-only, no orders) until Phase 2.
+
+**New modules**:
+- **`strategy/regime_classifier.py` → `MarketRegimeClassifier`**: per-symbol 3-state gate from H1 — `Regime.{RANGING→MR, TRENDING→TF, AMBIGUOUS→none}`. ADX H1 is the PRIMARY separator; the band `[adx_ranging_max=20, adx_trending_min=27]` is a hard dead-zone (no trade) — wiki v8.0.51 proved ADX H1 25-30 = WR 25%, −$679. Choppiness Index + EMA-slope-per-ATR are confirmations. Hysteresis: `confirm_bars=3` debounce + `min_dwell_sec=1800` + the wide AMBIGUOUS band; new symbols start AMBIGUOUS (conservative warmup). Builds on `FTMOTradingBot._compute_symbol_regime`.
+- **`strategy/strategy_router.py` → `StrategyRouter`**: per scan, `classify_all` → group symbols by armed strategy → scan each strategy ONLY on its allowed symbols → merge + rank. Mutual exclusion is structural (one key per symbol). `open_owner` locks symbols with an open position to their owner (regime flip mid-trade can't hand the symbol over).
+- **`strategy/trend_following_strategy.py` → `TrendFollowingStrategy` / `TrendFollowingScanner` / `TFSignal`**: entry on H1 (trend filter H4/D1). Rules: ADX H1 > 27 + EMA21>50>200 + H4 agree + pullback-resume toward EMA21 + RSI not stretched + MACD confirm. SL = ATR×2.0 (XAU 2.5), RR 2.5 (WIDE — let winners run, opposite of MR). `TFSignal(MRSignal)` carries `strategy_id="TF"` + TF telemetry (`trend_age_bars`, `pullback_depth_atr`, `adx_at_entry`). `TrendFollowingScanner` magic = **123457**, OBS layout "tf_v1", own H1/H4/D1 caches.
+- **`TechnicalIndicators.calculate_choppiness(df, period=14)`** (NEW static): Choppiness Index 0-100 (>60 ranging, <40 trending).
+
+**Config (`settings.py`)**: NEW `RegimeConfig` (`bot_config.regime`) + `TrendFollowingConfig` (`bot_config.tf`, `enabled=False`, `paper_mode=True`, `sl_atr_mult=2.0`, `rr_ratio=2.5`, ADX/EMA/MACD/pullback params). No change to existing values.
+
+**main.py wiring**: `self._router` built only when `bot_config.tf.enabled` (else None → legacy MR scan). Scan loop: router scan when enabled, else `self._strategy.scan_all_symbols()` (unchanged). `_open_position_owners()` feeds the regime lock. TF signals with `paper_mode` → logged as `TF_PAPER`, NOT executed. `_build_live_context` builds the MR obs only for MR signals (TF obs layout lands Phase 3 → empty for TF now).
+
+**Verification**: flag OFF → `leakage_audit` + `parity_audit` exit 0 (MR identical, obs dim 35). flag ON → functional tests pass: dead-zone (ADX 20-27 → AMBIGUOUS), RANGING/TRENDING classification, hysteresis warmup (AMBIGUOUS→TRENDING after confirm_bars), router routing + merge, regime lock, TF signal construction (wide-RR geometry, SL=ATR×2). Full `FTMOTradingBot` constructs the router when `tf.enabled=True`.
+
+**⛔ New invariants**: (1) a symbol is armed by exactly ONE strategy (or none) per instant — regime exclusivity + executor same-symbol block. (2) the ADX `[20,27]` dead-zone is intentional (killer zone) — do not "fill it in" to trade more. (3) when `tf.enabled=False` the router is None and MR runs exactly as before — keep this the default until TF has a track record. (4) TF obs layout (tf_v1) ≠ MR (mr_v8); the obs-sync invariant now applies per-layout (TF builder lands Phase 3).
+
+## 📝 Version Log Entry — v8.1-phase0 (2026-05-30) — Strategy abstraction (groundwork for parallel Trend Following)
+
+**Trigger**: Plan to run a Trend Following (TF) strategy in parallel with Mean Reversion (MR) — see `~/.claude/plans/lead-quantitative-portfolio-sequential-curry.md`. Phase 0 = introduce the abstraction with **zero behaviour change to MR**, so it ships independently and audits stay green.
+
+**Changes (live-path indirection only — pool/GBM/RL/env/obs all UNTOUCHED)**:
+- **NEW `strategy/strategy_base.py` → `StrategyBase` (ABC)**: contract every parallel scanner implements — `STRATEGY_ID`, `MAGIC_NUMBER`, `OBS_LAYOUT_ID`, `scan_all_symbols(allowed_symbols=None)`, `get_ltf_data/get_mtf_data/get_htf_data(symbol)`, `get_obs_layout_id/get_strategy_id/get_magic`. Each strategy owns its OWN per-symbol caches (no cross-read).
+- **`LiveMRScanner(StrategyBase)`**: now declares `STRATEGY_ID="MR"`, `MAGIC_NUMBER=123456`, `OBS_LAYOUT_ID="mr_v8"`. `scan_all_symbols` gained `allowed_symbols: Optional[set] = None` (None = legacy = scan all). Cache accessors unchanged (still v8.0.79/80 per-symbol).
+- **`MRSignal.strategy_id: str = "MR"`** (NEW field) — strategy origin tag carried through the whole pipeline (obs routing → executor magic → per-strategy risk ledger in later phases).
+- **`main.py`**: `self._strategies = {self._strategy.STRATEGY_ID: self._strategy}` registry + helper `FTMOTradingBot._strategy_for(sig)`. `_build_live_context` now reads `get_ltf/mtf/htf_data` + `_structure_mtf`/`_get_d1_bias` via `_strategy_for(sig)` instead of the hardcoded `self._strategy` → routes each signal's obs/context to the scanner that produced it. Scan loop still calls `self._strategy.scan_all_symbols()` (MR only — StrategyRouter replaces it in Phase 1).
+
+**Verification**: `leakage_audit.py` exit 0, `parity_audit.py` exit 0 (obs dim 3-way still 35, correlation groups match, ml/risk aligned). MR live behaviour byte-identical (indirection resolves to the same MR scanner; env/obs/model never touched). ⛔ **Invariant (new)**: each signal's obs/context MUST be built from `_strategy_for(sig)` (the producing scanner) — never a global `self._strategy` — to prevent cross-strategy cache contamination (extends the v8.0.79 per-symbol fix to the cross-strategy axis).
 
 ## 📝 Version Log Entry — v8.0.81 (2026-05-30) — Per-dim obs parity tool + ADX-penalty reward fix (follow-up to v8.0.80)
 

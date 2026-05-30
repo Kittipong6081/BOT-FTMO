@@ -45,6 +45,7 @@ import pandas as pd
 
 from config.settings import bot_config, get_symbol_config
 from strategy.indicators import TechnicalIndicators
+from strategy.strategy_base import StrategyBase
 
 
 _QUIET = os.environ.get("SMC_QUIET", "0") == "1"
@@ -115,6 +116,10 @@ class MRSignal:
 
     # v8.0.75: ATR z-score (regime) — used by dynamic slope filter (live-only)
     atr_zscore_30bars: float = 0.0
+
+    # v8.1: strategy origin tag — propagated through the whole live pipeline
+    # (obs routing, executor magic, per-strategy risk ledger). MR signals = "MR".
+    strategy_id: str = "MR"
 
     reasons: List[str] = field(default_factory=list)
 
@@ -515,7 +520,7 @@ class MeanReversionStrategy:
 # ─── Live MR Scanner — drop-in replacement for SMCStrategy in main.py ─────
 
 
-class LiveMRScanner:
+class LiveMRScanner(StrategyBase):
     """Live MR scanner — SMC-compatible interface (`scan_all_symbols`).
 
     Wraps `MeanReversionStrategy` and exposes the same surface that
@@ -532,6 +537,11 @@ class LiveMRScanner:
     rest of the live path (executor, logger, observation builder) does not
     need to change shapes — only semantics on a few obs slots.
     """
+
+    # v8.1: StrategyBase identity
+    STRATEGY_ID: str = "MR"
+    MAGIC_NUMBER: int = 123456
+    OBS_LAYOUT_ID: str = "mr_v8"
 
     MIN_CONFLUENCE_SCORE: float = 30.0
     SCAN_BARS_M15: int = 200       # M15 bars needed for indicators
@@ -562,14 +572,20 @@ class LiveMRScanner:
 
     # ─── Public API ───────────────────────────────────────────────────
 
-    def scan_all_symbols(self) -> List["MRSignal"]:
-        """Scan every configured symbol for an MR setup.
+    def scan_all_symbols(self, allowed_symbols: Optional[set] = None) -> List["MRSignal"]:
+        """Scan configured symbols for an MR setup.
 
         Returns a list of valid `MRSignal` objects (NO_SIGNAL filtered out).
         Mirrors the contract of `SMCStrategy.scan_all_symbols`.
+
+        v8.1: `allowed_symbols` (set or None) — when provided, only scan symbols
+        whose regime armed MR (passed by `StrategyRouter`). `None` = scan every
+        configured symbol (legacy single-strategy behaviour, unchanged).
         """
         results: List[MRSignal] = []
         for symbol in self._symbols:
+            if allowed_symbols is not None and symbol not in allowed_symbols:
+                continue
             sig = self._scan_one_symbol(symbol)
             if sig is not None and sig.is_valid:
                 results.append(sig)

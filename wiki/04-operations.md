@@ -38,6 +38,7 @@
 | Pause / Halt counts (v6.13) | 3 / 4 consec losses | `FTMOConfig.CONSECUTIVE_LOSS_PAUSE_COUNT/HALT_COUNT` |
 | Post-TP lock TTL | 60 min | `FTMOConfig.POST_TP_LOCK_TTL_MIN` |
 | Consistency threshold | 1.0 (off, 2-step Standard) | `FTMOConfig.CONSISTENCY_RULE_THRESHOLD` |
+| **Dual-strategy (v8.1)** | `tf.enabled` **False** (default → MR only). ON = regime router arms MR(RANGING)/TF(TRENDING)/none(AMBIGUOUS ADX 20-27). TF `paper_mode=True` (log `TF_PAPER`, no orders) until Phase 2 | `bot_config.tf.enabled/paper_mode`, `bot_config.regime`, `StrategyRouter` |
 
 ---
 

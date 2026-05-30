@@ -78,6 +78,30 @@ class FTMOTradingBot:
         self._risk_manager = RiskManager(self._connector)
         self._position_sizer = PositionSizer(self._connector)
         self._strategy = SMCStrategy(self._connector)
+        # v8.1: strategy registry keyed by STRATEGY_ID. obs/live-context route
+        # every signal to the scanner that produced it via `_strategy_for(sig)`
+        # → กัน cross-strategy cache contamination (extends v8.0.79 per-symbol fix).
+        self._strategies = {self._strategy.STRATEGY_ID: self._strategy}
+        # v8.1 Phase 1: dual-strategy router (regime gate MR↔TF). Master switch
+        # `bot_config.tf.enabled` (default False) — when OFF the scan loop runs
+        # single-strategy MR exactly as before (router stays None). When ON, the
+        # router classifies each symbol's regime and arms MR (RANGING) or TF
+        # (TRENDING); TF runs in paper_mode (log-only) until Phase 2.
+        self._router = None
+        if getattr(bot_config.tf, "enabled", False):
+            try:
+                from strategy.trend_following_strategy import TrendFollowingScanner
+                from strategy.regime_classifier import MarketRegimeClassifier
+                from strategy.strategy_router import StrategyRouter
+                tf_scanner = TrendFollowingScanner(self._connector)
+                self._strategies[tf_scanner.STRATEGY_ID] = tf_scanner
+                self._regime_classifier = MarketRegimeClassifier(self._connector)
+                self._router = StrategyRouter(self._strategies, self._regime_classifier)
+                print(f"🧭 [Router] dual-strategy ON — MR+TF (TF paper_mode="
+                      f"{getattr(bot_config.tf, 'paper_mode', True)})")
+            except Exception as e:
+                print(f"⚠️ [Router] dual-strategy init failed ({e}) — falling back to MR-only")
+                self._router = None
         # Project root — ใช้ทั้ง TradeLogger + NewsCalendarScheduler
         _project_root = os.path.dirname(os.path.abspath(__file__))
         # v6.9: TradeLogger เปิดอีกครั้ง — เก็บ live demo data สำหรับวิเคราะห์
@@ -740,6 +764,33 @@ class FTMOTradingBot:
                 self._flip_lock_warned = True
             return 0.0
 
+    def _strategy_for(self, sig):
+        """v8.1 — return the scanner that produced `sig`, keyed by strategy_id.
+
+        Routes cache reads (get_ltf/mtf/htf_data) + obs building to the correct
+        strategy instance so MR and TF never cross-read each other's per-symbol
+        caches. Falls back to the MR scanner for legacy/untagged signals.
+        """
+        sid = getattr(sig, "strategy_id", "MR")
+        return self._strategies.get(sid, self._strategy)
+
+    def _open_position_owners(self) -> Dict[str, str]:
+        """v8.1 — {symbol: strategy_id} for symbols with an OPEN bot position.
+
+        The regime router locks these symbols to the strategy holding them so a
+        regime flip mid-trade can't arm the other strategy on the same pair.
+        Phase 1: all live positions are MR; `ExecutedTrade.strategy_id` (Phase 2)
+        makes the attribution exact per strategy.
+        """
+        owners: Dict[str, str] = {}
+        try:
+            for tr in self._executor.active_trades.values():
+                if getattr(tr, "is_open", False):
+                    owners[tr.symbol] = getattr(tr, "strategy_id", "MR")
+        except Exception:
+            pass
+        return owners
+
     def _build_live_context(self, sig) -> Dict:
         """v6.9 — สร้าง dict ของ live context สำหรับ logging + executor.
 
@@ -782,7 +833,9 @@ class FTMOTradingBot:
             # (slot เดียวค้างเป็นคู่สุดท้ายที่สแกน = bug class v8.0.79). sig มาจาก
             # scan_all_symbols เสมอ → get_ltf_data(sig.symbol) มีค่าครบ
             ltf_df_for_temp = None
-            _get_ltf = getattr(self._strategy, "get_ltf_data", None)
+            # v8.1: route to the scanner that produced this signal (MR/TF)
+            _scanner = self._strategy_for(sig)
+            _get_ltf = getattr(_scanner, "get_ltf_data", None)
             if callable(_get_ltf):
                 ltf_df_for_temp = _get_ltf(sig.symbol)
             symbol_info = self._connector.get_symbol_info(sig.symbol)
@@ -850,16 +903,22 @@ class FTMOTradingBot:
         # เดิม _mtf_data/_htf_data ค้างเป็นคู่สุดท้าย → ADX H1/H4 ที่ log เป็นของคู่อื่น)
         try:
             # v8.0.80: per-symbol only — ลบ fallback ไป single-slot _mtf_data/_htf_data
-            _get_mtf = getattr(self._strategy, "get_mtf_data", None)
-            _get_htf = getattr(self._strategy, "get_htf_data", None)
+            # v8.1: route to the scanner that produced this signal (MR/TF)
+            _scanner = self._strategy_for(sig)
+            _get_mtf = getattr(_scanner, "get_mtf_data", None)
+            _get_htf = getattr(_scanner, "get_htf_data", None)
             mtf = _get_mtf(sig.symbol) if callable(_get_mtf) else None
             htf = _get_htf(sig.symbol) if callable(_get_htf) else None
             if mtf is not None and "adx" in mtf.columns:
                 ctx["adx_h1"] = float(mtf["adx"].iloc[-1])
             if htf is not None and "adx" in htf.columns:
                 ctx["adx_h4"] = float(htf["adx"].iloc[-1])
-            ctx["mtf_bias"] = int(self._strategy._structure_mtf.get_current_bias())
-            ctx["d1_bias"] = int(self._strategy._get_d1_bias(sig.symbol))
+            _struct = getattr(_scanner, "_structure_mtf", None)
+            if _struct is not None:
+                ctx["mtf_bias"] = int(_struct.get_current_bias())
+            _d1 = getattr(_scanner, "_get_d1_bias", None)
+            if callable(_d1):
+                ctx["d1_bias"] = int(_d1(sig.symbol))
         except Exception:
             pass
 
@@ -926,11 +985,17 @@ class FTMOTradingBot:
         # แต่ตั้งแต่ v7 (2026-05-01) เก็บ 29 dims จริง (เพิ่ม chronos_align, chronos_uncertainty)
         # round 4 decimals → file size ~270 chars/row
         try:
-            if self._rl_agent is not None:
+            # v8.1: only the MR obs layout (mr_v8) exists today. TF signals
+            # (tf_v1 layout) get an empty obs until the TF obs builder lands
+            # (Phase 3) — keeps the logged vector honest rather than recording
+            # an MR-interpreted obs for a trend signal.
+            if self._rl_agent is not None and getattr(sig, "strategy_id", "MR") == "MR":
                 obs = self._build_signal_observation(sig, live_context=ctx)
                 ctx["obs_27_json"] = json.dumps(
                     [round(float(x), 4) for x in obs.tolist()]
                 )
+            else:
+                ctx["obs_27_json"] = ""
         except Exception:
             ctx["obs_27_json"] = ""
 
@@ -1203,10 +1268,27 @@ class FTMOTradingBot:
                 if _scan_due:
                     self._last_signal_scan_ts = _now_ts
                     try:
-                        signals = self._strategy.scan_all_symbols()
+                        # v8.1 Phase 1: router-aware scan. When dual-strategy is
+                        # OFF (router None) this is byte-identical to before.
+                        if self._router is not None:
+                            open_owner = self._open_position_owners()
+                            signals, _regime_map = self._router.scan(
+                                self._strategy._symbols, open_owner=open_owner
+                            )
+                        else:
+                            signals = self._strategy.scan_all_symbols()
                         for sig in signals:
                             # === v6.9: Build live_context สำหรับ logging + executor ===
                             live_context = self._build_live_context(sig)
+
+                            # === v8.1 Phase 1: TF paper-trade (log-only) ===
+                            # TF signals are observed but NOT executed until the
+                            # per-strategy magic + conflict filter + risk ledger
+                            # land in Phase 2. paper_mode (default True) gates this.
+                            if getattr(sig, "strategy_id", "MR") == "TF" and \
+                                    getattr(bot_config.tf, "paper_mode", True):
+                                self._log_signal_scan(sig, live_context, result="TF_PAPER")
+                                continue
 
                             # === ML quality gate (live ↔ training distribution sync, v8.0.3) ===
                             # FTMOSignalFilterEnv กรอง signals ที่ ml_score < 0.30 ตอน train

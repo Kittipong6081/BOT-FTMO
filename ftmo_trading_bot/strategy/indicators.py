@@ -371,6 +371,40 @@ class TechnicalIndicators:
         return (float(df["atr"].iloc[-1]) - mean) / std
 
     # =========================================================================
+    # 🌀 Choppiness Index (v8.1) — trending vs ranging separator
+    # =========================================================================
+
+    @staticmethod
+    def calculate_choppiness(df: pd.DataFrame, period: int = 14) -> float:
+        """
+        v8.1 — Choppiness Index, แยก sideway vs trending ในระดับสถิติ.
+
+        CHOP = 100 × log10( Σ TR(period) / (HighestHigh − LowestLow) ) / log10(period)
+          • สูง (> ~60) = choppy / sideway → ระบบ MR เหมาะ
+          • ต่ำ (< ~40) = trending (ราคาเดินทางไกลเทียบ path) → ระบบ TF เหมาะ
+
+        ใช้เป็นสัญญาณยืนยันใน `MarketRegimeClassifier` (คู่กับ ADX H1 + slope).
+        คืนค่าแท่งล่าสุด (float, clip [0,100]); คืน 50.0 ถ้าข้อมูลไม่พอ/NaN.
+        """
+        if df is None or len(df) < period + 1:
+            return 50.0
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        tr = pd.concat([
+            high - low,
+            (high - close.shift(1)).abs(),
+            (low - close.shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        tr_sum = tr.rolling(period).sum()
+        rng = (high.rolling(period).max() - low.rolling(period).min()).replace(0, np.nan)
+        chop = 100.0 * np.log10(tr_sum / rng) / np.log10(period)
+        val = chop.iloc[-1]
+        if pd.isna(val):
+            return 50.0
+        return float(np.clip(val, 0.0, 100.0))
+
+    # =========================================================================
     # 🚀 Price ROC — การเปลี่ยนแปลงราคาล่าสุด (Momentum)
     # =========================================================================
 

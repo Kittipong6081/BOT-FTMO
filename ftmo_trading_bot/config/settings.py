@@ -642,6 +642,88 @@ class MeanReversionConfig:
 
 
 # =============================================================================
+# 🌀 Market Regime Classifier (v8.1 — dual-strategy switch MR↔TF)
+# =============================================================================
+@dataclass
+class RegimeConfig:
+    """Thresholds for `MarketRegimeClassifier` (per-symbol regime gate).
+
+    ADX H1 is the PRIMARY separator. The 20–27 band is a statistical dead-zone
+    (wiki v8.0.51: ADX H1 25-30 = WR 25%, −$679) where NEITHER strategy trades.
+    Choppiness + slope are secondary confirmations. Hysteresis (confirm bars +
+    dwell + the wide AMBIGUOUS band) prevents flip-flapping.
+    """
+    # ADX H1 gates (primary)
+    adx_ranging_max: float = 20.0      # ADX < 20 → candidate RANGING (MR)
+    adx_trending_min: float = 27.0     # ADX > 27 → candidate TRENDING (TF)
+    # Choppiness confirmation (0-100)
+    chop_ranging_min: float = 60.0     # CHOP > 60 confirms RANGING
+    chop_trending_max: float = 40.0    # CHOP < 40 confirms TRENDING
+    # EMA slope per ATR (scale-invariant)
+    slope_ranging_max: float = 0.10    # |slope/atr| < 0.10 confirms RANGING
+    slope_trending_min: float = 0.18   # |slope/atr| > 0.18 confirms TRENDING
+    # Hysteresis
+    confirm_bars: int = 3              # new regime must repeat N scans before switching
+    min_dwell_sec: int = 1800          # min seconds between regime switches (per symbol)
+    # Data
+    h1_bars: int = 120                 # H1 bars fetched for classification
+    slope_window: int = 50             # bars for the trend slope fit
+
+
+# =============================================================================
+# 📈 Trend Following Strategy (v8.1 — runs in parallel with MR)
+# =============================================================================
+@dataclass
+class TrendFollowingConfig:
+    """Tunables for the v8.1 Trend Following strategy (entry on H1).
+
+    TF arms only on TRENDING regime (see RegimeConfig). It enters trend
+    pullbacks (EMA alignment + ADX strong + pullback-resume), uses a WIDE SL so
+    winners can run (opposite of MR's tight quick-TP).
+
+    `enabled` is the master switch for the whole dual-strategy machinery — when
+    False the live loop behaves exactly like single-strategy MR (no regime
+    routing, no TF). `paper_mode` logs TF signals without sending orders
+    (Phase 1 canary — observe regime separation before real TF execution).
+    """
+    enabled: bool = False              # master switch (Phase 1 default OFF = MR only)
+    paper_mode: bool = True            # True = log TF signals, do NOT execute (Phase 1)
+
+    # Entry timeframe = H1; trend filter = H4/D1
+    entry_timeframe: str = "H1"
+    mtf_timeframe: str = "H4"
+    htf_timeframe: str = "D1"
+    scan_bars_h1: int = 300
+    scan_bars_h4: int = 200
+    scan_bars_d1: int = 120
+
+    # Trend rules
+    ema_fast: int = 21
+    ema_mid: int = 50
+    ema_slow: int = 200
+    adx_entry_min: float = 27.0        # require strong trend (mirror regime gate)
+    macd_confirm: bool = True
+    pullback_ema: int = 21             # pullback toward EMA21 then resume
+    pullback_max_atr: float = 1.5      # price within N×ATR of EMA21 = valid pullback
+    rsi_pullback_buy_max: float = 55.0  # BUY: RSI dipped (not overbought) on pullback
+    rsi_pullback_sell_min: float = 45.0 # SELL: RSI bounced (not oversold) on pullback
+
+    # SL / TP — WIDE (let winners run; opposite of MR)
+    sl_atr_mult: float = 2.0
+    sl_atr_mult_xau: float = 2.5
+    rr_ratio: float = 2.5
+    min_confluence_score: float = 60.0
+    min_confluence_score_training: float = 30.0
+
+    # Reward shaping (TF env, Phase 3) — reward holding winners, penalize early cut
+    runner_bonus: float = 0.50         # winner that runs far → bonus
+    early_cut_penalty: float = 0.30    # cutting a winner early
+    late_entry_penalty: float = 0.20   # entering an aged trend
+    base_loss_penalty: float = 0.10
+    duration_fine_coef: float = 0.01
+
+
+# =============================================================================
 # 📱 การตั้งค่าการแจ้งเตือน (Notifications)
 # =============================================================================
 @dataclass
@@ -711,6 +793,8 @@ class BotConfig:
     indicators: IndicatorConfig = field(default_factory=IndicatorConfig)
     ml: MLConfig = field(default_factory=MLConfig)
     mr: MeanReversionConfig = field(default_factory=MeanReversionConfig)
+    tf: TrendFollowingConfig = field(default_factory=TrendFollowingConfig)       # v8.1
+    regime: RegimeConfig = field(default_factory=RegimeConfig)                   # v8.1
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     

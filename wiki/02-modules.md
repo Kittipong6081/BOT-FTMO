@@ -1,5 +1,20 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-30 (v8.0.80 — audit remediation; obs dim = **35**, not 26) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-30 (v8.1-phase1 — Regime gate + Router + TF rules scanner, behind `tf.enabled` flag) | Scope: every module + key class / method / variable
+>
+> **v8.1-phase1 additions (regime + router + TF rules; `bot_config.tf.enabled` default OFF = MR unchanged)**:
+> - NEW `strategy/regime_classifier.py` → `MarketRegimeClassifier` (`classify` / `classify_all(open_owner)` / `_raw_regime`); `Regime` enum (RANGING/TRENDING/AMBIGUOUS); `RegimeResult`. ADX H1 primary + choppiness + slope; dead-zone ADX 20-27; hysteresis (confirm_bars + min_dwell + lock).
+> - NEW `strategy/strategy_router.py` → `StrategyRouter.scan(symbols, open_owner) -> (signals, regime_map)`.
+> - NEW `strategy/trend_following_strategy.py` → `TrendFollowingStrategy.analyze_with_data(symbol, d1, h4, h1, price_info)`, `TrendFollowingScanner(StrategyBase)` (STRATEGY_ID="TF", MAGIC 123457, OBS "tf_v1", own H1/H4/D1 caches), `TFSignal(MRSignal)` (+`trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`, `strategy_id="TF"`).
+> - `TechnicalIndicators.calculate_choppiness(df, period=14)` (NEW static, 0-100).
+> - `config/settings.py`: NEW `RegimeConfig` (`bot_config.regime`) + `TrendFollowingConfig` (`bot_config.tf`).
+> - `FTMOTradingBot`: `_router` (built when `tf.enabled`), `_open_position_owners()`, scan loop routes via router, TF `paper_mode` → log `TF_PAPER` (no execute).
+>
+> **v8.1-phase0 additions (dual-strategy groundwork — MR behaviour unchanged)**:
+> - NEW `strategy/strategy_base.py` → `StrategyBase` (ABC): `STRATEGY_ID` / `MAGIC_NUMBER` / `OBS_LAYOUT_ID` + `scan_all_symbols(allowed_symbols=None)` + `get_{ltf,mtf,htf}_data(symbol)` + `get_obs_layout_id/get_strategy_id/get_magic`. Every parallel scanner (MR now, TF later) implements it; each owns its own per-symbol caches (no cross-read).
+> - `LiveMRScanner(StrategyBase)` — `STRATEGY_ID="MR"`, `MAGIC_NUMBER=123456`, `OBS_LAYOUT_ID="mr_v8"`; `scan_all_symbols` gained `allowed_symbols: Optional[set] = None`.
+> - `MRSignal.strategy_id: str = "MR"` (NEW field).
+> - `FTMOTradingBot._strategies: Dict[str, StrategyBase]` registry + `FTMOTradingBot._strategy_for(sig)` helper; `_build_live_context` routes cache reads via `_strategy_for(sig)`.
+>
 >
 > **v8.0.80 changed methods/state** (full rationale → [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)):
 > - `TradeManager._modify_sl` — now clamps SL to broker min-stop/freeze + never-loosen (reads live SL) + logs retcode + retries transient (C1/H1)
@@ -53,7 +68,11 @@
 
 | File | Key symbols | Role |
 |------|-------------|------|
-| `indicators.py` | `TechnicalIndicators.atr`, `.ema`, `.rsi`, `.macd`, `.adx`, `.stoch`, `.bb` | Indicator calculation on numpy arrays |
+| `strategy_base.py` (v8.1) | `StrategyBase` (ABC) — `STRATEGY_ID`, `MAGIC_NUMBER`, `OBS_LAYOUT_ID`, `scan_all_symbols(allowed_symbols=None)`, `get_{ltf,mtf,htf}_data(symbol)` | Common interface for parallel strategies (MR + TF). Each strategy owns its own per-symbol caches — no cross-read. `LiveMRScanner` + `TrendFollowingScanner` implement it. |
+| `regime_classifier.py` (v8.1) | `MarketRegimeClassifier`, `Regime`, `RegimeResult` | Per-symbol regime gate (H1): ADX primary + choppiness + slope → RANGING(MR)/TRENDING(TF)/AMBIGUOUS(none). Dead-zone ADX 20-27. Hysteresis (confirm_bars/min_dwell/lock). `classify_all(symbols, open_owner)`. |
+| `strategy_router.py` (v8.1) | `StrategyRouter.scan(symbols, open_owner)` | Classifies regimes, scans the armed strategy per symbol, merges + ranks. Returns `(signals, regime_map)`. |
+| `trend_following_strategy.py` (v8.1) | `TrendFollowingStrategy`, `TrendFollowingScanner(StrategyBase)`, `TFSignal(MRSignal)` | TF rules engine (entry H1, trend H4/D1): ADX>27 + EMA21>50>200 + H4 agree + pullback-resume + RSI + MACD. SL=ATR×2.0 (XAU 2.5), RR 2.5 (wide). Scanner magic 123457, own H1/H4/D1 caches. `TFSignal` adds `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`, `strategy_id="TF"`. |
+| `indicators.py` | `TechnicalIndicators.atr`, `.ema`, `.rsi`, `.macd`, `.adx`, `.stoch`, `.bb`, **`.calculate_choppiness` (v8.1, static, 0-100)** | Indicator calculation on numpy arrays |
 | `mean_reversion_strategy.py` (v8.0+) | `MeanReversionStrategy.analyze_with_data`, `MRSignal`, `MRSignalType`, `LiveMRScanner` (live entry), `TradeSignal=MRSignal` (legacy alias), `SignalType=MRSignalType` (legacy alias) | The whole strategy stack: BB %B extreme + RSI confirm + ADX H1 trend block + reversal-wick. RR 1:1, SL = 1.0×ATR (tight). `LiveMRScanner` is the drop-in replacement for `SMCStrategy` in main.py. **v8.0.79**: per-symbol caches `_{ltf,mtf,htf}_by_symbol` + accessors `get_{ltf,mtf,htf}_data(symbol)` — context/obs builders MUST read these by `sig.symbol` (legacy single slots `_ltf_data`/`_mtf_data`/`_htf_data` = last-scanned symbol → cross-symbol contamination). |
 
 **v8.0.6 cleanup (2026-05-07)** — SMC source files deleted: `smc_strategy.py` (and `.bak_v6.13`), `order_blocks.py`, `fair_value_gaps.py`, `liquidity_sweeps.py`, `inducement.py`, `market_structure.py`, plus `tests/test_order_blocks.py`. Live runtime uses MR exclusively. `TradeSignal` and `SignalType` are still importable from `mean_reversion_strategy` as legacy aliases (for `trade_executor` and historical test code).
@@ -291,7 +310,9 @@ Key dataclasses:
 | `SymbolConfig.symbols` | 10 symbols: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, **XAUUSD** |
 | `MLConfig` (v7) | `CHRONOS_MODEL_NAME="amazon/chronos-bolt-small"`, `CHRONOS_DEVICE="cpu"`, `CHRONOS_PREDICTION_LENGTH=8`, `CHRONOS_CONTEXT_LENGTH=512`, `CHRONOS_ENABLED=True`. Single source of truth สำหรับ pool builder + live. |
 | `MeanReversionConfig` (v8.0) | `strategy_mode="smc"` (flip to `"mean_reversion"` after MR eval gates pass), `bb_period=20`, `bb_std=2.0`, `bb_oversold=0.10`, `bb_overbought=0.90`, `rsi_oversold=30.0`, `rsi_overbought=70.0`, `adx_trend_block=25.0`, `sl_atr_mult=1.0`, `rr_ratio=1.0`, `quick_tp_bars=5`, `quick_tp_bonus=0.50`, `slow_win_bonus=0.20`, `prolonged_loss_bars=12`, `prolonged_loss_penalty=0.40`, `base_loss_penalty=0.10`, `duration_fine_coef=0.02` |
-| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules. v7: + `bot_config.ml`. v8.0: + `bot_config.mr` |
+| `RegimeConfig` (v8.1) | `bot_config.regime` — `adx_ranging_max=20`, `adx_trending_min=27` (dead-zone between), `chop_ranging_min=60`, `chop_trending_max=40`, `slope_ranging_max=0.10`, `slope_trending_min=0.18`, `confirm_bars=3`, `min_dwell_sec=1800`, `h1_bars=120`, `slope_window=50` |
+| `TrendFollowingConfig` (v8.1) | `bot_config.tf` — `enabled=False` (master switch), `paper_mode=True`, entry H1 / mtf H4 / htf D1, `ema_fast/mid/slow=21/50/200`, `adx_entry_min=27`, `pullback_max_atr=1.5`, `rsi_pullback_buy_max=55`/`sell_min=45`, `sl_atr_mult=2.0` (XAU 2.5), `rr_ratio=2.5`, `min_confluence_score=60`; reward shaping for Phase 3 (`runner_bonus`, `early_cut_penalty`, `late_entry_penalty`) |
+| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules. v7: + `bot_config.ml`. v8.0: + `bot_config.mr`. v8.1: + `bot_config.tf` + `bot_config.regime` |
 
 ### `news_events.py` — Hardcoded fallback news
 
