@@ -130,7 +130,7 @@ def audit_ml_threshold() -> int:
             except Exception:
                 pass
 
-    # 2) Auto-pipeline default — HyperParams.ml_threshold
+    # 2) Auto-pipeline default — HyperParams.ml_threshold (dataclass)
     auto_pipeline_default = None
     for line in open(os.path.join(ROOT, "scripts", "auto_train_pipeline.py"), encoding="utf-8"):
         if "ml_threshold:" in line and "float" in line:
@@ -141,20 +141,47 @@ def audit_ml_threshold() -> int:
             except Exception:
                 pass
 
+    # 2b) v8.0.80 (H8): Auto-pipeline ARGPARSE default — this is the EFFECTIVE value,
+    # because main() always builds HyperParams(ml_threshold=args.ml_threshold). The
+    # dataclass default (#2) is dead in the main() path → must audit the argparse line too.
+    auto_argparse_default = None
+    for line in open(os.path.join(ROOT, "scripts", "auto_train_pipeline.py"), encoding="utf-8"):
+        if "--ml_threshold" in line and "default=" in line:
+            try:
+                auto_argparse_default = float(line.split("default=")[1].split(")")[0].split(",")[0])
+                break
+            except Exception:
+                pass
+
     # 3) Live default
     live_threshold = float(getattr(bot_config.ftmo, "ML_FILTER_THRESHOLD", -1))
 
-    print(f"  trainer CLI --ml_threshold default: {train_default}")
-    print(f"  auto_train_pipeline HyperParams:    {auto_pipeline_default}")
-    print(f"  live bot_config.ftmo.ML_FILTER_THRESHOLD: {live_threshold}")
+    print(f"  trainer CLI --ml_threshold default:        {train_default}")
+    print(f"  auto_train_pipeline HyperParams (dataclass): {auto_pipeline_default}")
+    print(f"  auto_train_pipeline argparse (EFFECTIVE):  {auto_argparse_default}")
+    print(f"  live bot_config.ftmo.ML_FILTER_THRESHOLD:  {live_threshold}")
 
     if train_default is not None and auto_pipeline_default is not None \
        and abs(train_default - auto_pipeline_default) > 1e-9:
-        print(f"  ❌ trainer default != auto-pipeline default")
+        print(f"  ❌ trainer default != auto-pipeline HyperParams default")
+        fails += 1
+    # H8: argparse (effective) ต้องตรงกับ trainer + dataclass + live
+    if auto_argparse_default is not None and train_default is not None \
+       and abs(auto_argparse_default - train_default) > 1e-9:
+        print(f"  ❌ auto-pipeline ARGPARSE default ({auto_argparse_default}) != trainer ({train_default}) "
+              f"— main() ส่งค่า argparse นี้เข้า training จริง!")
+        fails += 1
+    if auto_argparse_default is not None and auto_pipeline_default is not None \
+       and abs(auto_argparse_default - auto_pipeline_default) > 1e-9:
+        print(f"  ❌ auto-pipeline argparse default ({auto_argparse_default}) != dataclass ({auto_pipeline_default})")
         fails += 1
     if train_default is not None and live_threshold >= 0 \
        and abs(train_default - live_threshold) > 1e-9:
         print(f"  ❌ TRAIN ↔ LIVE MISMATCH on ml_threshold")
+        fails += 1
+    if auto_argparse_default is not None and live_threshold >= 0 \
+       and abs(auto_argparse_default - live_threshold) > 1e-9:
+        print(f"  ❌ AUTO-PIPELINE (effective) ↔ LIVE MISMATCH on ml_threshold")
         fails += 1
     if fails == 0:
         print(f"  ✓ all ml_thresholds aligned at {train_default}")

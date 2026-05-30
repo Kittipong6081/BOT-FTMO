@@ -153,7 +153,8 @@ class FTMOTradingBot:
         except Exception as e:
             print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
 
-        # v8.0.74: Chronos removed — obs trimmed to 26 dims, no chronos slots
+        # v8.0.74: Chronos removed — obs[27,28] hardwired 0.0 (live OBS_DIM=35, ดู
+        # _build_signal_observation; chronos slots ยังอยู่ในเวกเตอร์แต่เป็น 0)
         self._chronos = None
 
         # === News Calendar Auto-Scheduler (อัพเดททุกอาทิตย์ 23:30 EET) ===
@@ -178,6 +179,14 @@ class FTMOTradingBot:
         # position open → ถ้าใช้ loop_count จะ scan ทุก 12s (เร็วเกิน). ใช้ wall-clock
         # 60s gate แทน → scan cadence คงที่ไม่ว่า loop จะเร็วแค่ไหน
         self._last_signal_scan_ts: Optional[float] = None  # epoch seconds
+
+        # v8.0.80: wall-clock gates สำหรับ periodic tasks (เดิมใช้ _loop_count % 720/60
+        # = สมมติ 5s/loop). หลัง v8.0.70 adaptive ทำ loop เป็น 1s ตอนมี position open
+        # → counter ยิงถี่ขึ้น ~5 เท่า (drift/stats ทุก 12 นาทีแทน 1 ชม.). ใช้ wall-clock
+        # ให้ cadence คงที่ไม่ว่า loop จะเร็วแค่ไหน
+        self._last_stats_update_ts: Optional[float] = None    # hourly stats sheet
+        self._last_drift_check_ts: Optional[float] = None     # hourly GBM drift monitor
+        self._last_status_print_ts: Optional[float] = None    # periodic status print
 
         # v6.9: track trade open history for overtrading detection
         # List of tuples (datetime, symbol) — capped at last 200 entries
@@ -500,10 +509,13 @@ class FTMOTradingBot:
                 business += 1
         return max(1, business)
 
-    def _build_signal_observation(self, sig) -> np.ndarray:
+    def _build_signal_observation(self, sig, live_context: Optional[Dict] = None) -> np.ndarray:
         """
-        สร้าง 27-dim observation จาก TradeSignal + portfolio state สำหรับ Signal Filter Agent
-        ต้อง match กับ FTMOSignalFilterEnv._get_obs() ลำดับและ scale
+        สร้าง 35-dim observation จาก TradeSignal + portfolio state สำหรับ Signal Filter Agent
+        ต้อง match กับ FTMOSignalFilterEnv._get_obs() ลำดับและ scale (obs index 0-34)
+
+        v8.0.80 (H3): รับ live_context เพื่อใช้ ml_score ที่คำนวณพร้อม temporal features
+        (เดิม re-score sig ดิบ → 6 temporal features ตก 0.0 → obs[16] ≠ training ≠ ML gate)
         """
         try:
             risk = self._risk_manager.get_risk_status()
@@ -539,8 +551,12 @@ class FTMOTradingBot:
         atr_chg = sig.atr_change_ratio
         price_roc = sig.price_roc
 
-        # ML quality
-        if self._quality_model is not None:
+        # ML quality (v8.0.80 H3): ใช้ ml_score จาก live_context ที่ score พร้อม
+        # temporal features แล้ว (เท่ากับที่ ML gate ใช้ + ตรง training). fallback ไป
+        # score(sig) ดิบเฉพาะกรณีไม่มี live_context (เช่น offline tooling)
+        if live_context and "ml_score" in live_context:
+            ml_score = float(live_context["ml_score"])
+        elif self._quality_model is not None:
             try:
                 ml_score = float(self._quality_model.score(sig))
             except Exception:
@@ -555,8 +571,16 @@ class FTMOTradingBot:
         except Exception:
             challenge_day = 0
         day_progress = float(challenge_day) / 45.0
-        open_positions = len(self._connector.get_open_positions() or [])
-        trades_today_n = min(open_positions, 3) / 3.0
+        # v8.0.80 (H4): obs[21] = จำนวนไม้ที่ "เปิดวันนี้" (สะสม) /3 — match training
+        # (FTMOSignalFilterEnv: min(_trades_today, MAX_TRADES_PER_DAY=3)/3, _trades_today
+        # นับสะสมทุก TAKE). เดิม live ใช้ open_positions (ไม้ที่เปิดอยู่ตอนนี้) → มัก ~0.33
+        # ขณะ training latch 1.0 → agent เรียน daily-pacing ที่ live ไม่เคยเห็น
+        try:
+            _today = TimeManager.get_server_time().replace(tzinfo=None).date()
+            trades_today = sum(1 for (t, _s) in self._trade_open_history if t.date() == _today)
+        except Exception:
+            trades_today = len(self._connector.get_open_positions() or [])
+        trades_today_n = min(trades_today, 3) / 3.0
         recent_wr_norm = 0.0
         consec_losses = 0
         try:
@@ -754,12 +778,13 @@ class FTMOTradingBot:
             from ml.signal_quality import compute_temporal_features
             # v8.0.79: อ่าน M15 ของ sig.symbol โดยตรง (กัน cross-symbol contamination —
             # เดิมใช้ _ltf_data ที่ค้างเป็นคู่สุดท้ายที่สแกน → atr_zscore/regime เพี้ยน)
+            # v8.0.80: per-symbol only — ลบ fallback ไป single-slot _ltf_data
+            # (slot เดียวค้างเป็นคู่สุดท้ายที่สแกน = bug class v8.0.79). sig มาจาก
+            # scan_all_symbols เสมอ → get_ltf_data(sig.symbol) มีค่าครบ
             ltf_df_for_temp = None
             _get_ltf = getattr(self._strategy, "get_ltf_data", None)
             if callable(_get_ltf):
                 ltf_df_for_temp = _get_ltf(sig.symbol)
-            if ltf_df_for_temp is None:
-                ltf_df_for_temp = getattr(self._strategy, "_ltf_data", None)
             symbol_info = self._connector.get_symbol_info(sig.symbol)
             pip = 0.0001 if symbol_info and symbol_info.get("digits", 5) >= 4 else 0.01
             is_metal = "XAU" in sig.symbol.upper() or "XAG" in sig.symbol.upper()
@@ -824,14 +849,11 @@ class FTMOTradingBot:
         # v8.0.79: อ่าน H1/H4 ของ sig.symbol โดยตรง (กัน cross-symbol contamination —
         # เดิม _mtf_data/_htf_data ค้างเป็นคู่สุดท้าย → ADX H1/H4 ที่ log เป็นของคู่อื่น)
         try:
+            # v8.0.80: per-symbol only — ลบ fallback ไป single-slot _mtf_data/_htf_data
             _get_mtf = getattr(self._strategy, "get_mtf_data", None)
             _get_htf = getattr(self._strategy, "get_htf_data", None)
             mtf = _get_mtf(sig.symbol) if callable(_get_mtf) else None
             htf = _get_htf(sig.symbol) if callable(_get_htf) else None
-            if mtf is None:
-                mtf = self._strategy._mtf_data
-            if htf is None:
-                htf = self._strategy._htf_data
             if mtf is not None and "adx" in mtf.columns:
                 ctx["adx_h1"] = float(mtf["adx"].iloc[-1])
             if htf is not None and "adx" in htf.columns:
@@ -905,7 +927,7 @@ class FTMOTradingBot:
         # round 4 decimals → file size ~270 chars/row
         try:
             if self._rl_agent is not None:
-                obs = self._build_signal_observation(sig)
+                obs = self._build_signal_observation(sig, live_context=ctx)
                 ctx["obs_27_json"] = json.dumps(
                     [round(float(x), 4) for x in obs.tolist()]
                 )
@@ -1071,11 +1093,13 @@ class FTMOTradingBot:
                 except Exception as e:
                     print(f"⚠️ [Bot] Daily summary check failed: {e}")
 
-                # === v6.10: Periodic Stats update (every 720 loops = 1h @ 5s) ===
-                # ทำให้ Stats sheet update realtime — user เปิด Excel ดูสถานะได้
+                # === v6.10: Periodic Stats update (~1h) — v8.0.80: wall-clock gate ===
+                # เดิม % 720 loops (สมมติ 5s) แต่ adaptive 1s ตอนมีไม้เปิดทำให้ยิงถี่ 5×
+                _now_ts = time_module.time()
                 if (self._logger is not None
-                        and self._loop_count % 720 == 0
-                        and self._loop_count > 0):
+                        and (self._last_stats_update_ts is None
+                             or (_now_ts - self._last_stats_update_ts) >= 3600.0)):
+                    self._last_stats_update_ts = _now_ts
                     try:
                         stats = self._analyzer.get_full_report()
                         self._logger.update_stats_sheet(stats)
@@ -1197,7 +1221,7 @@ class FTMOTradingBot:
                             agent_action_value = 0.0
 
                             if self._rl_agent:
-                                signal_obs = self._build_signal_observation(sig)
+                                signal_obs = self._build_signal_observation(sig, live_context=live_context)
                                 take = self._rl_agent.should_take_signal(signal_obs)
                                 confidence = self._rl_agent.get_action_confidence(signal_obs)
                                 agent_action_value = float(confidence)
@@ -1282,18 +1306,20 @@ class FTMOTradingBot:
                 except Exception as e:
                     print(f"⚠️ [Bot] Trade Manager error: {e}")
                 
-                # แสดงสถานะตาม verbose level (v8.0.30)
-                # 0=silent: ไม่ print เลย
-                # 1=normal: ทุก 720 loops (~1 ชม.) print สั้น
-                # 2=debug: ทุก 60 loops (~5 นาที) print เต็ม
+                # แสดงสถานะตาม verbose level (v8.0.30) — v8.0.80: wall-clock gate
+                # 0=silent: ไม่ print เลย | 1=normal: ~1 ชม. | 2=debug: ~5 นาที
+                # (เดิม % loop_count แต่ adaptive 1s ทำให้ยิงถี่เกินตอนมีไม้เปิด)
                 _vl = getattr(bot_config, 'verbose_level', 1)
-                if _vl >= 2 and self._loop_count % 60 == 0:
-                    self._print_periodic_status()
-                elif _vl == 1 and self._loop_count % 720 == 0 and self._loop_count > 0:
+                _status_interval = 300.0 if _vl >= 2 else 3600.0
+                if _vl >= 1 and (self._last_status_print_ts is None
+                                 or (_now_ts - self._last_status_print_ts) >= _status_interval):
+                    self._last_status_print_ts = _now_ts
                     self._print_periodic_status()
 
-                # v7.1 — GBM drift monitor ทุก 720 loops (~1 ชม.)
-                if self._loop_count % 720 == 0 and self._loop_count > 0:
+                # v7.1 — GBM drift monitor (~1 ชม.) — v8.0.80: wall-clock gate
+                if (self._last_drift_check_ts is None
+                        or (_now_ts - self._last_drift_check_ts) >= 3600.0):
+                    self._last_drift_check_ts = _now_ts
                     self._check_gbm_drift()
 
                 # v8.0.70: Adaptive loop — มี position open → 1s ทุกครั้ง (เดิม v8.0.46 เฉพาะ profit ≥ 0.5R)

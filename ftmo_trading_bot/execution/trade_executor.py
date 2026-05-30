@@ -574,13 +574,43 @@ class TradeExecutor:
             self._total_rejected += 1
             return None
 
+        # === ด่านที่ 5.5 (v8.0.80 H5): Re-anchor SL/TP กับราคา execution สด ===
+        # signal.sl_price/tp_price คำนวณตอน scan (ห่าง execute 30-60s). ถ้าราคา drift
+        # → ระยะ SL จริงเทียบ fill เปลี่ยน (risk≠lot ที่ size) + อาจตกใน broker min-stop
+        # → reject. แก้: ยึด SL/TP กับ ask/bid ปัจจุบัน คง "ระยะ" เท่าเดิม (lot ถูก size
+        # จากระยะนี้) + clamp ขั้นต่ำให้ห่าง min-stop/freeze.
+        exec_sl, exec_tp = signal.sl_price, signal.tp_price
+        if symbol_info and price_info:
+            digits = symbol_info.get("digits", 5)
+            point = symbol_info.get("point", 0.00001) or 0.00001
+            sl_dist = abs(float(signal.entry_price) - float(signal.sl_price))
+            tp_dist = abs(float(signal.tp_price) - float(signal.entry_price))
+            min_dist = max(
+                symbol_info.get("trade_stops_level", 0) * point,
+                symbol_info.get("trade_freeze_level", 0) * point,
+                1.5 * float(price_info.get("spread", 0.0)),
+                3 * point,
+            )
+            sl_use, tp_use = max(sl_dist, min_dist), max(tp_dist, min_dist)
+            if signal.signal_type.value == "BUY":
+                ref = float(price_info["ask"])
+                exec_sl = round(ref - sl_use, digits)
+                exec_tp = round(ref + tp_use, digits)
+            else:
+                ref = float(price_info["bid"])
+                exec_sl = round(ref + sl_use, digits)
+                exec_tp = round(ref - tp_use, digits)
+            if sl_use > sl_dist + 1e-12:
+                print(f"⚠️ [Executor] SL ขยาย {sl_dist:.5f}→{sl_use:.5f} (broker min-stop) "
+                      f"— risk สูงกว่า sized เล็กน้อย")
+
         # === ด่านที่ 6: ส่ง Market Order (พร้อม Retry) ===
         order_result = self._send_order_with_retry(
             symbol=symbol,
             order_type=signal.signal_type.value,
             volume=lot_size,
-            sl=signal.sl_price,
-            tp=signal.tp_price,
+            sl=exec_sl,
+            tp=exec_tp,
         )
 
         if order_result is None:
@@ -636,8 +666,8 @@ class TradeExecutor:
             symbol=symbol,
             trade_type=signal.signal_type.value,
             entry_price=resolved_entry,
-            sl_price=signal.sl_price,
-            tp_price=signal.tp_price,
+            sl_price=exec_sl,   # v8.0.80 (H5): ค่าที่ส่งจริง (anchored to live price)
+            tp_price=exec_tp,
             lot_size=lot_size,
             risk_amount=risk_amount,
             risk_pct=risk_pct,

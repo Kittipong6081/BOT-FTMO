@@ -55,12 +55,14 @@ class TradeManager:
     """
     จัดการ Position ที่เปิดอยู่ — ปรับ SL/TP, Trailing, Partial Close
 
-    ลำดับการจัดการ (ทุก Tick):
+    ลำดับการจัดการ (ทุก Tick) — ค่าปัจจุบัน v8.0.56 + v8.0.48 Stepwise Trail:
     1. ซิงค์กับ MT5 (ตรวจ SL/TP Hit)
-    2. ตรวจสอบ Partial Close (best_rr >= 0.5 → ปิด 50%) — ทำก่อน BE
-    3. ตรวจสอบ Break-Even Move (best_rr >= 0.5 → SL → Entry) — ทำหลัง Partial
-    4. Trailing — DISABLED ภายใต้ MR RR=1:1 (TP ปิดก่อน trail ทำงาน)
-    5. ตรวจสอบ Force Close (Friday 20:45 EET / Daily Overnight 23:30 EET / Friday Warning UTC)
+    2. Stage 1a: Partial Close (best_rr >= 0.8 → ปิด 33%) — ทำก่อน BE
+    3. Stage 1b: Break-Even Move (best_rr >= 0.3 → SL → Entry) — ทำหลัง Partial
+    4. Stage 2: TP_STEP (best_rr >= 0.8 → SL lock 0.5R; TP คงเดิม v8.0.73)
+    5. Stage 3: Trailing ACTIVE (current_rr >= 1.0 → Option X TP-chase: SL=best-0.5R floor 1R,
+       TP=best+1R) — ไม่ได้ disabled; ไล่ TP หนีราคา
+    6. Force Close (Friday 20:45 EET / Daily Overnight 23:30 EET / Pre-news / Friday Warning)
 
     v8.0.14 (Partial-first fix): Partial 50% ทำงานก่อน BE — กัน case "BE-only without partial"
     ที่ v8.0.12 มี (BE 0.5R, Partial 0.7R) ถ้า MFE peak ระหว่าง 0.5-0.7R แล้ว revert
@@ -676,17 +678,60 @@ class TradeManager:
         """
         แก้ไข Stop Loss ของ Position ที่เปิดอยู่
 
+        v8.0.80 (C1+H1): ก่อน v8.0.80 method นี้ส่ง TRADE_ACTION_SLTP ดิบ ๆ โดย
+        ไม่เช็คระยะ SL กับ broker min-stop/freeze level → BE@0.3R / Stage-2 lock@0.5R
+        ที่เลื่อน SL มาชิดราคา ถูก broker reject (retcode 10016 INVALID_STOPS) เงียบ ๆ
+        → SL ค้างที่ full-risk เดิม ทั้งที่บอทคิดว่า BE ทำงานแล้ว. แก้:
+          - clamp `new_sl` ให้ห่างราคาปัจจุบัน ≥ min-stop/freeze (mirror PositionSizer)
+          - บังคับ "ไม่ถอยหลัง" เทียบกับ SL จริงบน broker (กัน clamp ทำให้หลวมลง)
+          - log retcode/comment + retry transient (เดิมกลืน reject เงียบ → loop ส่งซ้ำ)
+
         Args:
             ticket: หมายเลข Ticket
             symbol: คู่เงิน
-            new_sl: SL ใหม่
+            new_sl: SL ใหม่ (caller เช็ค "ดีกว่า state.current_sl" มาแล้ว)
             tp: TP (ไม่เปลี่ยน)
 
         Returns:
-            bool: สำเร็จหรือไม่
+            bool: สำเร็จหรือไม่ (False = defer; caller จะ retry tick หน้าโดยอัตโนมัติ)
         """
         if not MT5_AVAILABLE:
             return True  # จำลองสำเร็จ
+
+        # === v8.0.80: clamp ระยะ SL กับ broker min-stop/freeze + กันถอยหลัง ===
+        info = self._connector.get_symbol_info(symbol)
+        price_info = self._connector.get_current_price(symbol)
+        trade = self._executor.active_trades.get(ticket)
+        is_buy = bool(trade and trade.trade_type == "BUY")
+        if info and price_info:
+            point = info.get("point", 0.00001) or 0.00001
+            digits = info.get("digits", 5)
+            stops_lvl = info.get("trade_stops_level", 0) or 0
+            freeze_lvl = info.get("trade_freeze_level", 0) or 0
+            bid = float(price_info.get("bid", 0.0))
+            ask = float(price_info.get("ask", 0.0))
+            spread = max(0.0, ask - bid)
+            min_dist = max(stops_lvl * point, freeze_lvl * point, 1.5 * spread, 3 * point)
+            # clamp ให้ห่างราคา ≥ min_dist (ดัน SL ออกห่างราคาบนฝั่งป้องกัน)
+            if is_buy and bid > 0 and new_sl > bid - min_dist:
+                new_sl = round(bid - min_dist, digits)
+            elif (not is_buy) and ask > 0 and new_sl < ask + min_dist:
+                new_sl = round(ask + min_dist, digits)
+
+            # กัน "ถอยหลัง" — อ่าน SL จริงจาก broker (state อาจ drift หลัง clamp รอบก่อน)
+            try:
+                cur_sl = 0.0
+                for pos in (self._connector.get_open_positions(symbol) or []):
+                    if pos.get("ticket") == ticket:
+                        cur_sl = float(pos.get("sl", 0.0) or 0.0)
+                        break
+                if cur_sl > 0:
+                    if is_buy and new_sl <= cur_sl:
+                        return False   # clamp จะทำให้หลวมลง → defer (retry tick หน้า)
+                    if (not is_buy) and new_sl >= cur_sl:
+                        return False
+            except Exception:
+                pass
 
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
@@ -696,10 +741,24 @@ class TradeManager:
             "tp": tp,
         }
 
-        result = mt5.order_send(request)
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            return False
-        return True
+        # === v8.0.80: retry transient + log retcode (เดิม return False เงียบ) ===
+        retry_codes = {
+            mt5.TRADE_RETCODE_REQUOTE,
+            mt5.TRADE_RETCODE_PRICE_CHANGED,
+            mt5.TRADE_RETCODE_PRICE_OFF,
+        }
+        for attempt in range(3):
+            result = mt5.order_send(request)
+            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                return True
+            rc = getattr(result, "retcode", None)
+            cmt = getattr(result, "comment", "")
+            print(f"⚠️ [Trade Manager] modify SL ticket={ticket} ล้มเหลว: "
+                  f"retcode={rc} comment={cmt} new_sl={new_sl} (ครั้งที่ {attempt + 1}/3)")
+            if rc not in retry_codes:
+                break  # non-retryable (เช่น INVALID_STOPS) → เลิก, caller retry tick หน้า
+            time_module.sleep(0.2)
+        return False
 
     # =========================================================================
     # ⏰ Session Close (ปิดก่อนหมด Session)
@@ -809,8 +868,8 @@ class TradeManager:
         ถ้า symbol อยู่ใน window [event - no_trade_before_news_minutes, event] →
         ปิดทุก position ของ symbol นั้น
 
-        - window_before = bot_config.sessions.news_close_before_minutes (v8.0.78: 30,
-          แยกจาก entry block 60 → ไม้มี runway ≥30 นาที ไม่โดนเปิดแล้วปิดทันที)
+        - window_before = bot_config.sessions.news_close_before_minutes (v8.0.78: 10,
+          แยกจาก entry block 60 → ไม้มี runway ≥50 นาที ไม่โดนเปิดแล้วปิดทันที)
         - window_after = 0 (หลังข่าวออกปล่อยให้ trailing/SL/TP ทำงานปกติ)
 
         Returns:

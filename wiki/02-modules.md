@@ -1,5 +1,14 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-27 (v8.0.74b — obs 26 dims, Chronos removed, 4 risk rules disabled) | Scope: every module + key class / method / variable
+> Last Updated: 2026-05-30 (v8.0.80 — audit remediation; obs dim = **35**, not 26) | Scope: every module + key class / method / variable
+>
+> **v8.0.80 changed methods/state** (full rationale → [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)):
+> - `TradeManager._modify_sl` — now clamps SL to broker min-stop/freeze + never-loosen (reads live SL) + logs retcode + retries transient (C1/H1)
+> - `RiskManager.check_risk` — always-on FTMO 4% breach guard before state-gated `_check_daily_loss` (C2); new `RiskManager._daily_trades_by_symbol` per-symbol counter (H2, persisted in `bot_state.json`)
+> - `TradeExecutor.execute_signal` — re-anchors SL/TP to live price before send (H5)
+> - `FTMOTradingBot._build_signal_observation(sig, live_context=None)` — obs[16] reuses temporal-augmented ml_score (H3), obs[21] cumulative trades-today (H4)
+> - `MeanReversionFilterEnv.step` — entry-confirm forced-SKIP added (C3); `MeanReversionBacktester.generate_episode_signals` — HTF anchored per scan-bar (H6)
+> - `MT5Connector.is_connected` total_seconds; `close_position` per-symbol deviation
+> - `LiveMRScanner` — single-slot `_ltf_data/_mtf_data/_htf_data` removed (per-symbol caches + `get_*_data(symbol)` only)
 >
 > **v8.0.55 new methods/state** (Entry Confirm + Spread Spike + Cluster Cooldown):
 > - `TradeExecutor._check_entry_confirmation(signal)` — slip (≤ 0.30R) + M1 last bar direction + BB %B still extreme

@@ -76,7 +76,10 @@ class RiskManager:
         
         # === สถิติรายวัน ===
         self._daily_closed_pnl: float = 0.0         # P/L ที่ปิดไปแล้ววันนี้
-        self._daily_trades_count: int = 0            # จำนวนเทรดวันนี้
+        self._daily_trades_count: int = 0            # จำนวนเทรดวันนี้ (รวมทุกคู่)
+        # v8.0.80 (H2): per-symbol daily trade count — แก้ bug class v8.0.71 ที่
+        # max_trades_per_day (per-symbol) ถูกเทียบกับ _daily_trades_count (global)
+        self._daily_trades_by_symbol: Dict[str, int] = {}
         # v8.0.16: throttle "Give-back from peak" alert — print เฉพาะข้าม 1% milestone ใหม่
         # (เดิม print ทุก 5s = spam; reset วันใหม่ + ทุกครั้งที่ peak ใหม่)
         self._last_give_back_alert_pct: float = 0.0
@@ -260,6 +263,7 @@ class RiskManager:
         self._current_day = broker_today
         self._daily_closed_pnl = 0.0
         self._daily_trades_count = 0
+        self._daily_trades_by_symbol = {}      # v8.0.80 (H2): reset per-symbol count วันใหม่
         self._last_give_back_alert_pct = 0.0   # v8.0.16: clean slate วันใหม่
         self._last_daily_loss_alert_pct = 0.0  # v8.0.49: reset throttle วันใหม่
         self._daily_profit_locked = False      # v8.0.17: reset daily profit cap
@@ -347,6 +351,24 @@ class RiskManager:
         max_dd_result = self._check_max_drawdown(current_equity)
         if max_dd_result:
             return self._state
+
+        # === ตรวจสอบที่ 2.5 (v8.0.80 C2): Always-on FTMO 4% Daily Breach Guard ===
+        # _check_daily_loss() early-return ทันทีถ้า state == DAILY_HALT (L430) → ถ้า
+        # DAILY_HALT ถูกตั้งโดย consec-loss halt / stop-out ที่ "ไม่ปิดไม้" (L1398/L1346)
+        # branch ปิดฉุกเฉิน 4% จะกลายเป็น dead code → ไม้ที่ยังเปิด bleed ทะลุ FTMO 4%
+        # โดยไม่ปิด. Guard นี้ปิดฉุกเฉิน "ไม่ขึ้นกับ state" ถ้ายังมีไม้เปิด + loss ≥ 4%.
+        if self._daily_start_equity > 0:
+            daily_loss_pct = (self._daily_start_equity - current_equity) / self._daily_start_equity
+            if daily_loss_pct >= self._config.DAILY_LOSS_HARD_STOP_PCT:
+                open_positions = self._connector.get_positions_count()
+                if open_positions > 0:
+                    print(f"🚨 [Risk Manager] FTMO 4% BREACH GUARD — daily_loss={daily_loss_pct:.2%} "
+                          f"(state={self._state.value}) → ปิด {open_positions} ไม้ฉุกเฉิน")
+                    self._emergency_close_all()
+                if self._state != BotState.DAILY_HALT:
+                    self._state = BotState.DAILY_HALT
+                    self._save_state()
+                return self._state
 
         # === ตรวจสอบที่ 3: Daily Loss ===
         daily_result = self._check_daily_loss(current_equity)
@@ -664,11 +686,11 @@ class RiskManager:
         """
         ตรวจสอบว่าสามารถเปิดออเดอร์ใหม่ได้หรือไม่
         
-        ตรวจสอบทุกกฎ FTMO ก่อนอนุญาตให้เทรด:
+        ตรวจสอบทุกกฎ FTMO ก่อนอนุญาตให้เทรด (ลำดับจริงดูในโค้ด — มี gate หลายชั้น):
         1. Bot State ต้องเป็น ACTIVE
         2. จำนวน Position ต้องไม่เกินขีดจำกัด
-        3. ความเสี่ยงต่อเทรดต้องอยู่ในช่วง 0.5-1%
-        4. Risk:Reward ต้อง >= 1:1.5
+        3. ความเสี่ยงต่อเทรดต้องอยู่ในช่วง MIN/MAX_RISK_PER_TRADE_PCT
+        4. Risk:Reward ต้อง >= MIN_RISK_REWARD_RATIO (= 1.0 ภายใต้ MR; เดิม doc 1.5 ผิด)
         5. Daily Remaining Loss ต้องเพียงพอ
         
         Args:
@@ -852,12 +874,17 @@ class RiskManager:
 
         # === ตรวจสอบที่ 1.3: Max Trades Per Day (Anti-Overtrading) ===
         # None = ปิด cap (filter ชั้นอื่น: cooldown, post-TP lock, consecutive-loss halt, DD halt ยังคุมอยู่)
-        # Per-symbol override (เช่น GBPJPY=3) สำคัญสำหรับคู่ volatile — แต่ track เป็น total count
-        # ใช้ symbol override ถ้ามี (เพราะคู่ volatile กินงบเทรดทั้งวันเอง)
+        # v8.0.80 (H2): เทียบ per-symbol count กับ per-symbol cap (เดิมเทียบ global counter
+        # = bug class v8.0.71 ที่คู่หนึ่งถูก block จากจำนวนเทรดรวมทุกคู่). MAX_TRADES_PER_DAY
+        # (global default) เทียบกับ count รวม; per-symbol override เทียบกับ count ของคู่นั้น.
         default_max = getattr(self._config, "MAX_TRADES_PER_DAY", 5)
-        max_per_day = get_symbol_config(symbol, "max_trades_per_day", default_max)
-        if max_per_day is not None and self._daily_trades_count >= max_per_day:
-            return (False, f"🚫 {symbol}: เทรดครบ {max_per_day} ครั้งวันนี้แล้ว — หยุดเพื่อไม่ over-trade")
+        sym_override = get_symbol_config(symbol, "max_trades_per_day", None)
+        if sym_override is not None:
+            sym_count = self._daily_trades_by_symbol.get(symbol, 0)
+            if sym_count >= sym_override:
+                return (False, f"🚫 {symbol}: เทรดครบ {sym_override} ครั้งวันนี้แล้ว (คู่นี้) — หยุดเพื่อไม่ over-trade")
+        elif default_max is not None and self._daily_trades_count >= default_max:
+            return (False, f"🚫 เทรดครบ {default_max} ครั้งวันนี้แล้ว (รวมทุกคู่) — หยุดเพื่อไม่ over-trade")
 
         # === ตรวจสอบที่ 2: จำนวน Position ===
         current_positions = self._connector.get_positions_count()
@@ -1145,6 +1172,7 @@ class RiskManager:
             "current_day": str(self._current_day),
             "daily_closed_pnl": self._daily_closed_pnl,
             "daily_trades_count": self._daily_trades_count,
+            "daily_trades_by_symbol": self._daily_trades_by_symbol,  # v8.0.80 (H2)
             # --- v2 fields ---
             "last_loss_time_per_symbol": self._last_loss_time_per_symbol,
             "consecutive_losses": self._consecutive_losses,
@@ -1208,6 +1236,7 @@ class RiskManager:
             self._peak_daily_equity = data.get("peak_daily_equity", self._daily_start_equity)
             self._daily_closed_pnl = data.get("daily_closed_pnl", 0.0)
             self._daily_trades_count = data.get("daily_trades_count", 0)
+            self._daily_trades_by_symbol = data.get("daily_trades_by_symbol", {}) or {}  # v8.0.80 (H2)
 
             # --- v2 fields (fallback ถ้าเป็นไฟล์เก่า) ---
             self._last_loss_time_per_symbol = data.get("last_loss_time_per_symbol", {}) or {}
@@ -1292,6 +1321,9 @@ class RiskManager:
         """
         self._daily_closed_pnl += trade_pnl
         self._daily_trades_count += 1
+        # v8.0.80 (H2): นับ per-symbol ด้วย (mirror semantic ของ global counter)
+        if symbol:
+            self._daily_trades_by_symbol[symbol] = self._daily_trades_by_symbol.get(symbol, 0) + 1
 
         # อัพเดท High Water Mark ถ้า Balance สูงขึ้น
         current_balance = self._connector.get_balance()

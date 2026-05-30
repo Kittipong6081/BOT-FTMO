@@ -2,7 +2,9 @@
 
 > ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **Mean Reversion + Trend Filter** + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
 >
-> **Last Updated:** 2026-05-22 (v8.0.55 — 3 live filters KEPT, RL/pool reverted) | Deployed Pass Rate **70.7%** (v8.0.52 RL)
+> **Last Updated:** 2026-05-30 (v8.0.80 — Production audit: แก้ความปลอดภัยตอนส่งคำสั่ง + กันเกิน 4% FTMO + ปรับ "สิ่งที่บอทเห็น" ตอนเทรดจริงให้ตรงกับตอนฝึก)
+>
+> **🛡️ v8.0.80 status — Source-code audit (สรุปภาษาคน)**: ตรวจโค้ดทั้งระบบเจอจุดต้องแก้ 13 จุด (ยืนยันกับโค้ดจริงแล้ว). สำคัญสุด 3 จุด: (1) ตอนบอทเลื่อน SL มาเท่าทุน/ล็อกกำไร ถ้า SL ชิดราคาเกินไป โบรกเกอร์เคย "ปฏิเสธเงียบ ๆ" → SL ไม่ขยับจริง = เสี่ยงเต็ม ๆ ทั้งที่คิดว่าปลอดภัย → ตอนนี้กันระยะ + แจ้งเตือน + ลองใหม่. (2) เพิ่มตัวกันขาดทุนเกิน 4% ของ FTMO ที่ทำงาน "เสมอ" (เดิมมีช่องที่บอทหยุดเทรดแต่ไม้เก่ายังเปิดค้างขาดทุนทะลุ 4% โดยไม่ปิด). (3) ตอนฝึกบอทขาดด่านกรองบางตัวที่ตอนเทรดจริงมี → ฝึกบนสถานการณ์ที่จริง ๆ ไม่ได้เทรด → กำลัง **ฝึกใหม่** ให้ตรงกัน. ดูรายละเอียดเทคนิคที่ [`wiki/05-invariants.md`](wiki/05-invariants.md). Backups: `*.pre_v8080`.
 >
 > **✅ v8.0.55 status — Live filters KEPT, RL reverted**:
 > - **เก็บไว้** (live-only, ไม่ต้อง retrain): Entry Confirmation + Spread Spike + Cluster Cooldown
@@ -104,7 +106,7 @@
 - `rl_agent.py` — `SelfLearningAgent` — inference wrapper, path-aware (โหลด `models/mr/best/` ก่อน fallback `models/`)
 - `chronos_forecaster.py` — Amazon Chronos 2 zero-shot forecaster (optional, ใส่ obs[27,28])
 
-**Obs 32 dims** (v8.0+ — ต้อง sync 3 จุด — ดู [`wiki/05-invariants.md`](wiki/05-invariants.md)):
+**Obs 35 dims** (v8.0+ — ต้อง sync 3 จุด — ดู [`wiki/05-invariants.md`](wiki/05-invariants.md)):
 
 ```text
 [0]  confluence_norm       [12] stoch_norm        [24] spread_pct_of_atr

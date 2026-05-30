@@ -471,7 +471,9 @@ def main():
     parser.add_argument("--timesteps_p1", type=int, default=5_000_000)
     parser.add_argument("--timesteps_p2", type=int, default=2_000_000)
     parser.add_argument("--n_envs", type=int, default=8)
-    parser.add_argument("--ml_threshold", type=float, default=0.40)
+    # v8.0.80 (H7): default 0.40→0.30 — main() ส่ง args.ml_threshold เข้า HyperParams เสมอ
+    # → ถ้าไม่ใส่ flag จะฝึกที่ 0.40 ขณะ trainer/live = 0.30 (train≠live). sync ที่ 0.30
+    parser.add_argument("--ml_threshold", type=float, default=0.30)
     parser.add_argument("--risk_per_trade", type=float, default=0.0085)  # v8.0.43c sync
     parser.add_argument("--outcome_noise", type=float, default=0.05,
                         help="Outcome PnL noise std (regularization, anti-overfit). "

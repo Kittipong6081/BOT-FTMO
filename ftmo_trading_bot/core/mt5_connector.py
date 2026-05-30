@@ -171,8 +171,10 @@ class MT5Connector:
             return True  # โหมดจำลอง — ถือว่าเชื่อมต่อเสมอ
             
         # ตรวจสอบจริงทุก 30 วินาที
+        # v8.0.80: ใช้ total_seconds() (เดิม .seconds = component วินาที 0-59 → throttle
+        # พังเมื่อ gap ≥ 60s หรือข้ามวัน เพราะ .seconds ของ 65s = 5)
         now = datetime.now()
-        if (now - self._last_connection_check).seconds < 30:
+        if (now - self._last_connection_check).total_seconds() < 30:
             return self._connected
             
         self._last_connection_check = now
@@ -769,7 +771,7 @@ class MT5Connector:
             "type": close_type,
             "position": ticket,
             "price": close_price,
-            "deviation": 20,
+            "deviation": self._get_deviation_points(pos.symbol),  # v8.0.80: per-symbol (เดิม hardcode 20 → JPY/Gold close reject ช่วงผันผวน)
             "magic": pos.magic,
             "comment": "",  # v8.0.23: empty — bot identified by magic
             "type_time": mt5.ORDER_TIME_GTC,

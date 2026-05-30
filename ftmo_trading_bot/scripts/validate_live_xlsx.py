@@ -66,7 +66,9 @@ def main():
                 continue
             try:
                 obs = json.loads(obs_str)
-                if len(obs) == 32:
+                # v8.0.80: เทียบกับ OBS_DIM จริงของ agent (เดิม hardcode 32 → live log 35
+                # dims → ตกทุกแถวใหม่). แถว dim เก่าถูกข้าม (validate เฉพาะ rows ที่เข้ากับ current model)
+                if len(obs) == SelfLearningAgent.OBS_DIM:
                     valid.append((r, np.array(obs, dtype=np.float32)))
             except Exception:
                 continue

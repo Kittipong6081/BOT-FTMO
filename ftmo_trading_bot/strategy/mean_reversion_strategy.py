@@ -522,8 +522,9 @@ class LiveMRScanner:
     `FTMOTradingBot` expects from `SMCStrategy`:
 
       - `scan_all_symbols() -> List[MRSignal]`
-      - `_ltf_data` (last M15 dataframe; used by Chronos forecaster)
-      - `_mtf_data`, `_htf_data`, `_htf_bias` (placeholders for context)
+      - `get_ltf_data(symbol)` / `get_mtf_data(symbol)` / `get_htf_data(symbol)`
+        (per-symbol M15/H1/H4 — v8.0.80 replaced single-slot _ltf_data/_mtf_data
+        ที่เคยปนข้ามคู่)
       - `MIN_CONFLUENCE_SCORE` class attr (mirrors live config)
 
     Designed to be drop-in: `main.py` only needs to import this instead of
@@ -541,13 +542,10 @@ class LiveMRScanner:
         self._connector = connector
         self._indicators = TechnicalIndicators()
         self._strategy = MeanReversionStrategy(indicators=self._indicators)
-        # Internal state mirrors SMCStrategy attrs that main.py reads
-        self._ltf_data = None      # last M15 dataframe (back-compat — last symbol scanned)
-        self._mtf_data = None      # last H1
-        self._htf_data = None      # last H4
-        # v8.0.79: per-symbol cache — กัน cross-symbol contamination.
+        # v8.0.79/v8.0.80: per-symbol cache เท่านั้น — กัน cross-symbol contamination.
         # main loop สแกนครบทุกคู่ก่อน แล้วค่อยอ่าน context/obs → ต้องอ่านตาม symbol
-        # ไม่ใช่ slot เดียวที่ค้างเป็นคู่สุดท้าย (เดิม _ltf_data/_mtf_data ปนข้ามคู่)
+        # (v8.0.80 ลบ single-slot _ltf_data/_mtf_data/_htf_data ที่เคยค้างเป็นคู่สุดท้าย
+        # = แหล่ง contamination เดิม; main.py ใช้ get_*_data(symbol) อย่างเดียวแล้ว)
         self._ltf_by_symbol: Dict[str, pd.DataFrame] = {}
         self._mtf_by_symbol: Dict[str, pd.DataFrame] = {}
         self._htf_by_symbol: Dict[str, pd.DataFrame] = {}
@@ -599,11 +597,8 @@ class LiveMRScanner:
         except Exception:
             return None
 
-        # Cache for context (obs builders). v8.0.79: เก็บทั้ง last-value (back-compat)
-        # และ per-symbol — main.py อ่าน per-symbol ตาม sig.symbol กัน contamination
-        self._ltf_data = m15
-        self._mtf_data = h1
-        self._htf_data = h4
+        # Cache for context (obs builders) — per-symbol only (v8.0.80).
+        # main.py อ่านผ่าน get_*_data(sig.symbol) กัน cross-symbol contamination
         self._ltf_by_symbol[symbol] = m15
         self._mtf_by_symbol[symbol] = h1
         self._htf_by_symbol[symbol] = h4

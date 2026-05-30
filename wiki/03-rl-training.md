@@ -1,5 +1,9 @@
-# 03 — RL Training (Obs 26 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-27 (v8.0.74b — obs 35→26 trimmed, Chronos removed, 4 risk rules disabled) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+# 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
+> Last Updated: 2026-05-30 (v8.0.80 — train/live parity: C3 entry-confirm gate in MR env, H6 HTF-per-scan pool anchor, H3/H4 live obs[16]/obs[21]) | Scope: RL env, obs space, reward shaping (MR-specific), PPO hyperparams, curriculum, aux task.
+>
+> **⚠️ Obs dim = 35** (index 0-34). The "26 dims" once cited for v8.0.74b never reached the live `OBS_DIM` — `SelfLearningAgent.OBS_DIM`, `MeanReversionFilterEnv.observation_space`, and `models/mr/vec_normalize_mr.pkl` all agree at **35** (verified by `parity_audit` 3-way sync). obs[27,28] (chronos) hardwired 0.
+>
+> **v8.0.80 status** — `MeanReversionFilterEnv.step` now applies the entry-confirm forced-SKIP (C3) to match the parent env + live executor (was missing → ~33% train/live mismatch). `MeanReversionBacktester` anchors H1/H4 per scan-bar (H6, was day-start-stale). Live `_build_signal_observation` obs[16] reuses temporal-augmented `ml_score` (H3) and obs[21] = cumulative trades-opened-today /3 (H4) — both now match this env. **C3 + H6 require pool rebuild + retrain.** See [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6).
 >
 > **v8.0.55 status** — Pool/GBM/PPO REVERTED to v8.0.52. Env still has `_entry_confirm_forced_skips` counter + force-SKIP gate. With current v8.0.52 pool loaded, signal dicts don't have `entry_confirm_passed` field → `.get('entry_confirm_passed', True)` defaults to True → no force-SKIP → behaves identically to v8.0.52. Future pool rebuilds will populate the field and gate will activate. Retrain attempt: Train Pass 68.1% (-2.6pp vs 70.7%), Holdout 48.5% (mild overfit). Lesson: M15 first-bar slip ≠ M1 last-bar direction (live filter); training proxy didn't transfer well. See [`wiki/05-invariants.md` v8.0.55](05-invariants.md#-version-log-entry--v8055-2026-05-22--3-live-filters-kept--rlpool-reverted) for full eval + decision rationale.
 >
@@ -96,7 +100,7 @@
 | 18 | `daily_dd_norm` | `-daily_dd / 0.05` |
 | 19 | `progress_norm` | `profit / target × 100 / 100` |
 | 20 | `day_progress` | `challenge_day / max_days` |
-| 21 | `trades_today` | `open_positions / MAX_TRADES_PER_DAY` |
+| 21 | `trades_today` | cumulative trades-opened-today `/ MAX_TRADES_PER_DAY` (3) — v8.0.80 H4: live matches env (was `open_positions/3`) |
 | 22 | `recent_wr_norm` | last 10 WR → `wr×2 − 1` |
 | 23 | `consec_losses` | `min(consec, 5) / 5` |
 

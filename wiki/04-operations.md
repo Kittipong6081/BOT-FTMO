@@ -1,5 +1,7 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-29 (v8.0.79 — Cross-symbol cache fix + currency-leg correlation cap) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-05-30 (v8.0.80 — audit: FTMO 4% breach guard, per-symbol trade counter, wall-clock periodic gates) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+>
+> **v8.0.80 loop/state changes** (→ [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)): (C2) `RiskManager.check_risk` runs an **always-on FTMO 4% daily-breach emergency close** before the state-gated `_check_daily_loss` — so a `DAILY_HALT` set by consec-loss/stop-out (which don't close positions) can no longer let open positions bleed past 4%. (H2) `max_trades_per_day` now uses a per-symbol counter. `main.run()` hourly stats / GBM-drift / periodic-status now fire on **wall-clock gates** (not `_loop_count % 720`), so the v8.0.70 adaptive 1s loop no longer fires them ~5× too often.
 
 ## TL;DR (30-second scan)
 

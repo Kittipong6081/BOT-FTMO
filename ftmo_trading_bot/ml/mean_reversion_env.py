@@ -60,8 +60,12 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
     BASE_LOSS_PENALTY: float = 0.10    # baseline (any losing trade)
     DURATION_FINE_COEF: float = 0.02   # per-bar fine for losing trades
     DURATION_FINE_CAP: float = 0.30    # cap so it doesn't dominate
-    ADX_VIOLATION_PENALTY: float = 0.30  # taking trade when ADX > 25 (block)
-    ADX_VIOLATION_THRESHOLD: float = 25.0
+    # v8.0.81: ADX_VIOLATION_PENALTY removed — it fired on M15 ADX > 25 (sig['adx']),
+    # but the strategy's real trend veto is H1 ADX > 30 (hard-gated at pool-build, so
+    # EVERY pool signal already has H1 ADX ≤ 30). M15 ADX of a valid MR signal is often
+    # 25-40 (M15 is noisier) → the penalty punished ~half of legitimate signals for a
+    # trend the H1 filter already cleared. A penalty on H1 ADX would never fire (all ≤ 30),
+    # so the correct action is to drop it. (constants kept = removed)
 
     def __init__(
         self,
@@ -150,6 +154,16 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
             take = False
             correlation_forced_skip = True
             self._correlation_forced_skips += 1
+
+        # v8.0.80 (C3): Entry-confirmation forced SKIP — mirror live executor +
+        # parent FTMOSignalFilterEnv.step. เดิม MR env (override เต็ม ไม่เรียก super)
+        # ตกด่านนี้ → agent ฝึก TAKE บนสัญญาณ ~33% (true_frac≈0.669) ที่ live จะ block
+        # → train/live distribution mismatch. ตอนนี้ force SKIP เหมือน live.
+        entry_confirm_forced_skip = False
+        if take and not sig.get("entry_confirm_passed", True):
+            take = False
+            entry_confirm_forced_skip = True
+            self._entry_confirm_forced_skips += 1
 
         outcome = float(sig.get("outcome_pnl_ratio", 0.0))
         ml_score = float(sig.get("ml_score", 0.5))
@@ -242,11 +256,8 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
                 if bars_to_res >= self.PROLONGED_LOSS_BARS:
                     reward -= self.PROLONGED_LOSS_PENALTY
 
-            # Trend-filter discipline: penalize trades taken when ADX > 25
-            # (strategy already vetoes most of these, but pool may contain
-            # signals from edge cases or noisy ADX)
-            if adx_value > self.ADX_VIOLATION_THRESHOLD:
-                reward -= self.ADX_VIOLATION_PENALTY
+            # v8.0.81: removed M15-ADX>25 penalty (wrong timeframe vs the H1>30 hard gate
+            # already applied at pool-build → it punished valid MR signals). See class const note.
 
             # Phase-wise activity / DD shaping (kept from parent — works for MR)
             if not self.enable_risk_penalty:
@@ -406,7 +417,9 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
                 "max_profit": self.peak_balance - self.INITIAL_BALANCE,
                 "max_daily_dd_pct": self.max_daily_dd_pct,
                 "correlation_forced_skips": self._correlation_forced_skips,
+                "entry_confirm_forced_skips": self._entry_confirm_forced_skips,  # v8.0.80 (C3)
             }
 
         info["correlation_forced_skip"] = correlation_forced_skip
+        info["entry_confirm_forced_skip"] = entry_confirm_forced_skip  # v8.0.80 (C3)
         return self._get_obs(), float(reward), terminated, truncated, info

@@ -128,15 +128,6 @@ class MeanReversionBacktester(StrategyBacktester):
             if m15_window_end >= len(m15_df) - self.M15_PER_DAY:
                 break
 
-            m15_end_ts = m15_df["time"].iloc[m15_window_end - 1]
-            h1_end = min(self._end_idx_at_or_before(h1_df, m15_end_ts), len(h1_df))
-            h4_end = min(self._end_idx_at_or_before(h4_df, m15_end_ts), len(h4_df))
-            h1_start = max(0, h1_end - self.MIN_H1_BARS)
-            h4_start = max(0, h4_end - self.MIN_H4_BARS)
-
-            if h1_end - h1_start < 200 or h4_end - h4_start < 200:
-                continue
-
             m15_lookback_start = max(0, day_m15_start - self.MIN_M15_BARS)
 
             for offset in scan_offsets:
@@ -147,6 +138,18 @@ class MeanReversionBacktester(StrategyBacktester):
                 ltf_slice = m15_df.iloc[
                     scan_idx - self.MIN_M15_BARS + 1: scan_idx + 1
                 ].copy()
+
+                # v8.0.80 (H6): anchor H1/H4 ตาม timestamp ของแท่ง scan (เดิม anchor วันละครั้ง
+                # ที่ day-start → scan ช่วงบ่ายอ่าน ADX H1 เก่าถึง ~24 ชม. ≠ live ที่ recompute
+                # HTF สดทุก scan → สัญญาณที่ live block (ADX H1 เพิ่งเกิน) รอดใน pool → distribution เพี้ยน).
+                # ไม่ใช่ future leak: h1_end/h4_end ≤ scan bar เสมอ. parity_audit เดิมจับไม่ได้.
+                m15_scan_ts = m15_df["time"].iloc[scan_idx]
+                h1_end = min(self._end_idx_at_or_before(h1_df, m15_scan_ts), len(h1_df))
+                h4_end = min(self._end_idx_at_or_before(h4_df, m15_scan_ts), len(h4_df))
+                h1_start = max(0, h1_end - self.MIN_H1_BARS)
+                h4_start = max(0, h4_end - self.MIN_H4_BARS)
+                if h1_end - h1_start < 200 or h4_end - h4_start < 200:
+                    continue
                 h1_slice = h1_df.iloc[h1_start:h1_end].copy()
                 h4_slice = h4_df.iloc[h4_start:h4_end].copy()
 
