@@ -56,16 +56,18 @@ class FTMOConfig:
     
     ค่าที่ Bot ใช้ (มี Safety Buffer):
     - Daily Hard Stop: 4% (Buffer 1% จากกฎ 5%)
-    - Max Drawdown Hard Stop: 8% (Buffer 2% จากกฎ 10%)
+    - Max Drawdown Hard Stop: 10% (= กฎ FTMO เต็ม, ไม่มี buffer — user request 2026-06-01)
     """
-    
+
     # === ขาดทุนรายวันสูงสุด ===
     # กฎ FTMO = 5%, Bot ใช้ 4% เป็น Buffer ป้องกัน
     DAILY_LOSS_HARD_STOP_PCT: float = 0.04  # 4%
-    
+
     # === ขาดทุนรวมสูงสุด (Max Drawdown) ===
-    # กฎ FTMO = 10%, Bot ใช้ 8% เป็น Buffer ป้องกัน
-    MAX_DRAWDOWN_HARD_STOP_PCT: float = 0.08  # 8%
+    # กฎ FTMO = 10%. v8.1 (2026-06-01, user request): set = กฎจริง 10% (เดิม 8% buffer).
+    # ⚠️ ไม่มี buffer แล้ว — emergency-close จะ trigger ที่เส้น breach พอดี; slippage/gap
+    #    ตอนปิดฉุกเฉินอาจทำ realized DD ทะลุ 10% เล็กน้อย. คำเตือน soft ที่ 8% (ดู risk_manager).
+    MAX_DRAWDOWN_HARD_STOP_PCT: float = 0.10  # 10% (= FTMO rule, no buffer)
     
     # === ความเสี่ยงต่อการเทรดแต่ละครั้ง ===
     # v7.1.9 (2026-05-05): bump 0.7% → 0.99% — sync กับ RL training (--risk_per_trade 0.0099)
@@ -76,7 +78,7 @@ class FTMOConfig:
     #   Pass Rate impact: คาดลด 5-8pp (acceptable — RL pool/reward เป็น R-multiple scale-invariant)
     #   ห้ามลด < 0.5% (Pass Rate ตก 30-50% เพราะ +10% target เป็น absolute $)
     # FTMO Safety: 4 SL × 0.70% = 2.8% daily (vs 4% limit, 30% buffer)
-    #             8 SL × 0.70% = 5.6% total (vs 8% limit, 30% buffer)
+    #             8 SL × 0.70% = 5.6% total (vs 10% hard stop, 44% buffer)
     MIN_RISK_PER_TRADE_PCT: float = 0.005   # 0.5% ขั้นต่ำ (floor ปลอดภัย)
     MAX_RISK_PER_TRADE_PCT: float = 0.0085  # 0.85% สูงสุด (v8.0.43c — kept for scale-up Phase 3)
     DEFAULT_RISK_PER_TRADE_PCT: float = 0.0070  # 0.70% — v8.0.56 risk reduction

@@ -154,6 +154,19 @@ class DiscordNotifier:
         except Exception:
             return "0"
 
+    @staticmethod
+    def _strategy_label(trade_dict: dict) -> tuple:
+        """v8.1: distinguish MR vs TF clearly in every trade notification.
+
+        Returns (short, full) — `short` (e.g. "TF") goes in the embed title,
+        `full` (emoji + name) goes in a dedicated 'Strategy' field. Reads
+        `strategy_id` from `ExecutedTrade.to_dict()` (default MR for legacy).
+        """
+        sid = str(trade_dict.get("strategy_id") or "MR").upper()
+        if sid == "TF":
+            return "TF", "📈 TF · Trend Following"
+        return "MR", "🔄 MR · Mean Reversion"
+
     def send_trade_open(self, trade_dict: dict):
         """แจ้งเตือนเมื่อเปิดเทรด (มีสีต่างกันตามประเภท)"""
         is_buy = (trade_dict.get("type") or "").upper() == "BUY"
@@ -166,8 +179,12 @@ class DiscordNotifier:
         # ถ้า entry ยังเป็น 0 แปลว่า MT5 ไม่ได้คืน price → แสดง warning
         entry_warn = " ⚠️" if entry_str == "N/A" else ""
 
-        # === Build base fields (เดิม — ไม่แตะ) ===
+        # v8.1: per-strategy tag (MR vs TF) — prominent in title + dedicated field
+        strat_short, strat_full = self._strategy_label(trade_dict)
+
+        # === Build base fields ===
         fields = [
+            {"name": "Strategy", "value": strat_full, "inline": True},
             {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
             {"name": "Lot Size", "value": self._fmt_num(trade_dict.get("lot_size"), ",.2f"), "inline": True},
             {"name": "Entry", "value": entry_str + entry_warn, "inline": True},
@@ -201,7 +218,7 @@ class DiscordNotifier:
         payload = {
             "username": "FTMO Bot",
             "embeds": [{
-                "title": f"{emoji} OPENED: {trade_dict.get('type')} {trade_dict.get('symbol')}",
+                "title": f"{emoji} [{strat_short}] OPENED: {trade_dict.get('type')} {trade_dict.get('symbol')}",
                 "color": color,
                 "fields": fields,
                 "timestamp": datetime.now(timezone.utc).isoformat()
@@ -221,14 +238,16 @@ class DiscordNotifier:
         # แสดงเตือนถ้า profit เป็น 0 ทั้งที่ไม่ควร (เช่น sync ไม่เจอ deal)
         pnl_line = f"**P/L: ${profit:,.2f}**  ({pnl_pct:+.1f}R)"
         reason = trade_dict.get("close_reason") or trade_dict.get("exit_path") or "-"
+        strat_short, strat_full = self._strategy_label(trade_dict)
 
         payload = {
             "username": "FTMO Bot",
             "embeds": [{
-                "title": f"{emoji} CLOSED: {trade_dict.get('type')} {trade_dict.get('symbol')}",
+                "title": f"{emoji} [{strat_short}] CLOSED: {trade_dict.get('type')} {trade_dict.get('symbol')}",
                 "description": f"{pnl_line}\nReason: {reason}",
                 "color": color,
                 "fields": [
+                    {"name": "Strategy", "value": strat_full, "inline": True},
                     {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
                     {"name": "Entry", "value": self._fmt_price(trade_dict.get("entry_price")), "inline": True},
                     {"name": "Close", "value": self._fmt_price(trade_dict.get("close_price")), "inline": True},
@@ -263,17 +282,19 @@ class DiscordNotifier:
         original_lot = float(trade_dict.get("lot_size") or 0) + closed_volume
         pct_closed = (closed_volume / original_lot * 100) if original_lot > 0 else 0.0
         color = 3447003  # Blue — partial ไม่ใช่เขียว/แดงเต็ม
+        strat_short, strat_full = self._strategy_label(trade_dict)
 
         payload = {
             "username": "FTMO Bot",
             "embeds": [{
-                "title": f"✂️ PARTIAL CLOSE: {trade_dict.get('type')} {trade_dict.get('symbol')}",
+                "title": f"✂️ [{strat_short}] PARTIAL CLOSE: {trade_dict.get('type')} {trade_dict.get('symbol')}",
                 "description": (
                     f"**Realized P/L: {pnl_sign}${realized_pnl:,.2f}** "
                     f"(ปิด {pct_closed:.0f}% ของ position)"
                 ),
                 "color": color,
                 "fields": [
+                    {"name": "Strategy", "value": strat_full, "inline": True},
                     {"name": "Ticket", "value": str(trade_dict.get("ticket") or "N/A"), "inline": True},
                     {"name": "Entry", "value": self._fmt_price(trade_dict.get("entry_price")), "inline": True},
                     {"name": "Partial Fill", "value": self._fmt_price(fill_price), "inline": True},

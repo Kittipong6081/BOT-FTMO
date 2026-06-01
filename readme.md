@@ -1,8 +1,10 @@
 # 🤖 FTMO Trading Bot
 
-> ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 8% total DD) ใช้ **Mean Reversion + Trend Filter** + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
+> ระบบเทรด Forex อัตโนมัติเพื่อผ่าน **FTMO 2-Step Standard Challenge** (10% profit, 4% daily DD, 10% total DD) ใช้ **Mean Reversion + Trend Filter** + ML Quality Filter + RL Agent (PPO with Auxiliary Task)
 >
-> **Last Updated:** 2026-05-30 (v8.0.80 — Production audit: แก้ความปลอดภัยตอนส่งคำสั่ง + กันเกิน 4% FTMO + ปรับ "สิ่งที่บอทเห็น" ตอนเทรดจริงให้ตรงกับตอนฝึก)
+> **Last Updated:** 2026-06-01 (v8.1.1 — เพดานขาดทุนรวม 8%→10% (= กฎ FTMO เต็ม) + แจ้งเตือน Discord แยก MR/TF ชัดเจน)
+>
+> **⚖️ v8.1.1 status — เพดานขาดทุนรวม + ป้ายกลยุทธ์บน Discord (สรุปภาษาคน)**: (1) **เพดานหยุดฉุกเฉิน (ขาดทุนรวม) ปรับจาก 8% เป็น 10%** ตามที่ผู้ใช้สั่ง — เดิมบอทเผื่อ buffer หยุดที่ 8% (ก่อนถึงเส้นจริง FTMO 10%) ตอนนี้ใช้เส้นจริง 10% เต็ม เพื่อให้บัญชีมีพื้นที่ฟื้นตัวมากขึ้น. ⚠️ **ข้อแลกเปลี่ยน**: ไม่มี buffer แล้ว — ตอนปิดฉุกเฉินถ้าราคากระชาก (slippage) อาจขาดทุนทะลุ 10% นิดหน่อย = ผิดกฎจริง. มีคำเตือนล่วงหน้าที่ 8% ให้รู้ตัวก่อน. (2) **การแจ้งเตือนบน Discord แยก MR / TF ชัดเจน** — ทุกข้อความเปิด/ปิด/ปิดบางส่วน มีป้าย `[MR]`/`[TF]` ที่หัวข้อ + ช่อง "Strategy" (🔄 MR · Mean Reversion / 📈 TF · Trend Following) จะได้รู้ทันทีว่าไม้นั้นมาจากกลยุทธ์ไหน. ดูรายละเอียดที่ [`wiki/05-invariants.md`](wiki/05-invariants.md).
 >
 > **🛡️ v8.0.80 status — Source-code audit (สรุปภาษาคน)**: ตรวจโค้ดทั้งระบบเจอจุดต้องแก้ 13 จุด (ยืนยันกับโค้ดจริงแล้ว). สำคัญสุด 3 จุด: (1) ตอนบอทเลื่อน SL มาเท่าทุน/ล็อกกำไร ถ้า SL ชิดราคาเกินไป โบรกเกอร์เคย "ปฏิเสธเงียบ ๆ" → SL ไม่ขยับจริง = เสี่ยงเต็ม ๆ ทั้งที่คิดว่าปลอดภัย → ตอนนี้กันระยะ + แจ้งเตือน + ลองใหม่. (2) เพิ่มตัวกันขาดทุนเกิน 4% ของ FTMO ที่ทำงาน "เสมอ" (เดิมมีช่องที่บอทหยุดเทรดแต่ไม้เก่ายังเปิดค้างขาดทุนทะลุ 4% โดยไม่ปิด). (3) ตอนฝึกบอทขาดด่านกรองบางตัวที่ตอนเทรดจริงมี → ฝึกบนสถานการณ์ที่จริง ๆ ไม่ได้เทรด → กำลัง **ฝึกใหม่** ให้ตรงกัน. ดูรายละเอียดเทคนิคที่ [`wiki/05-invariants.md`](wiki/05-invariants.md). Backups: `*.pre_v8080`.
 >
@@ -554,7 +556,7 @@ orchestrator จะรัน 3 step ด้านล่างให้เอง +
 | เกณฑ์ | ค่าเริ่มต้น | หมายเหตุ |
 |-------|-----------|---------|
 | Pass Rate | ≥ 8 % | conservative buffer (verified MR pass rate = 59.30%) |
-| Total DD max | ≤ 6 % | ห่างจาก FTMO 8% limit |
+| Total DD max | ≤ 6 % | training eval gate (live hard stop = 10% ตั้งแต่ v8.1.1) |
 | Daily DD max | ≤ 3.5 % | ห่างจาก FTMO 4% limit |
 | Profitable Rate | ≥ 55 % | กว่าครึ่งของ episodes ปิดบวก |
 | Breach Rate | ≤ 5 % | breach น้อย |
@@ -628,7 +630,7 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
 |-------|-------|---------|
 | `DEFAULT_RISK_PER_TRADE_PCT` | 0.007 | 0.7% (v8.0.43 — paired with Option X trail) |
 | `ML_FILTER_THRESHOLD` (v8.0.3) | 0.30 | live ↔ training sync — signals ที่ ML score < 0.30 ถูก reject ก่อน agent |
-| `MAX_DRAWDOWN_HARD_STOP_PCT` | 0.08 | 8% (buffer 2% จาก FTMO 10%) |
+| `MAX_DRAWDOWN_HARD_STOP_PCT` | 0.10 | 10% (v8.1.1 — = กฎ FTMO เต็ม ไม่มี buffer; เตือนล่วงหน้าที่ 8%) |
 | `DAILY_LOSS_HARD_STOP_PCT` | 0.04 | 4% (buffer 1% จาก FTMO 5%) |
 | `PROFIT_TARGET_PCT` | 0.10 | 10% target |
 | `CONSISTENCY_RULE_THRESHOLD` | 1.0 | 2-step Standard ไม่มีกฎนี้ |
@@ -810,7 +812,7 @@ MIN_RISK_PER_TRADE_PCT = 0.005       # floor
 MAX_RISK_PER_TRADE_PCT = 0.008       # cap
 
 # FTMO buffers
-MAX_DRAWDOWN_HARD_STOP_PCT = 0.08    # 8% (FTMO rule = 10%)
+MAX_DRAWDOWN_HARD_STOP_PCT = 0.10    # 10% (v8.1.1 = FTMO rule เต็ม, no buffer; warn @ 8%)
 DAILY_LOSS_HARD_STOP_PCT = 0.04      # 4% (FTMO rule = 5%)
 PROFIT_TARGET_PCT = 0.10             # 10%
 ```

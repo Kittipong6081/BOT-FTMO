@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-05-30 (v8.1-phase2 — per-strategy risk ledger + conflict filter, dual-strategy behind `tf.enabled` OFF default) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-06-01 (v8.1.1 — Max DD hard stop 8%→10% = full FTMO rule; soft warn at 8%) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 >
 > **v8.0.80 loop/state changes** (→ [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)): (C2) `RiskManager.check_risk` runs an **always-on FTMO 4% daily-breach emergency close** before the state-gated `_check_daily_loss` — so a `DAILY_HALT` set by consec-loss/stop-out (which don't close positions) can no longer let open positions bleed past 4%. (H2) `max_trades_per_day` now uses a per-symbol counter. `main.run()` hourly stats / GBM-drift / periodic-status now fire on **wall-clock gates** (not `_loop_count % 720`), so the v8.0.70 adaptive 1s loop no longer fires them ~5× too often.
 
@@ -7,7 +7,7 @@
 
 - Entry: `python main.py` — builds `FTMOTradingBot` and loops every 5 s. Strategy = **MR (Mean Reversion)** via `LiveMRScanner` (v8.0+).
 - FTMO program = **2-step Standard** → `CONSISTENCY_RULE_THRESHOLD = 1.0` (check disabled).
-- Risk hard stops: **4 % daily DD**, **8 % total DD** (buffer vs FTMO 5 %/10 %), target **10 % profit**.
+- Risk hard stops: **4 % daily DD** (buffer vs FTMO 5 %), **10 % total DD** (v8.1.1 — = full FTMO rule, no buffer; soft warn at 8 %), target **10 % profit**.
 - Default risk per trade = **0.7 %** (v8.0.43 Option X — paired with trail).
 - **ML threshold = 0.30** (v8.0.3, sync `bot_config.ftmo.ML_FILTER_THRESHOLD` ↔ trainer ↔ HyperParams).
 - **v8.0.55 pre-execution gates** (in addition to RiskManager + correlation):
@@ -29,7 +29,7 @@
 | **Stepwise Trail (v8.0.73)** | Stage 1@0.5R partial+BE; Stage 2@0.8R **SL→0.5R lock** (TP unchanged at 1.0R per v8.0.73 — removed extension to 1.5R, continuation 26.9% per M1 replay); Stage 3@1.0R SL→1R + trail chase (rarely fires now since TP fills at 1.0R first) | `TradeManager.TP_STEP_*` + `TRAIL_*` constants |
 | Symbols | 10 (incl. XAUUSD) | `SymbolConfig.symbols` |
 | Daily DD stop | 4 % | `FTMOConfig.DAILY_LOSS_HARD_STOP_PCT` |
-| Total DD stop | 8 % | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
+| Total DD stop | **10 %** (v8.1.1 — full FTMO rule, no buffer; soft warn at 8 %) | `FTMOConfig.MAX_DRAWDOWN_HARD_STOP_PCT` |
 | Profit target | 10 % | `FTMOConfig.PROFIT_TARGET_PCT` |
 | Default risk / trade | 0.7 % | `FTMOConfig.DEFAULT_RISK_PER_TRADE_PCT` |
 | Max open positions | 3 (v8.0.69 — was 2 in v8.0.56) | `FTMOConfig.MAX_OPEN_POSITIONS` |
@@ -122,7 +122,7 @@ Each idle-state guard prints **once on entry** (sets flag = True), then silences
      │                            │
      │                            └── daily rollover ──┐
      │                                                 │
-     ├─ total DD ≥ 8% ──▶ MAX_DRAWDOWN_HALT (permanent)│
+     ├─ total DD ≥ 10% ─▶ MAX_DRAWDOWN_HALT (permanent)│
      │                                                 │
      ├─ user stop ──▶ MANUAL_HALT                      │
      │                                                 │

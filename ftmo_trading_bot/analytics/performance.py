@@ -478,7 +478,7 @@ class PerformanceAnalyzer:
         total_profit = current_equity - self._initial_balance
 
         # v7.1 — อ่าน FTMO limits จาก config จริง (เลิก hardcode 10%/5%)
-        # ค่า config: PROFIT_TARGET_PCT=0.10, DAILY_LOSS_HARD_STOP_PCT=0.04, MAX_DRAWDOWN_HARD_STOP_PCT=0.08
+        # ค่า config: PROFIT_TARGET_PCT=0.10, DAILY_LOSS_HARD_STOP_PCT=0.04, MAX_DRAWDOWN_HARD_STOP_PCT=0.10 (v8.1.1)
         if bot_config is not None:
             target_pct = float(bot_config.ftmo.PROFIT_TARGET_PCT)
             daily_limit_pct = float(bot_config.ftmo.DAILY_LOSS_HARD_STOP_PCT) * 100

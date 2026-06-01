@@ -1,5 +1,5 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-05-30 (v8.1-phase4 — TF LIVE canary; go-live audit fixes) | Scope: every module + key class / method / variable
+> Last Updated: 2026-06-01 (v8.1.1 — Discord MR/TF strategy tag) | Scope: every module + key class / method / variable
 >
 > **v8.1-phase4 changes (go-live: 9 audit fixes; TF now executes live)**:
 > - `TradeManager._exit_profile(strategy_id)` (NEW) — MR keeps quick-exit constants; TF rides (no partial/BE/tp_step; trail activation 1.5R / behind 2.0R / floor 1.0R / TP-ahead 2.0R from `bot_config.tf.mgmt_*`). `_manage_single_position` + `_update_trailing_stop(prof)` branch on it. `TrendFollowingBacktester._resolve_trade` reads the SAME `bot_config.tf.mgmt_*` (single source → train==live exit).
@@ -286,6 +286,8 @@ Always floor-round the lot size (never ceil) — safety margin against broker st
 | Symbol | Role |
 |--------|------|
 | `DiscordNotifier.send_message`, `.send_alert` | Sends webhook |
+| `DiscordNotifier.send_trade_open` / `.send_trade_close` / `.send_trade_partial_close` | Trade lifecycle embeds. **v8.1.1**: title prefixed `[MR]`/`[TF]` + a dedicated **Strategy** field (first field) |
+| `DiscordNotifier._strategy_label(trade_dict)` | **v8.1.1 NEW** — `(short, full)` from `trade_dict["strategy_id"]` (legacy→MR): `("TF","📈 TF · Trend Following")` / `("MR","🔄 MR · Mean Reversion")` |
 | Rate limit | 20 req/min sliding window + min 1 s interval + 429 Retry-After + `threading.Lock` |
 
 ---
@@ -327,7 +329,7 @@ Key dataclasses:
 | Class | Key fields |
 |-------|------------|
 | `MT5Config` | `terminal_path`, `login`, `password`, `server`, `timeout` (loaded from `.env`) |
-| `FTMOConfig` | `DAILY_LOSS_HARD_STOP_PCT=0.04`, `MAX_DRAWDOWN_HARD_STOP_PCT=0.08`, `PROFIT_TARGET_PCT=0.10`, `MIN_RISK_PER_TRADE_PCT=0.005`, `MAX_RISK_PER_TRADE_PCT=0.008`, `DEFAULT_RISK_PER_TRADE_PCT=0.007` ⭐, `MIN_CONFLUENCE_SCORE=70.0`, `CONSISTENCY_RULE_THRESHOLD=1.0` (2-step Standard → check off), `COOLDOWN_AFTER_LOSS_MIN=60`, `POST_TP_LOCK_TTL_MIN=60` |
+| `FTMOConfig` | `DAILY_LOSS_HARD_STOP_PCT=0.04`, `MAX_DRAWDOWN_HARD_STOP_PCT=0.10` (v8.1.1 — full FTMO rule), `PROFIT_TARGET_PCT=0.10`, `MIN_RISK_PER_TRADE_PCT=0.005`, `MAX_RISK_PER_TRADE_PCT=0.008`, `DEFAULT_RISK_PER_TRADE_PCT=0.007` ⭐, `MIN_CONFLUENCE_SCORE=70.0`, `CONSISTENCY_RULE_THRESHOLD=1.0` (2-step Standard → check off), `COOLDOWN_AFTER_LOSS_MIN=60`, `POST_TP_LOCK_TTL_MIN=60` |
 | `SymbolConfig.symbols` | 10 symbols: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, **XAUUSD** |
 | `MLConfig` (v7) | `CHRONOS_MODEL_NAME="amazon/chronos-bolt-small"`, `CHRONOS_DEVICE="cpu"`, `CHRONOS_PREDICTION_LENGTH=8`, `CHRONOS_CONTEXT_LENGTH=512`, `CHRONOS_ENABLED=True`. Single source of truth สำหรับ pool builder + live. |
 | `MeanReversionConfig` (v8.0) | `strategy_mode="smc"` (flip to `"mean_reversion"` after MR eval gates pass), `bb_period=20`, `bb_std=2.0`, `bb_oversold=0.10`, `bb_overbought=0.90`, `rsi_oversold=30.0`, `rsi_overbought=70.0`, `adx_trend_block=25.0`, `sl_atr_mult=1.0`, `rr_ratio=1.0`, `quick_tp_bars=5`, `quick_tp_bonus=0.50`, `slow_win_bonus=0.20`, `prolonged_loss_bars=12`, `prolonged_loss_penalty=0.40`, `base_loss_penalty=0.10`, `duration_fine_coef=0.02` |

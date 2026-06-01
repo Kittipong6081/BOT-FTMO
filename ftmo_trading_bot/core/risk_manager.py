@@ -6,7 +6,7 @@ FTMO Trading Bot — ระบบจัดการความเสี่ย�
 
 กลไกป้องกัน:
 1. Daily Hard Stop  (4%):  ปิดทุกออเดอร์ + หยุดเทรดทั้งวัน
-2. Max Drawdown     (8%):  หยุด Bot ทั้งหมดจนกว่าจะรีเซ็ตด้วยมือ
+2. Max Drawdown    (10%):  หยุด Bot ทั้งหมดจนกว่าจะรีเซ็ตด้วยมือ (= กฎ FTMO เต็ม, v8.1)
 3. Per-Trade Risk   (0.5-1%): ตรวจสอบก่อนเปิดทุกออเดอร์
 4. Position Limit   (3):   จำกัดจำนวน Position เปิดพร้อมกัน
 5. Risk:Reward Check (1:1.5): ปฏิเสธเทรดที่ RR ต่ำเกินไป
@@ -35,7 +35,7 @@ class BotState(Enum):
     """
     ACTIVE = "ACTIVE"                           # ทำงานปกติ — เทรดได้
     DAILY_HALT = "DAILY_HALT"                   # หยุดเทรดวันนี้ (Daily Loss เกิน 4%)
-    MAX_DRAWDOWN_HALT = "MAX_DRAWDOWN_HALT"     # หยุดถาวร (Max DD เกิน 8%)
+    MAX_DRAWDOWN_HALT = "MAX_DRAWDOWN_HALT"     # หยุดถาวร (Max DD เกิน 10%)
     MANUAL_HALT = "MANUAL_HALT"                 # หยุดด้วยมือ (ผู้ใช้สั่ง)
     DISCONNECTED = "DISCONNECTED"               # ไม่ได้เชื่อมต่อ MT5
 
@@ -390,8 +390,8 @@ class RiskManager:
         ตรวจสอบ Max Drawdown เทียบกับ Initial Balance
         
         กฎ FTMO: ขาดทุนรวมสูงสุด 10% ของ Balance เริ่มต้น
-        Bot ใช้ 8% เป็น Buffer ป้องกัน
-        
+        Bot ใช้ 10% = กฎจริง (v8.1 2026-06-01, user request — เดิม 8% buffer)
+
         หากเกิน → ปิดทุก Position + หยุด Bot ถาวร
         
         Args:
@@ -408,10 +408,10 @@ class RiskManager:
         drawdown_pct = drawdown_amount / self._initial_balance
         
         # ค่าขีดจำกัด
-        max_dd_limit = self._config.MAX_DRAWDOWN_HARD_STOP_PCT  # 8%
-        
-        # แสดงคำเตือนเมื่อเข้าใกล้ขีดจำกัด (เกิน 6%)
-        if drawdown_pct > 0.06 and self._state == BotState.ACTIVE:
+        max_dd_limit = self._config.MAX_DRAWDOWN_HARD_STOP_PCT  # 10% (v8.1 2026-06-01 = FTMO rule, no buffer)
+
+        # แสดงคำเตือนเมื่อเข้าใกล้ขีดจำกัด (เกิน 8% = 2% ก่อนชนเส้น breach 10%)
+        if drawdown_pct > 0.08 and self._state == BotState.ACTIVE:
             print(f"⚠️ [Risk Manager] คำเตือน! Max Drawdown: {drawdown_pct:.2%} (ขีดจำกัด: {max_dd_limit:.0%})")
         
         # ตรวจสอบว่าเกินขีดจำกัดหรือยัง
