@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-06-01 (v8.1.1 — Max DD hard stop 8%→10% = full FTMO rule; soft warn at 8%) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-06-02 (v8.1.2 — weekday overnight holding: Mon-Thu 23:30 close OFF, Friday close stays) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
 >
 > **v8.0.80 loop/state changes** (→ [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)): (C2) `RiskManager.check_risk` runs an **always-on FTMO 4% daily-breach emergency close** before the state-gated `_check_daily_loss` — so a `DAILY_HALT` set by consec-loss/stop-out (which don't close positions) can no longer let open positions bleed past 4%. (H2) `max_trades_per_day` now uses a per-symbol counter. `main.run()` hourly stats / GBM-drift / periodic-status now fire on **wall-clock gates** (not `_loop_count % 720`), so the v8.0.70 adaptive 1s loop no longer fires them ~5× too often.
 
@@ -16,7 +16,7 @@
   - `RiskManager` cluster cooldown — `CLUSTER_COOLDOWN_ANY_SEC (300)` global, `CLUSTER_COOLDOWN_SAME_THEME_SEC (600)` for same USD/JPY/METAL theme. Extends `v8.0.26 MIN_SECONDS_BETWEEN_OPENS_SEC (60s)`.
   - `TradeExecutor._check_correlation_risk` — duplicate-symbol block; USD-theme cap `MAX_USD_THEME_POSITIONS (2)`; **v8.0.79 non-USD currency-leg cap** `MAX_SAME_CURRENCY_LEG_POSITIONS (1)` via `_non_usd_legs` — blocks stacking the same non-USD currency direction (e.g. EURUSD SELL + EURJPY SELL = 2× short EUR). Per-group guard `MAX_CORRELATED_POSITIONS=99` is off.
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
-- **No session block** (v8.0.6 SessionConfig cleanup) — bot trades 24/5 except: rollover (23:55-01:05 EET), daily close (Mon-Thu 23:30-23:55 EET), Friday >= 20:45 EET, weekend, news blackout.
+- **No session block** (v8.0.6 SessionConfig cleanup) — bot trades 24/5 except: rollover (23:55-01:05 EET), Friday >= 20:45 EET, weekend, news blackout. **(v8.1.2: Mon-Thu 23:30 daily overnight close DISABLED — `enforce_daily_close=False` → holds positions overnight on weekdays; Friday close unchanged.)**
 - **Console quiet mode**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
 - **Live logging (v8.0.6)**: `TradeLogger` writes `logs/ftmo_trades.xlsx` (4 sheets: **Trades 58 cols**, **Signals 20 cols**, Daily, Stats). Auto-archives legacy schema (66/23 cols) on first launch. Uses `_COL`/`_SCOL` name-based column lookup. Includes `Obs JSON` (32 dims) for offline retrain.
 
@@ -53,7 +53,7 @@
 | 1 | Risk check | `RiskManager.check_state` | state ≠ ACTIVE → skip tick |
 | 2a | Friday close | `TimeManager.is_friday_close_time` | Friday >= 20:45 EET → close all + skip |
 | 2b | Weekend | `TimeManager.is_weekend` | Sat/Sun → announce-once + sleep until Monday |
-| 2c | Daily close | `TimeManager.is_daily_close_time` | Mon-Thu 23:30-23:55 EET → close all + skip (FTMO zero-overnight) |
+| 2c | Daily close | `TimeManager.is_daily_close_time` | **DISABLED v8.1.2** (`enforce_daily_close=False`) — holds overnight Mon-Thu; was 23:30-23:55 EET close-all. Re-enable: `enforce_daily_close=True` |
 | 2d | Rollover | `TimeManager.is_rollover_period` | 23:55-01:05 EET → skip (spread spike protection) |
 | 3 | News scheduler | `NewsCalendarScheduler.check_and_run` | Sunday 23:30 EET → auto-import CSV (non-blocking) |
 | 4 | News filter | `news_events` / `news_calendar.json` | within ±30 / 15 min of high-impact event → skip + close vulnerable positions |

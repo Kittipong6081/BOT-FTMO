@@ -508,14 +508,17 @@ class SessionConfig:
     # เราจะปิดบังคับวันศุกร์เวลา 20:45 น. ตามเวลา Server (EET)
     friday_force_close: time = time(20, 45)
 
-    # === Zero-Overnight Policy (FTMO-compliant) ===
-    # ปิดทุก position ก่อนข้ามวัน Mon-Thu (Friday ใช้ friday_force_close)
-    # เหตุผล: ไม่มี swap fee, ไม่มี gap risk, สอดคล้องกับ FTMO swing rule
-    # กำหนด 23:30 EET = 25 นาทีก่อน rollover → มี buffer ปิดทันเวลา
-    # Buffer กับ NY session end: SMC ปิดสัญญาณที่ 19:00 UTC (~21:00-22:00 EET)
-    # → late trade มี 1.5-2.5 ชม. ให้ hit TP/SL ก่อนถูก force close
-    enforce_daily_close: bool = True
-    daily_close_time: time = time(23, 30)   # EET
+    # === Weekday Overnight Holding (v8.1.2, 2026-06-02 — user request) ===
+    # `enforce_daily_close = False` → ถือ position ข้ามคืนวันธรรมดา (Mon→Tue ... Thu→Fri) ได้
+    # วันศุกร์ยังบังคับปิดเสมอผ่าน `friday_force_close` (20:45 EET) — กันถือข้ามสุดสัปดาห์
+    # กฎกองทุนอนุญาตถือข้ามวันธรรมดา (ยืนยันแหล่งทางการ FTMO + The5ers, 2026-06-02):
+    #   FTMO: บังคับปิดเฉพาะก่อนสุดสัปดาห์ (funded Standard) / The5ers: ถือข้ามวัน+สุดสัปดาห์ได้
+    # ⚠️ Trade-off ที่ user ยอมรับ: เสีย swap ข้ามคืน (×3 พุธ→พฤหัส) + รับความเสี่ยง gap
+    #   เครื่องจำลองไม่โมเดล swap/gap → eval (2026-06-02) ชี้ challenge-level ผลแทบไม่ต่าง
+    #   (Pass 90.6→91.2%, กำไรเท่าเดิม) แต่ของจริงมีต้นทุน swap/gap ที่ backtest มองไม่เห็น
+    # revert: ตั้ง enforce_daily_close = True (กลับมาปิด 23:30 Mon-Thu)
+    enforce_daily_close: bool = False
+    daily_close_time: time = time(23, 30)   # EET (ใช้เมื่อ enforce_daily_close = True)
 
     # === Rollover Protection (เตะตัดขาสเปรดถ่าง) ===
     # บอทจะเข้าสู่โหมดหลับ (Pause) ช่วงรอยต่อวันเพื่อหนี Spread กว้าง

@@ -87,6 +87,13 @@ class StrategyBacktester:
         ]
         self._data_dir = data_dir
 
+        # EXPERIMENT FLAG (default OFF — preserves byte-identical pool behavior).
+        # When True, generate_episode_signals resolves outcomes via
+        # `_resolve_trade_live_exit` (models live TradeManager BE+partial) instead
+        # of the standard full-position `_resolve_trade`. Used by the exit-payoff
+        # parity experiment (2026-06-01). Leave False for all production builds.
+        self.model_live_exit = False
+
         # ML quality model (optional). Subclasses load MR-specific GBM
         # (`mr_signal_quality_model.pkl`) by overriding the lookup path.
         self._quality_model = None
@@ -257,15 +264,19 @@ class StrategyBacktester:
         _friday_close_t = getattr(bot_config.sessions, "friday_force_close", dt_time(20, 45))
 
         def _is_force_close_bar(bar_time) -> bool:
-            if not _enforce_daily or not hasattr(bar_time, "weekday"):
+            # v8.1.2: Friday close ALWAYS on (weekend rule, mirrors live
+            # is_friday_close_time which is ungated); Mon-Thu close gated by
+            # enforce_daily_close (mirrors live is_daily_close_time). When
+            # enforce_daily_close=True this is byte-identical to the old logic.
+            if not hasattr(bar_time, "weekday"):
                 return False
             wd = bar_time.weekday()
             bt = bar_time.time() if hasattr(bar_time, "time") else None
             if bt is None:
                 return False
-            if wd == 4:                       # Friday
+            if wd == 4:                       # Friday — always
                 return bt >= _friday_close_t
-            if wd in (0, 1, 2, 3):            # Mon-Thu
+            if _enforce_daily and wd in (0, 1, 2, 3):   # Mon-Thu — only if enabled
                 return bt >= _daily_close_t
             return False
 
@@ -477,6 +488,112 @@ class StrategyBacktester:
 
         pnl_ratio = pnl_pips * pip_size / max(sl_dist, pip_size)
         return risk_amount * pnl_ratio
+
+    def _resolve_trade_live_exit(
+        self, signal, sl_dist: float, tp_dist: float,
+        future_df: pd.DataFrame, risk_amount: float,
+        pip_size: float, rng: np.random.Generator,
+        be_trigger_r: float = 0.3, partial_trigger_r: float = 0.8,
+        partial_pct: float = 0.33, stage2_sl_r: float = 0.5,
+        trail_activation_r: float = 1.0, trail_sl_behind_r: float = 0.5,
+        trail_sl_floor_r: float = 1.0,
+    ) -> float:
+        """EXPERIMENT-ONLY (flag `self.model_live_exit`): resolve a trade modeling
+        the LIVE `TradeManager` exit machinery instead of full-position:
+          • BE → entry        when best_rr ≥ be_trigger_r (0.3R)   [None = no BE]
+          • Partial close partial_pct (33%) locked @ partial_trigger_r (0.8R)
+          • Stage2 SL → +stage2_sl_r (0.5R) @ 0.8R on the remainder
+          • Stage3 dynamic trail @ trail_activation_r (1.0R):
+                SL = max(best − trail_sl_behind_r, entry + trail_sl_floor_r)
+        Base RR 1:1 (tp_dist == sl_dist). Returns blended realized R
+        (locked partial + remaining fraction × exit R).
+
+        Convention (avoids same-bar whipsaw on OHLC bars): each bar's exit is
+        checked against the stop as set at the END of the PREVIOUS bar; BE/stage/
+        trail moves triggered by THIS bar's favorable extreme take effect NEXT bar.
+        NOT used by default production builds (flag defaults False → parity intact).
+        """
+        entry = signal.entry_price
+        is_buy = signal.signal_type.value == "BUY"
+        sgn = 1.0 if is_buy else -1.0
+        sl = entry - sgn * sl_dist          # initial SL = 1R
+        realized = 0.0                      # locked R from partial close
+        rem = 1.0                           # remaining position fraction
+        be_moved = tp_step_done = partial_done = trail_active = False
+        best = entry
+
+        from config.settings import bot_config
+        _enforce_daily = getattr(bot_config.sessions, "enforce_daily_close", False)
+        _daily_close_t = getattr(bot_config.sessions, "daily_close_time", dt_time(23, 30))
+        _friday_close_t = getattr(bot_config.sessions, "friday_force_close", dt_time(20, 45))
+
+        def _force(bt_):
+            # v8.1.2: Friday close always; Mon-Thu gated by enforce_daily_close
+            if not hasattr(bt_, "weekday"):
+                return False
+            t = bt_.time() if hasattr(bt_, "time") else None
+            if t is None:
+                return False
+            wd = bt_.weekday()
+            if wd == 4:                                  # Friday — always
+                return t >= _friday_close_t
+            if _enforce_daily and wd in (0, 1, 2, 3):    # Mon-Thu — only if enabled
+                return t >= _daily_close_t
+            return False
+
+        def rr(p):
+            return sgn * (p - entry) / sl_dist
+
+        last_close = entry
+        for _, row in future_df.iterrows():
+            hi = row["high"]; lo = row["low"]; op = row["open"]; cl = row["close"]
+            last_close = cl
+            try:
+                bar_time = row["time"]
+            except (KeyError, IndexError):
+                bar_time = None
+            fav = hi if is_buy else lo
+            adv = lo if is_buy else hi
+
+            if bar_time is not None and _force(bar_time):
+                return realized + rem * rr(op)
+
+            # ── exits vs stop as of prior bar ──
+            if sgn * (op - sl) <= 0:                 # gap through SL on open
+                return realized + rem * rr(op)
+            if sgn * (adv - sl) <= 0:                # SL hit (prior-bar stop)
+                return realized + rem * rr(sl)
+
+            if trail_active:
+                if sgn * (fav - best) > 0:           # trail SL up (next bar)
+                    best = fav
+                    floor = entry + sgn * sl_dist * trail_sl_floor_r
+                    cand = best - sgn * sl_dist * trail_sl_behind_r
+                    if sgn * (cand - sl) > 0: sl = cand
+                    if sgn * (floor - sl) > 0: sl = floor
+                continue
+
+            # ── triggers on this bar's favorable extreme (effect next bar) ──
+            cur = rr(fav)
+            if be_trigger_r is not None and not be_moved and cur >= be_trigger_r:
+                be_moved = True
+                if sgn * (entry - sl) > 0: sl = entry
+            if not tp_step_done and cur >= partial_trigger_r:
+                tp_step_done = True
+                new_sl = entry + sgn * sl_dist * stage2_sl_r
+                if sgn * (new_sl - sl) > 0: sl = new_sl
+                if partial_pct and not partial_done:
+                    partial_done = True
+                    realized += partial_pct * partial_trigger_r
+                    rem = 1.0 - partial_pct
+            if not trail_active and cur >= trail_activation_r:
+                trail_active = True
+                best = fav
+                floor = entry + sgn * sl_dist * trail_sl_floor_r
+                cand = best - sgn * sl_dist * trail_sl_behind_r
+                sl = cand if sgn * (cand - floor) > 0 else floor
+
+        return realized + rem * rr(last_close)
 
     # ─── Strategy hook (subclass overrides) ─────────────────────────────
 

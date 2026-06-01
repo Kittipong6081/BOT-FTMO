@@ -1,5 +1,15 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-06-01 | Scope: red flags, version log, migration notes (latest: **v8.1.1** — Max DD hard stop 8%→10% (full FTMO rule) + Discord per-strategy MR/TF tag (live-only))
+> Last Updated: 2026-06-02 | Scope: red flags, version log, migration notes (latest: **v8.1.2** — weekday overnight holding; Mon-Thu 23:30 close OFF, Friday close stays (live-only))
+
+## 📝 Version Log Entry — v8.1.2 (2026-06-02) — Weekday overnight holding (Mon-Thu close OFF, Friday close stays; live-only, no retrain)
+
+**Change**: `SessionConfig.enforce_daily_close` **True→False** (user request). The bot now HOLDS positions overnight on weekdays (Mon→Tue … Thu→Fri); the 23:30 EET Mon-Thu force-close (`TimeManager.is_daily_close_time` — already gated by `enforce_daily_close`) no longer fires. **Friday force-close (20:45 EET, `is_friday_close_time`) is UNCHANGED and ungated** — bot still goes flat before the weekend.
+
+**Rules verified** (official FAQ, 2026-06-02): FTMO + The5ers both PERMIT weekday overnight holding. FTMO forces close only before the WEEKEND (funded Standard) or on a >2h rollover; during evaluation + Swing even weekend holding is allowed. The5ers permits overnight AND weekend on all programs. A recurring 3rd-party claim that FTMO Standard must close each weekday is FALSE (not in FTMO's FAQ; the source page is 410-dead). Sources: ftmo.com/en/faq/do-i-have-to-close-my-positions-overnight, ftmo-swing-account-type, can-i-trade-news; help.the5ers.com (overnight + weekend articles).
+
+**Train/live parity kept**: `StrategyBacktester._is_force_close_bar` (in `_resolve_trade`) and `_force` (in `_resolve_trade_live_exit`) were decoupled — **Friday close ALWAYS applies (mirrors ungated live `is_friday_close_time`); Mon-Thu close gated by `enforce_daily_close`**. With `enforce_daily_close=True` the new logic is byte-identical to the old (also fixes a latent bug where the old code dropped the Friday close when `enforce_daily_close=False`). ✅ leakage_audit + parity_audit exit 0.
+
+**No retrain** — challenge-level eval (292 ep, existing model, daily-close ON vs OFF on identical episodes): Pass 90.6%→91.2%, Profit ~$10.28k both, DD/Breach safe. The 23:30 close was ~neutral in sim (per-trade EV +0.01R washes out at challenge level). ⚠️ Backtester models NEITHER swap nor overnight gap, so the eval is OPTIMISTIC about relaxing — real overnight holding pays swap (×3 Wed→Thu) + gap risk (accepted by user). **Deploy = restart bot** (config read at startup). **Revert**: `enforce_daily_close = True`.
 
 ## 📝 Version Log Entry — v8.1.1 (2026-06-01) — Max DD hard stop 8%→10% (full FTMO rule, user request) + Discord MR/TF strategy tag (live-only, no retrain)
 

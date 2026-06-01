@@ -1,5 +1,5 @@
 # 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-05-30 (v8.1-phase4 — TF LIVE canary; go-live audit fixes) | Scope: RL env, obs space, reward shaping (MR + TF), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-06-01 (exit-payoff parity EXPERIMENT — `model_live_exit` flag, default OFF, not deployed) | Scope: RL env, obs space, reward shaping (MR + TF), PPO hyperparams, curriculum, aux task.
 >
 > **⚠️ TWO obs layouts (v8.1-phase3)** — both 35-dim (same shape, same PPO net + VecNormalize), different slot semantics + separate models:
 > - **MR (mr_v8)** → `MeanReversionFilterEnv._get_obs` ↔ `FTMOTradingBot._build_signal_observation` ↔ `models/mr/`. obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=1−adx/50.
@@ -18,6 +18,8 @@
 > **v8.0.48 change** — `_resolve_trade()` in sim now mirrors live 3-stage trail (Stage 2 @ 0.8R: SL→0.5R, TP→1.5R; Stage 3 @ 1.0R: SL→1.0R + trail chase with `max(entry+1R, best-0.5R)` SL floor). Reward stays raw (no cap, kept from v8.0.47). Sim does NOT model partial close (returns full-position R-multiple); for Stage 2+ trades the math coincidentally aligns with weighted live realized P/L. Pre-Stage 2 trades retain pre-existing sim-vs-live gap (sim full SL = -1R, live partial-only = +0.25R).
 >
 > **v8.0.47 change** — Removed `outcome > 1.5 → 1.5 + excess*0.5` cap. Lets raw `outcome` flow → agent re-incentivized to chase runners.
+>
+> **🧪 EXPERIMENT FLAG (2026-06-01, NOT committed/deployed) — `StrategyBacktester.model_live_exit` (default `False`)**: when `True`, `MeanReversionBacktester.generate_episode_signals` resolves outcomes via `StrategyBacktester._resolve_trade_live_exit` (models the LIVE `TradeManager` exit: BE→entry @0.3R + 33% partial @0.8R + Stage2 SL→0.5R + dynamic trail @1.0R) instead of the standard full-position `_resolve_trade` ("ride"). Purpose: measure the train-live **exit parity gap** — the standard sim does NOT model partial/BE, so the agent trains on fuller (~1R) wins than live realizes. Default `False` ⇒ pool/parity/leakage byte-identical (audits exit 0). Controlled measurement (n≈11k, self-validated corr 0.94) found the live exit (BE0.3+partial) is a **net EV drag** — it scratches eventual-winners; "ride" recovers the edge (high-conviction +0.11R vs current +0.06R). DIRECTION verified, magnitude approximate; needs full rebuild+holdout (DD/breach) before any TradeManager change. See memory `project_exit_machinery_ev_leak`.
 
 ## TL;DR (30-second scan)
 
