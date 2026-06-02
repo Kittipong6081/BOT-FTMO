@@ -17,7 +17,7 @@
   - `TradeExecutor._check_correlation_risk` — duplicate-symbol block; USD-theme cap `MAX_USD_THEME_POSITIONS (2)`; non-USD currency-leg cap `MAX_SAME_CURRENCY_LEG_POSITIONS` (**2** — was 1 in v8.0.79; raised to 2 on 2026-06-02 per user request → allows up to 2 same-direction on a shared non-USD leg, e.g. 2×EURUSD BUY or EURUSD SELL + EURJPY SELL) via `_non_usd_legs`. Per-group guard `MAX_CORRELATED_POSITIONS=99` is off.
 - All internal times are **EET** (Europe/Bucharest) via `TimeManager.get_server_time()`.
 - **No session block** (v8.0.6 SessionConfig cleanup) — bot trades 24/5 except: rollover (23:55-01:05 EET), Friday >= 20:45 EET, weekend, news blackout. **(v8.1.2: Mon-Thu 23:30 daily overnight close DISABLED — `enforce_daily_close=False` → holds positions overnight on weekdays; Friday close unchanged.)**
-- **Console quiet mode**: idle-state prints use announce-once flags; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
+- **Console quiet mode**: idle-state prints use announce-once flags; the Max-Drawdown soft warning (>8%) is throttled to one print per 0.5pp milestone (8.0/8.5/9.0/9.5%), mirroring the Daily-Loss/Give-back throttles; per-signal SKIP/NO_AGENT goes to Excel `Signals` sheet, not console.
 - **Live logging (v8.0.6)**: `TradeLogger` writes `logs/ftmo_trades.xlsx` (4 sheets: **Trades 58 cols**, **Signals 20 cols**, Daily, Stats). Auto-archives legacy schema (66/23 cols) on first launch. Uses `_COL`/`_SCOL` name-based column lookup. Includes `Obs JSON` (32 dims) for offline retrain.
 
 ## Quick Reference
