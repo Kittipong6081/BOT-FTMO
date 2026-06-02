@@ -86,6 +86,9 @@ class RiskManager:
         # v8.0.49: throttle "Daily Loss approach limit" alert — print เฉพาะข้าม 0.5pp milestone ใหม่
         # (เดิม print ทุก 5s ตอน loss > 3% = spam; reset วันใหม่)
         self._last_daily_loss_alert_pct: float = 0.0
+        # 2026-06: throttle "Max Drawdown" soft warning — print เฉพาะข้าม 0.5pp milestone
+        # (total DD, ไม่ reset รายวัน; reset เมื่อ DD ลดกลับต่ำกว่า 8%)
+        self._last_dd_alert_pct: float = 0.0
         # v8.0.17: Daily profit cap (Option D Hard Stop) — เมื่อ trigger จะปิดทุก
         # position + block new trades จนกว่าวันใหม่. Anchor ใช้ initial_balance
         # ของ challenge (ไม่ใช่ daily start) → cap คงที่ตลอด challenge.
@@ -405,8 +408,15 @@ class RiskManager:
         max_dd_limit = self._config.MAX_DRAWDOWN_HARD_STOP_PCT  # 10% (v8.1 2026-06-01 = FTMO rule, no buffer)
 
         # แสดงคำเตือนเมื่อเข้าใกล้ขีดจำกัด (เกิน 8% = 2% ก่อนชนเส้น breach 10%)
+        # throttle (mirror v8.0.49 Daily Loss): print เฉพาะข้าม 0.5pp milestone ใหม่
+        # (8.0/8.5/9.0/9.5%) — เดิม print ทุก tick = spam; reset เมื่อ DD ลดกลับต่ำกว่า 8%
         if drawdown_pct > 0.08 and self._state == BotState.ACTIVE:
-            print(f"⚠️ [Risk Manager] คำเตือน! Max Drawdown: {drawdown_pct:.2%} (ขีดจำกัด: {max_dd_limit:.0%})")
+            milestone = int(drawdown_pct * 200) / 200  # 0.5% buckets
+            if milestone > self._last_dd_alert_pct:
+                print(f"⚠️ [Risk Manager] คำเตือน! Max Drawdown: {drawdown_pct:.2%} (ขีดจำกัด: {max_dd_limit:.0%})")
+                self._last_dd_alert_pct = milestone
+        elif drawdown_pct <= 0.08:
+            self._last_dd_alert_pct = 0.0   # recovered → allow re-alert on a fresh climb
         
         # ตรวจสอบว่าเกินขีดจำกัดหรือยัง
         if drawdown_pct >= max_dd_limit:
