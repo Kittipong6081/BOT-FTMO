@@ -247,7 +247,8 @@ class MeanReversionBacktester(StrategyBacktester):
                 bias_alignment = direction * float(signal.market_bias)
 
                 # v8.0.55: Entry Confirmation simulator (mirror live gate, hybrid approach)
-                # Live เช็ค slip + M1 direction + BB %B. ใน training ไม่มี M1 + BB recompute
+                # Live เช็ค slip + Keltner band (M1-direction check removed 2026-06-02).
+                # Training proxy = slip-only (no M1/KC recompute):
                 # → ใช้ "adverse move ของ first future M15 bar ≤ 0.6R" เป็น proxy
                 # (ผ่อนจาก ENTRY_CONFIRM_MAX_SLIP_R=0.30 เพราะ M15 swing ใหญ่กว่า M1 มาก)
                 # หากใช้ 0.30R เป๊ะจะ block 56% ของ signals (M15 range เฉลี่ย ~0.5-1.0× SL)

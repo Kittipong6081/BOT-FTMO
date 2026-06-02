@@ -274,18 +274,11 @@ class FTMOConfig:
     # === Entry Confirmation (v8.0.55, NEW — pre-execution chart re-check) ===
     # ก่อนยิงไม้ทุก order: เช็คอีกครั้งว่า signal ยัง valid ไหม
     # 1. Slip: ราคาเคลื่อนสวนเรา > X*SL distance = SKIP (signal stale)
-    # 2. M1 last closed candle direction ต้องตรงทิศ signal (รejection ต่อเนื่อง)
-    # 3. BB %B ยังอยู่ใน extreme zone ของทิศนั้น (ไม่หลุดเขตไปแล้ว)
-    # Mirrored ใน training: MeanReversionBacktester เช็ค first future bar direction
+    # 2. Keltner / ATR-band filters (overextended + slope + consec-outside)
+    # (M1 last-bar direction check removed 2026-06-02 — live-only gate, training proxy
+    #  is slip-only so removing it improves train/live parity; no retrain.)
     ENTRY_CONFIRM_ENABLED: bool = True
     ENTRY_CONFIRM_MAX_SLIP_R: float = 0.30        # 30% ของ SL distance = max adverse slip
-    ENTRY_CONFIRM_M1_DIRECTION_MATCH: bool = True # require M1 last bar wick/body confirm
-    # v8.0.77 — M1 gate wick-aware (RF-1 fix): MR เป็น "รับมีดที่กำลังตก" → แท่ง M1
-    # สุดท้ายที่ก้นจริงมักยังแดงอยู่. เดิมบังคับ body ตรงทิศ → false-reject 82/142
-    # ของ entry-confirm rejects (นักฆ่าอันดับ 1). ใหม่: รับถ้า body ตรงทิศ "หรือ" มี
-    # rejection wick ฝั่งที่เด้งกลับ ≥ MIN (mirror M15 reversal-wick ลงมา M1).
-    # ตัดทิ้งเฉพาะแท่งที่วิ่งสวนแรง+ตัน (clean body สวน + wick เด้งน้อย) = โมเมนตัมยังแรง
-    ENTRY_CONFIRM_M1_REJECT_WICK_MIN: float = 0.40  # lower/upper wick ratio ที่ถือว่า "เด้ง"
     # BB recheck ลบแล้ว v8.0.74 — KC distance filter ทดแทน (ดีกว่า: ปรับตาม ATR)
     # ENTRY_CONFIRM_BB_BUY_MAX / BB_SELL_MIN removed — kept as comment for revert reference
     # ENTRY_CONFIRM_BB_BUY_MAX: float = 0.35

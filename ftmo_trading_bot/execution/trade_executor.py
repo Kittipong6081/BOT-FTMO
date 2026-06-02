@@ -573,9 +573,9 @@ class TradeExecutor:
             self._record_spread_observation(symbol, current_spread_pts)
 
         # === ด่านที่ 4.6: Entry Confirmation (v8.0.55 — pre-execution chart re-check) ===
-        # เช็ค 3 อย่างก่อนยิง: slip / M1 direction / BB %B still extreme
+        # เช็คก่อนยิง: slip / Keltner band filters
         # ปัญหาที่แก้: signal stale ระหว่าง scan → execute (~30-60 วินาที)
-        # v8.1: MR-ONLY gate — Keltner/M1-direction ปรับจูนสำหรับ "รับมีดที่ตก" (MR);
+        # MR-ONLY gate — Keltner filters tuned for "catching the falling knife" (MR);
         # ใช้กับ TF จะบีบ trend-continuation ผิดทาง → dispatch ตาม strategy_id
         if strategy_id == "MR":
             ec_ok, ec_reason = self._check_entry_confirmation(signal)
@@ -1056,10 +1056,10 @@ class TradeExecutor:
     def _check_entry_confirmation(self, signal: 'TradeSignal') -> Tuple[bool, str]:
         """v8.0.55 — Entry Confirmation Gate (pre-execution chart re-check).
 
-        เช็ค 3 อย่างก่อนยิง:
+        เช็คก่อนยิง:
         1. Slip: ราคาตอนนี้เคลื่อนสวนเรา > MAX_SLIP_R × SL distance → SKIP
-        2. M1 last closed candle direction ต้องตรงทิศ signal
-        3. BB %B ยังอยู่ใน extreme zone (ไม่หลุดเขตไปแล้ว)
+        2. Keltner / ATR-band filters (overextended + slope + consec-outside)
+        (M1 last-bar direction check removed 2026-06-02.)
 
         ปัญหาที่แก้: signal generated ตอน scan แต่ execute ห่างไป 30-60 วินาที.
         ภายในช่วงนั้นราคาอาจเคลื่อนผ่านจุด rejection ไปแล้ว.
@@ -1102,53 +1102,6 @@ class TradeExecutor:
                 f"(entry {signal.entry_price:.5f} → exec {current_exec_price:.5f}, "
                 f"SL dist {sl_distance:.5f})"
             )
-
-        # ─── เช็ค 2: M1 last closed candle — wick-aware (v8.0.77 RF-1 fix) ──
-        # MR = "รับมีดที่กำลังตก": แท่ง M1 สุดท้ายที่ก้นจริงมักยังแดง (เพิ่งสวนลงก่อนเด้ง)
-        # เดิมบังคับ body ตรงทิศ → ตัดไม้กลับตัว edge สูงทิ้ง (82/142 entry-confirm rejects).
-        # ใหม่: ผ่านถ้า body ตรงทิศ "หรือ" มี rejection wick ฝั่งที่เด้งกลับ ≥ REJECT_WICK_MIN.
-        # ตัดทิ้งเฉพาะแท่งวิ่งสวนแรง + ไม่มีหางเด้ง (clean opposite body) = โมเมนตัมสวนยังแรงจริง
-        if getattr(cfg, "ENTRY_CONFIRM_M1_DIRECTION_MATCH", True):
-            try:
-                m1_df = self._connector.get_ohlcv(symbol, "M1", count=100)
-                if m1_df is not None and len(m1_df) >= 2:
-                    # iloc[-1] = แท่งกำลังก่อตัว (อาจ partial), iloc[-2] = แท่งล่าสุดที่ปิด
-                    last_closed = m1_df.iloc[-2]
-                    o = float(last_closed["open"])
-                    c = float(last_closed["close"])
-                    h = float(last_closed["high"])
-                    lo = float(last_closed["low"])
-                    bar_body = c - o
-                    rng = h - lo
-                    # อนุญาต doji (body ≈ 0) ผ่าน — ไม่ใช่ contra signal
-                    body_threshold = max(abs(bar_body), rng) * 0.05
-                    wick_min = float(getattr(cfg, "ENTRY_CONFIRM_M1_REJECT_WICK_MIN", 0.40))
-                    if rng > 0 and abs(bar_body) > body_threshold:
-                        # หางล่าง = ราคาสวนลงแล้วถูกดันกลับขึ้น (rejection ที่ดีต่อ BUY)
-                        lower_wick_ratio = (min(o, c) - lo) / rng
-                        # หางบน = ราคาสวนขึ้นแล้วถูกดันกลับลง (rejection ที่ดีต่อ SELL)
-                        upper_wick_ratio = (h - max(o, c)) / rng
-                        # BUY: ตัดเฉพาะแท่งแดงชัด + หางล่างเด้งน้อย (วิ่งลงแรง ไม่มีสัญญาณกลับ)
-                        if (direction == "BUY" and bar_body < 0
-                                and lower_wick_ratio < wick_min):
-                            return (
-                                False,
-                                f"M1 last bar strong bearish, no reject-wick "
-                                f"(O={o:.5f} C={c:.5f}, lower_wick {lower_wick_ratio:.2f} "
-                                f"< {wick_min:.2f}) — BUY momentum still falling"
-                            )
-                        # SELL: ตัดเฉพาะแท่งเขียวชัด + หางบนเด้งน้อย
-                        if (direction == "SELL" and bar_body > 0
-                                and upper_wick_ratio < wick_min):
-                            return (
-                                False,
-                                f"M1 last bar strong bullish, no reject-wick "
-                                f"(O={o:.5f} C={c:.5f}, upper_wick {upper_wick_ratio:.2f} "
-                                f"< {wick_min:.2f}) — SELL momentum still rising"
-                            )
-            except Exception:
-                # fail-open: ดึง M1 ไม่ได้ก็ผ่าน (network glitch ฯลฯ)
-                pass
 
         # ─── เช็ค 3-5: Keltner / ATR Band filters (v8.0.74 — anti-whipsaw) ─
         # BB %B recheck ลบแล้ว v8.0.74 — KC distance ทำหน้าที่เดียวกันแต่ดีกว่า
