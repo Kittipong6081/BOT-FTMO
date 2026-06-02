@@ -156,7 +156,7 @@ class ExecutedTrade:
             "symbol": self.symbol,
             "type": self.trade_type,
             "strategy_id": self.strategy_id,
-            "obs_layout_id": "tf_v1" if self.strategy_id == "TF" else "mr_v8",
+            "obs_layout_id": "tf_v2" if self.strategy_id == "TF" else "mr_v8",
             "entry_price": self.entry_price,
             "sl_price": self.sl_price,
             "tp_price": self.tp_price,

@@ -84,6 +84,12 @@ class MeanReversionBacktester(StrategyBacktester):
                 getattr(_mr_cfg, "adx_trend_block_xau_training",
                         self._mr_strategy.ADX_TREND_BLOCK_XAU)
             )
+        # Closed-bar parity (A/B 2026-06-02): when ON, anchor H1/H4 to the last
+        # bar that has FULLY CLOSED as of the decision moment (= scan M15 bar close),
+        # mirroring live's get_ohlcv forming-bar drop. OFF = legacy v8.0.80 H6 anchor.
+        self._closed_bar_only = bool(
+            getattr(getattr(_bc, "ftmo", None), "CLOSED_BAR_ONLY", False)
+        )
 
     # ─── Override pool generator ─────────────────────────────────────────
 
@@ -144,8 +150,17 @@ class MeanReversionBacktester(StrategyBacktester):
                 # HTF สดทุก scan → สัญญาณที่ live block (ADX H1 เพิ่งเกิน) รอดใน pool → distribution เพี้ยน).
                 # ไม่ใช่ future leak: h1_end/h4_end ≤ scan bar เสมอ. parity_audit เดิมจับไม่ได้.
                 m15_scan_ts = m15_df["time"].iloc[scan_idx]
-                h1_end = min(self._end_idx_at_or_before(h1_df, m15_scan_ts), len(h1_df))
-                h4_end = min(self._end_idx_at_or_before(h4_df, m15_scan_ts), len(h4_df))
+                if self._closed_bar_only:
+                    # Decision fires when the scan M15 bar CLOSES (open + 15m). The H1/H4
+                    # gate must read the last bar fully closed by then: open + TF <= close.
+                    decision_ts = m15_scan_ts + pd.Timedelta(minutes=15)
+                    h1_cut = decision_ts - pd.Timedelta(hours=1)
+                    h4_cut = decision_ts - pd.Timedelta(hours=4)
+                    h1_end = min(self._end_idx_at_or_before(h1_df, h1_cut), len(h1_df))
+                    h4_end = min(self._end_idx_at_or_before(h4_df, h4_cut), len(h4_df))
+                else:
+                    h1_end = min(self._end_idx_at_or_before(h1_df, m15_scan_ts), len(h1_df))
+                    h4_end = min(self._end_idx_at_or_before(h4_df, m15_scan_ts), len(h4_df))
                 h1_start = max(0, h1_end - self.MIN_H1_BARS)
                 h4_start = max(0, h4_end - self.MIN_H4_BARS)
                 if h1_end - h1_start < 200 or h4_end - h4_start < 200:
@@ -283,6 +298,9 @@ class MeanReversionBacktester(StrategyBacktester):
                     "macd_histogram": signal.macd_histogram,
                     "ob_size_atr": 0.0,                  # MR has no OB
                     "adx": signal.adx,
+                    # diagnostic only (NOT read by env/GBM/obs): H1 ADX at the gate, for
+                    # regime-split analysis (when TF is enabled MR is gated to RANGING H1<20).
+                    "h1_adx": float(h1_slice["adx"].iloc[-1]) if "adx" in h1_slice.columns else 0.0,
                     "stoch_k": signal.stoch_k,
                     "bb_pctb": signal.bb_pctb,
                     "atr_change_ratio": signal.atr_change_ratio,

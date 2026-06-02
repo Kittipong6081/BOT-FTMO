@@ -281,6 +281,10 @@ def main():
     parser.add_argument("--duration_fine_coef", type=float, default=None)
     parser.add_argument("--lr_p1", type=float, default=3e-4)
     parser.add_argument("--lr_p2", type=float, default=5e-5)
+    parser.add_argument("--seed", type=int, default=None,
+                        help="PPO/env seed for reproducible runs (e.g. A/B comparisons). "
+                             "None = SB3 default (random). Set equal across arms to isolate "
+                             "the data effect from training noise.")
     args = parser.parse_args()
 
     if args.data_dir is None:
@@ -365,6 +369,7 @@ def main():
         vec_env_p1,
         aux_loss_weight=0.5,
         learning_rate=args.lr_p1,
+        seed=args.seed,
         n_steps=8192, batch_size=512, n_epochs=5,
         gamma=0.99, gae_lambda=0.95, clip_range=0.2,
         ent_coef=0.05, max_grad_norm=0.5,
@@ -423,6 +428,8 @@ def main():
     vec_env_p2.clip_reward = 20.0
 
     model_p2 = AuxAwarePPO.load(model_path_p1, env=vec_env_p2)
+    if args.seed is not None:
+        model_p2.set_random_seed(args.seed)  # reproducible Phase 2 (A/B isolation)
     # v8.0.43c: LR cosine decay from lr_p2 → lr_p2 × 0.2 (settle Phase 2)
     # ลด std oscillation, ช่วย converge ช่วงท้าย (เห็น STD ขึ้น 1.16→1.76 ใน v8.0.43b)
     import math as _math

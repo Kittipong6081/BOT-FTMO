@@ -45,6 +45,9 @@ FEATURE_KEYS = [
     "volatility_regime_score", "atr_zscore_30bars",
     # TF-specific extras
     "trend_age_bars", "pullback_depth_atr", "adx_at_entry",
+    # early-entry redesign (2026-06-02): leading signals so the GBM learns the
+    # ADX-27-30 / rising-ADX sweet spot instead of a hardcoded cap
+    "di_spread", "adx_slope",
 ]
 
 

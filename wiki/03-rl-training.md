@@ -1,9 +1,9 @@
 # 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-06-01 (exit-payoff parity EXPERIMENT — `model_live_exit` flag, default OFF, not deployed) | Scope: RL env, obs space, reward shaping (MR + TF), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-06-02 (`--seed` arg added to `train_mr_signal_filter.py` for reproducible A/B runs) | Scope: RL env, obs space, reward shaping (MR + TF), PPO hyperparams, curriculum, aux task.
 >
 > **⚠️ TWO obs layouts (v8.1-phase3)** — both 35-dim (same shape, same PPO net + VecNormalize), different slot semantics + separate models:
 > - **MR (mr_v8)** → `MeanReversionFilterEnv._get_obs` ↔ `FTMOTradingBot._build_signal_observation` ↔ `models/mr/`. obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=1−adx/50.
-> - **TF (tf_v1)** → `TrendFollowingFilterEnv._get_obs` ↔ `FTMOTradingBot._build_obs_tf` ↔ `models/tf/`. obs[4]=trend_strength/100, obs[10]=trend_age_bars/30, obs[26]=adx/50 (trending=good).
+> - **TF (tf_v2, 2026-06-02 early-entry)** → `TrendFollowingFilterEnv._get_obs` ↔ `FTMOTradingBot._build_obs_tf` ↔ `models/tf/`. obs[4]=trend_strength/100, obs[10]=trend_age_bars/30, obs[26]=adx/50 (trending=good), **obs[27]=di_spread/50, obs[28]=adx_slope/10** (repurposed dead Chronos slots; leading signals for early-entry — MR keeps [27]/[28]=Chronos=0). Needs TF retrain on a pool rebuilt with `BOT_TF_EARLY=1`.
 > Each layout must stay synced across its 3 places independently.
 >
 > **TF training pipeline (v8.1-phase3, mirror of MR — entry on H1):** `build_tf_signal_pool.py` → `train_tf_signal_quality.py` (27 features incl. `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry` → `data/tf_signal_quality_model.pkl`) → `train_tf_signal_filter.py` (2-phase `AuxAwarePPO` on `TrendFollowingFilterEnv` → `models/tf/ppo_tf_filter.zip`+`vec_normalize_tf.pkl`) | orchestrator `auto_train_pipeline_tf.py`. **TF reward INVERTED vs MR**: RUNNER_BONUS (outcome≥2R, scales) + SLOW_WIN_BONUS; loss + LATE_ENTRY_PENALTY (trend_age≥60); SKIP-oracle penalizes missing runners most. `TrendFollowingBacktester` resolve keeps `tp_step_trigger_r=99` (Stage-2 1.5R cap OFF) so winners run.
@@ -298,6 +298,7 @@ Sum if pass  : +7.0 max
 - `policy_kwargs.net_arch = dict(pi=[256,128], vf=[256,128])`
 - `policy_kwargs.optimizer_kwargs = dict(weight_decay=1e-5)`
 - Aux loss weight = 0.5
+- `--seed` (v8.x, default `None` = SB3 random) — sets the Phase-1 PPO `seed=` and `model_p2.set_random_seed()`; pass the SAME seed across two runs to isolate a data/code change from PPO training noise (used by the closed-bar A/B). `None` keeps legacy random-seed behavior.
 
 **VecNormalize**:
 

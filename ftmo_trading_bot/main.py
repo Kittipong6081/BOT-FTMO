@@ -853,6 +853,9 @@ class FTMOTradingBot:
             obs[4] = float(np.clip(getattr(sig, "trend_strength", 0.0) / 100.0, 0.0, 1.0))
             obs[10] = float(np.clip(getattr(sig, "trend_age_bars", 0) / 30.0, 0.0, 1.0))
             obs[26] = float(np.clip(getattr(sig, "adx", 0.0) / 50.0, 0.0, 1.0))
+            # tf_v2 (early-entry): mirror TrendFollowingFilterEnv._get_obs [27]/[28]
+            obs[27] = float(np.clip(getattr(sig, "di_spread", 0.0) / 50.0, -1.0, 1.0))
+            obs[28] = float(np.clip(getattr(sig, "adx_slope", 0.0) / 10.0, -1.0, 1.0))
         except Exception:
             pass
         return obs
@@ -1086,7 +1089,7 @@ class FTMOTradingBot:
                 ctx["obs_27_json"] = ""
             ctx["obs_layout_id"] = getattr(
                 self._strategy_for(sig), "OBS_LAYOUT_ID",
-                "tf_v1" if getattr(sig, "strategy_id", "MR") == "TF" else "mr_v8")
+                "tf_v2" if getattr(sig, "strategy_id", "MR") == "TF" else "mr_v8")
         except Exception:
             ctx["obs_27_json"] = ""
 

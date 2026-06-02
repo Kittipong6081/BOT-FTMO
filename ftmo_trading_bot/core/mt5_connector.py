@@ -318,8 +318,14 @@ class MT5Connector:
         }
         tf = mt5_tf_map.get(timeframe_str, tf_constant)
 
+        # v8.x Closed-bar parity: เมื่อเปิด flag → ตัดแท่งที่ "ยังก่อตัว" (forming bar) ทิ้ง
+        # ให้ indicator ฝั่งสดอ่าน "แท่งปิดล่าสุด" ตรงกับ backtest (กัน repaint / sim-live gap).
+        # copy_rates_from_pos(...,0,N) ให้แท่งสุดท้าย = แท่งปัจจุบันที่ยังไม่ปิด → ดึงเกิน 1 แล้วตัดทิ้ง.
+        _drop_forming = bool(getattr(bot_config.ftmo, "CLOSED_BAR_ONLY", False))
+        fetch_count = count + 1 if _drop_forming else count
+
         # ดึงข้อมูลราคาจาก MT5
-        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, fetch_count)
 
         if rates is None or len(rates) == 0:
             error = mt5.last_error()
@@ -345,8 +351,12 @@ class MT5Connector:
             'spread': 'spread',
             'real_volume': 'real_volume'
         }, inplace=True)
-        
-        return df[['open', 'high', 'low', 'close', 'volume']]
+
+        result = df[['open', 'high', 'low', 'close', 'volume']]
+        # ตัดแท่งที่ยังก่อตัวทิ้ง (ดู _drop_forming ด้านบน) → คืน `count` แท่งที่ปิดสมบูรณ์
+        if _drop_forming and len(result) > 1:
+            result = result.iloc[:-1]
+        return result
 
     def get_current_price(self, symbol: str) -> Optional[Dict[str, float]]:
         """

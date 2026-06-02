@@ -242,7 +242,7 @@ class TrendFollowingBacktester(StrategyBacktester):
                     "kc_distance_norm": 0.0,
                     "ema_slope_norm": float(getattr(signal, "ema_slope_norm", 0.0)),
                     "consecutive_outside": 0,
-                    "band_squeeze_ratio": 0.5,
+                    "band_squeeze_ratio": float(getattr(signal, "band_squeeze_ratio", 0.5)),  # was hardcoded 0.5 (model never saw real squeeze)
                     "reversal_wick_ratio": 0.0,
                     "bars_to_resolution": int(bars_to_resolution),
                     "is_quick_tp": bool(is_quick_tp),
@@ -250,6 +250,8 @@ class TrendFollowingBacktester(StrategyBacktester):
                     "trend_age_bars": int(getattr(signal, "trend_age_bars", 0)),
                     "pullback_depth_atr": float(getattr(signal, "pullback_depth_atr", 0.0)),
                     "adx_at_entry": float(getattr(signal, "adx_at_entry", signal.adx)),
+                    "di_spread": float(getattr(signal, "di_spread", 0.0)),      # leading direction (early_entry)
+                    "adx_slope": float(getattr(signal, "adx_slope", 0.0)),      # trend building vs exhausting
                     "is_runner": bool(is_runner),
                     # TF has no MR-style entry-confirm gate → never force-skip
                     "entry_confirm_passed": True,

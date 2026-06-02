@@ -56,6 +56,8 @@ class TFSignal(MRSignal):
     adx_at_entry: float = 0.0        # ADX H1 at entry (trend strength)
     htf_align: int = 0               # +1 H4 agrees, 0 neutral, -1 opposes (gated out)
     d1_align: int = 0                # +1/0/-1 D1 bias agreement (soft confluence)
+    di_spread: float = 0.0           # +DI − −DI at entry (leading directional signal; early_entry)
+    adx_slope: float = 0.0           # ADX change over early_adx_slope_lookback bars (rising = building)
 
     # Override MR default
     strategy_id: str = "TF"
@@ -77,6 +79,11 @@ class TrendFollowingStrategy:
         self.RSI_SELL_MIN = float(cfg.rsi_pullback_sell_min)
         self.MACD_CONFIRM = bool(cfg.macd_confirm)
         self.MIN_CONFLUENCE = float(cfg.min_confluence_score)
+        # Early-entry redesign (flag default OFF → legacy behaviour byte-identical)
+        self.EARLY_ENTRY = bool(getattr(cfg, "early_entry", False))
+        self.EARLY_DI_SPREAD_MIN = float(getattr(cfg, "early_di_spread_min", 2.0))
+        self.EARLY_ADX_SLOPE_LOOKBACK = int(getattr(cfg, "early_adx_slope_lookback", 3))
+        self.EARLY_ADX_FLOOR = float(getattr(cfg, "early_adx_floor", 20.0))
 
     # ─── helpers ──────────────────────────────────────────────────────────
 
@@ -175,18 +182,52 @@ class TrendFollowingStrategy:
 
         reasons: List[str] = []
 
-        # 1) strong-trend gate
-        if adx < self.ADX_ENTRY_MIN:
-            return self._no_signal(symbol, atr, [f"ADX {adx:.1f} < {self.ADX_ENTRY_MIN}"])
-        # 2) EMA-alignment direction
-        if trend == 0:
-            return self._no_signal(symbol, atr, ["EMA not aligned (no trend)"])
-        direction = "BUY" if trend > 0 else "SELL"
-
-        # 3) HTF agreement (H4 must agree or be neutral; D1 soft confluence)
+        # Leading directional/strength signals — computed from the SAME H1 slice the
+        # backtester passes, so they are PARITY-TRIVIAL (no regime state machine needed).
+        plus_di = float(last.get("plus_di", 0.0))
+        minus_di = float(last.get("minus_di", 0.0))
+        di_spread = float(last.get("di_spread", plus_di - minus_di))
+        ema_slope = float(last.get("ema_slope_norm", 0.0))
+        band_squeeze = float(last.get("band_squeeze_ratio", 0.5))
+        ema50 = float(last.get("ema_medium", close))
+        _k = self.EARLY_ADX_SLOPE_LOOKBACK
+        adx_slope = adx - (float(h1["adx"].iloc[-1 - _k]) if len(h1) > _k else adx)
         htf_align_raw = self._htf_trend(h4_df)
-        if htf_align_raw != 0 and htf_align_raw != trend:
-            return self._no_signal(symbol, atr, [f"H4 opposes ({htf_align_raw} vs {trend})"])
+
+        if self.EARLY_ENTRY:
+            # ── LEADING entry: catch the trend at BIRTH ──────────────────────
+            # Direction from +DI/-DI dominance (leads the lagging EMA stack; reflects the
+            # ACTUAL current directional pressure — would reject a BUY when -DI>+DI in a crash).
+            if di_spread >= self.EARLY_DI_SPREAD_MIN:
+                trend, direction = 1, "BUY"
+            elif di_spread <= -self.EARLY_DI_SPREAD_MIN:
+                trend, direction = -1, "SELL"
+            else:
+                return self._no_signal(symbol, atr, [f"DI flat (spread {di_spread:+.1f}) — no clear direction"])
+            # Trend must be BUILDING (ADX rising), not exhausting — replaces ADX>=27 LEVEL.
+            if adx_slope <= 0:
+                return self._no_signal(symbol, atr, [f"ADX not rising (Δ{adx_slope:+.2f}) — trend not building"])
+            # Out of pure chop (floor only; NO upper cap — model learns the sweet spot).
+            if adx < self.EARLY_ADX_FLOOR:
+                return self._no_signal(symbol, atr, [f"ADX {adx:.1f} < floor {self.EARLY_ADX_FLOOR} — chop"])
+            # Fast EMA confirm (EMA21 vs EMA50 + slope) — NOT the slow EMA200 stack.
+            fast_ok = (ema21 > ema50 and ema_slope > 0) if trend > 0 else (ema21 < ema50 and ema_slope < 0)
+            if not fast_ok:
+                return self._no_signal(symbol, atr, ["fast EMA21/EMA50/slope not aligned with DI direction"])
+            # EMA200 full-stack + H4 + D1 are SOFT confluence here (scored below, no hard veto).
+        else:
+            # ── LEGACY entry (lagging level/stack gates) — UNCHANGED ─────────
+            # 1) strong-trend gate
+            if adx < self.ADX_ENTRY_MIN:
+                return self._no_signal(symbol, atr, [f"ADX {adx:.1f} < {self.ADX_ENTRY_MIN}"])
+            # 2) EMA-alignment direction
+            if trend == 0:
+                return self._no_signal(symbol, atr, ["EMA not aligned (no trend)"])
+            direction = "BUY" if trend > 0 else "SELL"
+            # 3) HTF agreement (H4 must agree or be neutral; D1 soft confluence)
+            if htf_align_raw != 0 and htf_align_raw != trend:
+                return self._no_signal(symbol, atr, [f"H4 opposes ({htf_align_raw} vs {trend})"])
+
         htf_align = 1 if htf_align_raw == trend else 0
         d1_raw = self._d1_bias(d1_df)
         d1_align = 1 if d1_raw == trend else (-1 if d1_raw == -trend else 0)
@@ -276,6 +317,10 @@ class TrendFollowingStrategy:
             adx_at_entry=adx,
             htf_align=htf_align,
             d1_align=d1_align,
+            di_spread=di_spread,
+            adx_slope=adx_slope,
+            ema_slope_norm=ema_slope,          # real value (was MRSignal default 0.0 for TF)
+            band_squeeze_ratio=band_squeeze,   # real value (fixes hardcoded 0.5 in TF pool)
             reasons=reasons,
         )
 
@@ -290,7 +335,7 @@ class TrendFollowingScanner(StrategyBase):
     # StrategyBase identity
     STRATEGY_ID: str = "TF"
     MAGIC_NUMBER: int = 123457
-    OBS_LAYOUT_ID: str = "tf_v1"
+    OBS_LAYOUT_ID: str = "tf_v2"   # v2 (2026-06-02): obs[27]/[28] = di_spread/adx_slope (early-entry)
 
     def __init__(self, connector):
         self._connector = connector

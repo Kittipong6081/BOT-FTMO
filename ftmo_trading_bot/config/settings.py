@@ -68,7 +68,18 @@ class FTMOConfig:
     # ⚠️ ไม่มี buffer แล้ว — emergency-close จะ trigger ที่เส้น breach พอดี; slippage/gap
     #    ตอนปิดฉุกเฉินอาจทำ realized DD ทะลุ 10% เล็กน้อย. คำเตือน soft ที่ 8% (ดู risk_manager).
     MAX_DRAWDOWN_HARD_STOP_PCT: float = 0.10  # 10% (= FTMO rule, no buffer)
-    
+
+    # === Closed-bar parity (A/B 2026-06-02) ===
+    # ADX/RSI/BB ฯลฯ ฝั่งสดถูกอ่านจาก iloc[-1] = แท่งที่ "ยังไม่ปิด" (forming bar) เพราะ
+    # MT5Connector.get_ohlcv ใช้ copy_rates_from_pos(...,0,count) แล้วไม่ตัดแท่งสุดท้ายทิ้ง
+    # → indicator repaint ระหว่างแท่ง + live ≠ backtest (ฝึกบนแท่งปิด). ดู ADX audit 2026-06-02.
+    # ON  → (1) get_ohlcv ตัดแท่งที่ยังก่อตัวทิ้ง (live อ่านแท่งปิดล่าสุด)
+    #        (2) MeanReversionBacktester อ่าน ADX H1 ที่ "แท่ง H1 ปิดล่าสุด ณ เวลา scan"
+    # OFF → พฤติกรรมเดิมเป๊ะ (default — ปลอดภัย). toggle ด้วย env BOT_CLOSED_BAR=1
+    CLOSED_BAR_ONLY: bool = field(
+        default_factory=lambda: os.environ.get("BOT_CLOSED_BAR", "0") == "1"
+    )
+
     # === ความเสี่ยงต่อการเทรดแต่ละครั้ง ===
     # v7.1.9 (2026-05-05): bump 0.7% → 0.99% — sync กับ RL training (--risk_per_trade 0.0099)
     # v8.0.43 Option X (2026-05-19): 0.99% → 0.7% — Plan B Trick (trail) ชดเชย EV
@@ -251,7 +262,12 @@ class FTMOConfig:
     # (MAX_CORRELATED_POSITIONS=99). เพิ่ม cap ฝั่ง currency-leg ที่ "ไม่ใช่ USD" (EUR/GBP/JPY/AUD/
     # NZD/CHF/CAD/XAU) — กันเปิดซ้อนทิศเดียวกันบน leg เดียวกัน.
     # ค่า 1 = ห้าม double-bet (กันเคส 29 พ.ค.); ตั้ง 99 = ปิด guard นี้
-    MAX_SAME_CURRENCY_LEG_POSITIONS: int = 1
+    # 2026-06-02 (user request): 1→2 — อนุญาตเปิด "ทิศทางเดียวกัน" ได้สูงสุด 2 ไม้
+    #   (เช่น 2×EURUSD BUY, หรือ EURUSD SELL + EURJPY SELL). ⚠️ trade-off: 2 ไม้ทิศเดียว =
+    #   correlated → ถ้าผิดทางโดน SL ทั้งคู่ = ~1.4% (2×0.70%) แต่ยังต่ำกว่า daily cap 4% +
+    #   MAX_OPEN_POSITIONS=3 คุม total. (USD-theme cap ยัง = 2; opposing-theme block ทิศตรงข้าม
+    #   ยังทำงาน). live-only (backtester ไม่ใช้ guard นี้ → ไม่ต้อง retrain). revert: ตั้งกลับ = 1
+    MAX_SAME_CURRENCY_LEG_POSITIONS: int = 2
 
     # === Spread/ATR Liquidity Guard (v7.1, relaxed v7.1.1, v7.1.10) ===
     # ถ้า spread > SPREAD_ATR_RATIO_LIMIT × ATR → reject signal (สภาพคล่องแย่ / ตลาดเปิดผันผวน)
@@ -715,8 +731,18 @@ class TrendFollowingConfig:
     # ⚠️ enabling this ALSO regime-gates MR to RANGING-only (router). Revert to
     # single-strategy MR instantly by setting enabled=False (or paper_mode=True to
     # keep the regime split but stop TF orders).
-    enabled: bool = True               # master switch (Phase4: ON = dual-strategy MR+TF)
-    paper_mode: bool = False           # Phase4: TF executes live (canary: slot 1, sub-budget 1.5%)
+    # 2026-06-02: PAUSED (enabled True→False). TF entry has a confirmed STRUCTURAL
+    # late-entry problem — its lagging gates (ADX>27 level + full EMA21>50>200 stack
+    # incl. EMA200 + H4/D1 agree) only confirm a trend once it is mature/exhausted, so
+    # live entries cluster at ADX 36-40 / trend_age>=60. The 52,928-signal TF pool shows
+    # ADX 27-30 = +0.022R (only profitable bucket), monotonic decay above, runner rate
+    # only 6.5%. Live: 2 TF NZDUSD BUYs into a crash (lagging HTF stayed bullish), 1 SL
+    # -$57 + 1 open loser. Back to single-strategy MR (router=None, MR full again) until
+    # the entry is redesigned (leading detection: +DI/-DI cross + ADX rising + EMA21
+    # slope + fresh regime-flip arming; let GBM/RL learn the sweet spot — NOT a hardcoded
+    # ADX cap). See wiki/05-invariants.md. Revert canary: enabled=True.
+    enabled: bool = False              # PAUSED 2026-06-02 — TF structural late-entry (redesign pending)
+    paper_mode: bool = False           # (unused while enabled=False)
 
     # Entry timeframe = H1; trend filter = H4/D1
     entry_timeframe: str = "H1"
@@ -743,6 +769,22 @@ class TrendFollowingConfig:
     rr_ratio: float = 2.5
     min_confluence_score: float = 60.0
     min_confluence_score_training: float = 30.0
+
+    # === Early-entry redesign (2026-06-02, flag default OFF) — catch trend BIRTH ===
+    # When ON, TrendFollowingStrategy.analyze_with_data replaces the LAGGING gates
+    # (ADX>=27 LEVEL + full EMA21>50>200/close>EMA200 stack direction) with LEADING ones
+    # computed from the SAME H1 slice the backtester passes (parity-trivial): direction
+    # from +DI/-DI dominance (di_spread — leads the EMA stack; would have BLOCKED the
+    # NZDUSD falling-knife BUYs since -DI>+DI during the crash) + ADX RISING (trend
+    # building, not exhausting) + fast EMA21>EMA50 confirm. EMA200/H4/D1 demoted to SOFT
+    # confluence (no hard veto). NO hardcoded upper ADX cap — di_spread + adx_slope are
+    # emitted on the signal for the GBM/RL to LEARN the ADX-27-30 sweet spot. Legacy path
+    # is byte-identical when False. ⚠️ Requires TF pool rebuild + GBM + RL retrain +
+    # challenge-level (DD-aware) eval BEFORE enabling for real. See wiki/05-invariants.md.
+    early_entry: bool = field(default_factory=lambda: os.environ.get("BOT_TF_EARLY", "0") == "1")  # default OFF; env toggle for build/deploy
+    early_di_spread_min: float = field(default_factory=lambda: float(os.environ.get("BOT_TF_DI_MIN", "2.0")))  # min |+DI−−DI| for direction; lower = more trades. env BOT_TF_DI_MIN
+    early_adx_slope_lookback: int = 3   # H1 bars to measure ADX rising (trend building)
+    early_adx_floor: float = 20.0       # below = pure chop (= regime ranging_max); NOT an upper cap
 
     # === Live trade-management (v8.1 Phase4 fix-A) — MUST mirror
     # TrendFollowingBacktester._resolve_trade kwargs so live exits == training.
