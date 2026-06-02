@@ -1,43 +1,8 @@
 # 02 — Modules Map (30+ files)
-> Last Updated: 2026-06-02 (closed-bar parity A/B — `CLOSED_BAR_ONLY` flag, default OFF) | Scope: every module + key class / method / variable
+> Last Updated: 2026-06-02 (🧹 TF/dual-strategy modules REMOVED — single-strategy MR) | Scope: every module + key class / method / variable
 >
 > **closed-bar parity A/B (2026-06-02, flag default OFF = legacy byte-identical)**:
 > - `FTMOConfig.CLOSED_BAR_ONLY` (NEW, env `BOT_CLOSED_BAR=1`) — drops the forming (unclosed) bar so indicators read the last CLOSED bar. `MT5Connector.get_ohlcv` fetches `count+1` and trims `iloc[:-1]` when ON (live). `MeanReversionBacktester.generate_episode_signals` anchors the H1/H4 ADX gate to the bar fully closed by the scan M15 close (`decision_ts = m15_scan_ts + 15m`, `h1_cut = decision_ts − 1h`) when ON; OFF = v8.0.80-H6 containing-bar anchor. Experiment in progress (pre-flight pool diff → retrain + holdout gate). See [`05-invariants.md`](05-invariants.md#-version-log-entry--closed-bar-parity-2026-06-02--closed_bar_only-flag-experiment-default-off-ab-in-progress).
->
-> **v8.1-phase4 changes (go-live: 9 audit fixes; TF now executes live)**:
-> - `TradeManager._exit_profile(strategy_id)` (NEW) — MR keeps quick-exit constants; TF rides (no partial/BE/tp_step; trail activation 1.5R / behind 2.0R / floor 1.0R / TP-ahead 2.0R from `bot_config.tf.mgmt_*`). `_manage_single_position` + `_update_trailing_stop(prof)` branch on it. `TrendFollowingBacktester._resolve_trade` reads the SAME `bot_config.tf.mgmt_*` (single source → train==live exit).
-> - `FTMOTradingBot._quality_model_for` — no MR fallback for non-MR; `_build_obs_for` logs strategy-correct obs (was empty for TF); `_build_live_context` sets TF `adx_h1` from `sig.adx`; `_log_signal_scan` + `ExecutedTrade.to_dict` carry `strategy_id`/`obs_layout_id`; run-loop `_tf_ready` requires TF agent AND TF GBM; pre-scan `sync_with_mt5` (dual only).
-> - `TradeExecutor._check_strategy_conflict` slot cap counts BROKER magic-tagged positions.
-> - `TradeLogger` — `TRADE_HEADERS` 58→60, `SIGNAL_HEADERS` 20→22 (+`Strategy`,`Obs Layout`); old xlsx auto-archives.
-> - `TrendFollowingConfig` + `mgmt_*` live trade-mgmt params; `enabled=True`/`paper_mode=False`; `FTMOConfig.DAILY_LOSS_CAP_PCT_DUAL` 0.030→0.035.
->
-> **v8.1-phase3 additions (TF training pipeline — mirror of MR; TF still paper until trained)**:
-> - NEW `ml/trend_following_backtester.py` → `TrendFollowingBacktester(StrategyBacktester)`: H1 entry, `generate_episode_signals(symbol, h1_start_bar, ...)`, `_resample_h4_to_d1`, wide-RR resolve (tp_step disabled, trail runners), pool extras `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`/`is_runner`. Constants `TF_SCAN_POINTS_PER_DAY=12`, `TF_FUTURE_BARS=120`, `TF_LOOKBACK_H1=300`.
-> - NEW `ml/trend_following_env.py` → `TrendFollowingFilterEnv(FTMOSignalFilterEnv)`: 35-dim obs (tf_v1, 3 slots reinterpreted) + inverted reward (RUNNER_BONUS/LATE_ENTRY_PENALTY).
-> - NEW scripts `build_tf_signal_pool.py`, `train_tf_signal_quality.py` (27 TF FEATURE_KEYS → `data/tf_signal_quality_model.pkl`), `train_tf_signal_filter.py` (→ `models/tf/ppo_tf_filter.zip`+`vec_normalize_tf.pkl`), `auto_train_pipeline_tf.py` (slim orchestrator).
-> - `TrendFollowingStrategy`: `resuming`+MACD now SOFT confluence (not hard gates); `pullback_max_atr` 1.5→2.5.
-> - `FTMOTradingBot`: `_rl_agents`/`_quality_models` dicts + `_rl_agent_for`/`_quality_model_for`/`_build_obs_tf`/`_build_obs_for`; TF executes only when `paper_mode=False AND "TF" in _rl_agents`.
->
-> **v8.1-phase2 additions (execution + risk machinery; gated behind `tf.enabled`, default OFF = MR unchanged)**:
-> - NEW `core/strategy_risk_book.py` → `StrategyRiskBook` (held by `RiskManager._strategy_book`): per-strategy realized (recorded at close) + floating (live from magic) P/L; `is_halted(sid, init_bal)` self-halt at sub-budget; `remaining_budget`; `to_dict`/`from_dict` (bot_state schema 9).
-> - `ExecutedTrade.strategy_id` + `TrailingState.strategy_id` (NEW fields). `TradeExecutor`: `_check_strategy_conflict(signal)` (regime-exclusivity + slot cap), `_magic_for(sid)` / `_strategy_for_magic(magic)` / `_bot_magics()`, per-strategy magic at send, MR-only `_check_entry_confirmation` dispatch, orphan filter via `_bot_magics()`.
-> - `RiskManager.can_open_trade(strategy_id=...)` sub-budget gate; `update_daily_pnl(strategy_id=...)`; `_effective_daily_loss_cap_pct()` (3.0% dual / 2.5% single); `_strategy_book` reset in `_on_new_day`; save/load schema **9**.
-> - `config/settings.py` `FTMOConfig`: `STRATEGY_MAGIC`, `STRATEGY_SUB_BUDGET_PCT` (MR 0.020 / TF 0.015), `STRATEGY_SLOT_CAP` (MR 2 / TF 1), `STRATEGY_RISK_PCT` (MR 0.0070 / TF 0.0060), `DAILY_LOSS_CAP_PCT_DUAL=0.030`.
->
-> **v8.1-phase1 additions (regime + router + TF rules; `bot_config.tf.enabled` default OFF = MR unchanged)**:
-> - NEW `strategy/regime_classifier.py` → `MarketRegimeClassifier` (`classify` / `classify_all(open_owner)` / `_raw_regime`); `Regime` enum (RANGING/TRENDING/AMBIGUOUS); `RegimeResult`. ADX H1 primary + choppiness + slope; dead-zone ADX 20-27; hysteresis (confirm_bars + min_dwell + lock).
-> - NEW `strategy/strategy_router.py` → `StrategyRouter.scan(symbols, open_owner) -> (signals, regime_map)`.
-> - NEW `strategy/trend_following_strategy.py` → `TrendFollowingStrategy.analyze_with_data(symbol, d1, h4, h1, price_info)`, `TrendFollowingScanner(StrategyBase)` (STRATEGY_ID="TF", MAGIC 123457, OBS "tf_v1", own H1/H4/D1 caches), `TFSignal(MRSignal)` (+`trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`, `strategy_id="TF"`).
-> - `TechnicalIndicators.calculate_choppiness(df, period=14)` (NEW static, 0-100).
-> - `config/settings.py`: NEW `RegimeConfig` (`bot_config.regime`) + `TrendFollowingConfig` (`bot_config.tf`).
-> - `FTMOTradingBot`: `_router` (built when `tf.enabled`), `_open_position_owners()`, scan loop routes via router, TF `paper_mode` → log `TF_PAPER` (no execute).
->
-> **v8.1-phase0 additions (dual-strategy groundwork — MR behaviour unchanged)**:
-> - NEW `strategy/strategy_base.py` → `StrategyBase` (ABC): `STRATEGY_ID` / `MAGIC_NUMBER` / `OBS_LAYOUT_ID` + `scan_all_symbols(allowed_symbols=None)` + `get_{ltf,mtf,htf}_data(symbol)` + `get_obs_layout_id/get_strategy_id/get_magic`. Every parallel scanner (MR now, TF later) implements it; each owns its own per-symbol caches (no cross-read).
-> - `LiveMRScanner(StrategyBase)` — `STRATEGY_ID="MR"`, `MAGIC_NUMBER=123456`, `OBS_LAYOUT_ID="mr_v8"`; `scan_all_symbols` gained `allowed_symbols: Optional[set] = None`.
-> - `MRSignal.strategy_id: str = "MR"` (NEW field).
-> - `FTMOTradingBot._strategies: Dict[str, StrategyBase]` registry + `FTMOTradingBot._strategy_for(sig)` helper; `_build_live_context` routes cache reads via `_strategy_for(sig)`.
->
 >
 > **v8.0.80 changed methods/state** (full rationale → [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)):
 > - `TradeManager._modify_sl` — now clamps SL to broker min-stop/freeze + never-loosen (reads live SL) + logs retcode + retries transient (C1/H1)
@@ -91,11 +56,8 @@
 
 | File | Key symbols | Role |
 |------|-------------|------|
-| `strategy_base.py` (v8.1) | `StrategyBase` (ABC) — `STRATEGY_ID`, `MAGIC_NUMBER`, `OBS_LAYOUT_ID`, `scan_all_symbols(allowed_symbols=None)`, `get_{ltf,mtf,htf}_data(symbol)` | Common interface for parallel strategies (MR + TF). Each strategy owns its own per-symbol caches — no cross-read. `LiveMRScanner` + `TrendFollowingScanner` implement it. |
-| `regime_classifier.py` (v8.1) | `MarketRegimeClassifier`, `Regime`, `RegimeResult` | Per-symbol regime gate (H1): ADX primary + choppiness + slope → RANGING(MR)/TRENDING(TF)/AMBIGUOUS(none). Dead-zone ADX 20-27. Hysteresis (confirm_bars/min_dwell/lock). `classify_all(symbols, open_owner)`. |
-| `strategy_router.py` (v8.1) | `StrategyRouter.scan(symbols, open_owner)` | Classifies regimes, scans the armed strategy per symbol, merges + ranks. Returns `(signals, regime_map)`. |
-| `trend_following_strategy.py` (v8.1) | `TrendFollowingStrategy`, `TrendFollowingScanner(StrategyBase)`, `TFSignal(MRSignal)` | TF rules engine (entry H1, trend H4/D1): ADX>27 + EMA21>50>200 + H4 agree + pullback-resume + RSI + MACD. SL=ATR×2.0 (XAU 2.5), RR 2.5 (wide). Scanner magic 123457, own H1/H4/D1 caches. `TFSignal` adds `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry`, `strategy_id="TF"`. **2026-06-02 early-entry redesign S2 (flag `tf.early_entry`, default OFF)**: when ON, `analyze_with_data` swaps the lagging gates for LEADING ones from the same H1 slice (parity-trivial) — direction from `di_spread` (+DI−−DI, leads EMA stack & rejects falling-knife BUYs) + ADX *rising* (`adx_slope>0`) + fast EMA21>EMA50; EMA200/H4/D1→soft confluence; emits `di_spread`/`adx_slope` on `TFSignal` for the GBM/RL. Legacy path byte-identical when OFF; MR untouched (TF-only file; `adx` byte-identical, leakage+parity exit 0). |
-| `indicators.py` | `TechnicalIndicators.atr`, `.ema`, `.rsi`, `.macd`, `.adx`, `.stoch`, `.bb`, **`.calculate_choppiness` (v8.1, static, 0-100)** | Indicator calculation on numpy arrays. **2026-06-02 (TF early-entry S1)**: `calculate_adx` now also persists `df['plus_di']`/`['minus_di']`/`['di_spread']` (were computed then discarded) — leading directional signals that lead the ADX line; additive (`adx` byte-identical → MR/obs/GBM unaffected, parity exit 0). Foundation for the TF DI-cross redesign. |
+| `strategy_base.py` (v8.1) | `StrategyBase` (ABC) — `STRATEGY_ID`, `MAGIC_NUMBER`, `OBS_LAYOUT_ID`, `scan_all_symbols(allowed_symbols=None)`, `get_{ltf,mtf,htf}_data(symbol)` | Base class for `LiveMRScanner` (single strategy, MR). Per-symbol caches — no cross-read. (TF/dual-strategy removed 2026-06-02.) |
+| `indicators.py` | `TechnicalIndicators.atr`, `.ema`, `.rsi`, `.macd`, `.adx`, `.stoch`, `.bb`, **`.calculate_choppiness` (v8.1, static, 0-100)** | Indicator calculation on numpy arrays. **2026-06-02 (TF early-entry S1)**: `calculate_adx` now also persists `df['plus_di']`/`['minus_di']`/`['di_spread']` (were computed then discarded) — leading directional signals that lead the ADX line; additive (`adx` byte-identical → MR/obs/GBM unaffected, parity exit 0). |
 | `mean_reversion_strategy.py` (v8.0+) | `MeanReversionStrategy.analyze_with_data`, `MRSignal`, `MRSignalType`, `LiveMRScanner` (live entry), `TradeSignal=MRSignal` (legacy alias), `SignalType=MRSignalType` (legacy alias) | The whole strategy stack: BB %B extreme + RSI confirm + ADX H1 trend block + reversal-wick. RR 1:1, SL = 1.0×ATR (tight). `LiveMRScanner` is the drop-in replacement for `SMCStrategy` in main.py. **v8.0.79**: per-symbol caches `_{ltf,mtf,htf}_by_symbol` + accessors `get_{ltf,mtf,htf}_data(symbol)` — context/obs builders MUST read these by `sig.symbol` (legacy single slots `_ltf_data`/`_mtf_data`/`_htf_data` = last-scanned symbol → cross-symbol contamination). |
 
 **v8.0.6 cleanup (2026-05-07)** — SMC source files deleted: `smc_strategy.py` (and `.bak_v6.13`), `order_blocks.py`, `fair_value_gaps.py`, `liquidity_sweeps.py`, `inducement.py`, `market_structure.py`, plus `tests/test_order_blocks.py`. Live runtime uses MR exclusively. `TradeSignal` and `SignalType` are still importable from `mean_reversion_strategy` as legacy aliases (for `trade_executor` and historical test code).
@@ -235,7 +197,6 @@ Both Phase D variants (full BE+partial+trail, and BE-only) reduced Pass Rate bel
 | `RiskManager._initial_balance` | FTMO anchor — total DD is measured against this |
 | `RiskManager._daily_start_balance` | Daily anchor — daily DD is measured against this |
 | `RiskManager._save_state` / `._load_state` | Persistence via `logs/bot_state.json` (**schema 9** — v8.1 added `strategy_book`; schema-8 files load as empty book → no migration) |
-| `RiskManager._strategy_book` (v8.1) | `StrategyRiskBook` — per-strategy daily P/L + self-halt at sub-budget (dual-strategy only) |
 
 **State file schema** (`logs/bot_state.json`):
 
@@ -289,8 +250,8 @@ Always floor-round the lot size (never ceil) — safety margin against broker st
 | Symbol | Role |
 |--------|------|
 | `DiscordNotifier.send_message`, `.send_alert` | Sends webhook |
-| `DiscordNotifier.send_trade_open` / `.send_trade_close` / `.send_trade_partial_close` | Trade lifecycle embeds. **v8.1.1**: title prefixed `[MR]`/`[TF]` + a dedicated **Strategy** field (first field) |
-| `DiscordNotifier._strategy_label(trade_dict)` | **v8.1.1 NEW** — `(short, full)` from `trade_dict["strategy_id"]` (legacy→MR): `("TF","📈 TF · Trend Following")` / `("MR","🔄 MR · Mean Reversion")` |
+| `DiscordNotifier.send_trade_open` / `.send_trade_close` / `.send_trade_partial_close` | Trade lifecycle embeds. Title prefixed `[MR]` + a **Strategy** field (single-strategy MR). |
+| `DiscordNotifier._strategy_label(trade_dict)` | `(short, full)` from `trade_dict["strategy_id"]` → always `("MR","🔄 MR · Mean Reversion")` (single-strategy). |
 | Rate limit | 20 req/min sliding window + min 1 s interval + 429 Retry-After + `threading.Lock` |
 
 ---
@@ -336,9 +297,7 @@ Key dataclasses:
 | `SymbolConfig.symbols` | 10 symbols: EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURJPY, GBPJPY, **XAUUSD** |
 | `MLConfig` (v7) | `CHRONOS_MODEL_NAME="amazon/chronos-bolt-small"`, `CHRONOS_DEVICE="cpu"`, `CHRONOS_PREDICTION_LENGTH=8`, `CHRONOS_CONTEXT_LENGTH=512`, `CHRONOS_ENABLED=True`. Single source of truth สำหรับ pool builder + live. |
 | `MeanReversionConfig` (v8.0) | `strategy_mode="smc"` (flip to `"mean_reversion"` after MR eval gates pass), `bb_period=20`, `bb_std=2.0`, `bb_oversold=0.10`, `bb_overbought=0.90`, `rsi_oversold=30.0`, `rsi_overbought=70.0`, `adx_trend_block=25.0`, `sl_atr_mult=1.0`, `rr_ratio=1.0`, `quick_tp_bars=5`, `quick_tp_bonus=0.50`, `slow_win_bonus=0.20`, `prolonged_loss_bars=12`, `prolonged_loss_penalty=0.40`, `base_loss_penalty=0.10`, `duration_fine_coef=0.02` |
-| `RegimeConfig` (v8.1) | `bot_config.regime` — `adx_ranging_max=20`, `adx_trending_min=27` (dead-zone between), `chop_ranging_min=60`, `chop_trending_max=40`, `slope_ranging_max=0.10`, `slope_trending_min=0.18`, `confirm_bars=3`, `min_dwell_sec=1800`, `h1_bars=120`, `slope_window=50` |
-| `TrendFollowingConfig` (v8.1) | `bot_config.tf` — `enabled=False` (master switch), `paper_mode=True`, entry H1 / mtf H4 / htf D1, `ema_fast/mid/slow=21/50/200`, `adx_entry_min=27`, `pullback_max_atr=1.5`, `rsi_pullback_buy_max=55`/`sell_min=45`, `sl_atr_mult=2.0` (XAU 2.5), `rr_ratio=2.5`, `min_confluence_score=60`; reward shaping for Phase 3 (`runner_bonus`, `early_cut_penalty`, `late_entry_penalty`) |
-| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules. v7: + `bot_config.ml`. v8.0: + `bot_config.mr`. v8.1: + `bot_config.tf` + `bot_config.regime` |
+| `bot_config` (singleton) | Aggregates every dataclass — import target for other modules. v7: + `bot_config.ml`. v8.0: + `bot_config.mr`. (v8.1 `bot_config.tf`/`regime` removed 2026-06-02.) |
 
 ### `news_events.py` — Hardcoded fallback news
 

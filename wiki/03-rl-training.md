@@ -1,13 +1,10 @@
 # 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-06-02 (`--seed` arg added to `train_mr_signal_filter.py` for reproducible A/B runs) | Scope: RL env, obs space, reward shaping (MR + TF), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-06-02 (🧹 TF removed — MR-only) | Scope: RL env, obs space, reward shaping (MR), PPO hyperparams, curriculum, aux task.
 >
-> **⚠️ TWO obs layouts (v8.1-phase3)** — both 35-dim (same shape, same PPO net + VecNormalize), different slot semantics + separate models:
+> **Obs layout (mr_v8)** — 35-dim (PPO net + VecNormalize). (TF `tf_v2` layout removed 2026-06-02.):
 > - **MR (mr_v8)** → `MeanReversionFilterEnv._get_obs` ↔ `FTMOTradingBot._build_signal_observation` ↔ `models/mr/`. obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=1−adx/50.
-> - **TF (tf_v2, 2026-06-02 early-entry)** → `TrendFollowingFilterEnv._get_obs` ↔ `FTMOTradingBot._build_obs_tf` ↔ `models/tf/`. obs[4]=trend_strength/100, obs[10]=trend_age_bars/30, obs[26]=adx/50 (trending=good), **obs[27]=di_spread/50, obs[28]=adx_slope/10** (repurposed dead Chronos slots; leading signals for early-entry — MR keeps [27]/[28]=Chronos=0). Needs TF retrain on a pool rebuilt with `BOT_TF_EARLY=1`.
-> Each layout must stay synced across its 3 places independently.
+> The obs must stay synced across its 3 places (env `_get_obs` ↔ live `_build_signal_observation` ↔ `models/mr/`).
 >
-> **TF training pipeline (v8.1-phase3, mirror of MR — entry on H1):** `build_tf_signal_pool.py` → `train_tf_signal_quality.py` (27 features incl. `trend_age_bars`/`pullback_depth_atr`/`adx_at_entry` → `data/tf_signal_quality_model.pkl`) → `train_tf_signal_filter.py` (2-phase `AuxAwarePPO` on `TrendFollowingFilterEnv` → `models/tf/ppo_tf_filter.zip`+`vec_normalize_tf.pkl`) | orchestrator `auto_train_pipeline_tf.py`. **TF reward INVERTED vs MR**: RUNNER_BONUS (outcome≥2R, scales) + SLOW_WIN_BONUS; loss + LATE_ENTRY_PENALTY (trend_age≥60); SKIP-oracle penalizes missing runners most. `TrendFollowingBacktester` resolve keeps `tp_step_trigger_r=99` (Stage-2 1.5R cap OFF) so winners run.
-> **v8.1-phase4 (runner-tune trained → TF LIVE canary):** baseline Pass 3.5% (too conservative) → runner-tune (resolve `trail_sl_behind_r` 1.0→2.0 / `trail_activation_r` 1.0→1.5 / `TF_FUTURE_BARS` 120→180; env `RUNNER_BONUS` 0.50→0.70 / `SLOW_WIN_BONUS` 0.15→0.10) → **Pass 7.7% / DD 1.49% / Profitable 94% / Win 84%**. Accepted as a low-frequency complement (≈18 signals/ep vs MR ≈200). Go-live audit fixed 9 bugs incl. **live TF exit now reads `bot_config.tf.mgmt_*`** (trail activation 1.5R / behind 2.0R / floor 1.0R / TP 2.0R) — `TrendFollowingBacktester._resolve_trade` reads the SAME source → train==live exit. TF live canary: 1 slot, 1.5%/day. See [`05-invariants.md` v8.1-phase4](05-invariants.md#-version-log-entry--v81-phase4-2026-05-30--tf-trained--go-live-audit-9-bugs-fixed--tf-live-canary).
 >
 > **⚠️ Obs dim = 35** (index 0-34). The "26 dims" once cited for v8.0.74b never reached the live `OBS_DIM` — `SelfLearningAgent.OBS_DIM`, `MeanReversionFilterEnv.observation_space`, and `models/mr/vec_normalize_mr.pkl` all agree at **35** (verified by `parity_audit` 3-way sync). obs[27,28] (chronos) hardwired 0.
 >
