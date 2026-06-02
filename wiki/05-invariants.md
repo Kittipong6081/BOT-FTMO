@@ -1,5 +1,17 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-06-02 | Scope: red flags, version log, migration notes (latest: **same-direction cap 1→2**; TF PAUSED; closed-bar + TF-early flags OFF)
+> Last Updated: 2026-06-02 | Scope: red flags, version log, migration notes (latest: **TF/dual-strategy REMOVED** — single-strategy MR only)
+
+## 📝 Version Log Entry — TF / dual-strategy REMOVED (2026-06-02) — back to single-strategy MR
+
+**Decision (user request, "เอา logic TF ออกให้หมด แบบรอบคอบ")**: all Trend-Following + dual-strategy + regime machinery (added in v8.1-phase0..phase4) is physically REMOVED. The bot is now **single-strategy Mean-Reversion only** — the deployed money-maker. Done in audited stages; MR proven byte-identical at every step.
+
+**Deleted (10 files)**: `strategy/trend_following_strategy.py`, `strategy/regime_classifier.py`, `strategy/strategy_router.py`, `ml/trend_following_backtester.py`, `ml/trend_following_env.py`, `core/strategy_risk_book.py`, `scripts/{build_tf_signal_pool,train_tf_signal_quality,train_tf_signal_filter,auto_train_pipeline_tf}.py`. Plus TF artifacts `models/tf/` + `data/tf_signal_*.pkl`.
+
+**Shared files reverted to single-strategy MR**: `main.py` (removed `_strategies`/`_router`/`_regime_classifier`/`_rl_agents`/`_quality_models` dicts + `_strategy_for`/`_rl_agent_for`/`_quality_model_for`/`_build_obs_tf`/`_build_obs_for`/`_open_position_owners`/`_compute_symbol_regime`/`_compute_live_regime` + router scan/TF-paper branches → direct `self._strategy`/`self._rl_agent`/`self._quality_model`/`_build_signal_observation`). `core/risk_manager.py` (removed `StrategyRiskBook` import+instantiation+save/load/record/halt; daily-cap → single-strategy 2.5%). `execution/trade_executor.py` (removed `_check_strategy_conflict`; per-strategy magic helpers → single magic 123456; `risk_pct=None`→default 0.70%; dropped `strategy_id=` kwargs). `execution/trade_manager.py` (`_exit_profile()` parameterless → MR profile). `config/settings.py` (removed `TrendFollowingConfig`/`RegimeConfig`/`bot_config.tf`/`bot_config.regime` + `STRATEGY_MAGIC`/`STRATEGY_SLOT_CAP`/`STRATEGY_SUB_BUDGET_PCT`/`STRATEGY_RISK_PCT`/`DAILY_LOSS_CAP_PCT_DUAL`). `strategy/indicators.py` (TF comment removed).
+
+**KEPT (not TF)**: `StrategyBase` (LiveMRScanner's base, trimmed), the vestigial `strategy_id="MR"`/`obs_layout_id="mr_v8"` literals (logger/notifier read them via forgiving `.get` → Excel "Strategy"/"Obs Layout" columns still populate), `calculate_adx` +DI/-DI/di_spread (generic ADX completion), `MAX_SAME_CURRENCY_LEG_POSITIONS=2`, `CLOSED_BAR_ONLY` flag, RL `--seed`. `calculate_choppiness` is now orphaned dead code (harmless; no MR caller).
+
+**Verification**: `import main` clean (no dangling refs); `leakage_audit` + `parity_audit` exit 0 (obs 35-dim 3-way sync, `adx` byte-identical 19.614282); **MR eval (5000 ep): Pass 87.8% / Profitable 98.1% / Win 68.8% / Total DD 5.80% — matches the v8.0.80 baseline (~88%, DD 5.80%) → MR unchanged.** ⛔ `bot_state.json` NOT deleted (FTMO anchor); the stale `strategy_book`/schema-9 key is simply ignored on load. Deploy = VPS git pull + restart. ⚠️ The other wiki pages still contain historical TF rows (02-modules/03-rl-training/04-operations) — they describe removed code; this entry is the source of truth.
 
 ## 📝 Version Log Entry — same-direction cap 1→2 (2026-06-02, user request, live-only no retrain)
 

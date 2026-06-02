@@ -302,7 +302,7 @@ class TradeManager:
         # MR keeps its quick-exit (partial@0.8R/BE@0.3R/Stage-2 lock/trail@1.0R).
         # TF RIDES — skip partial/BE/Stage-2 entirely, trail only (1.5R activation,
         # 2R behind, 1R floor, 2R TP-chase) to mirror the trainer's _resolve_trade.
-        prof = self._exit_profile(state.strategy_id)
+        prof = self._exit_profile()
 
         # === Stage 1a: Partial Close (ใช้ best_rr) — v8.0.14: ทำก่อน BE ===
         if prof["use_partial"] and not state.partial_closed and best_rr >= self.PARTIAL_TRIGGER_RR:
@@ -326,25 +326,8 @@ class TradeManager:
     # 🧭 Per-strategy exit profile (v8.1 Phase4 fix-A)
     # =========================================================================
 
-    def _exit_profile(self, strategy_id: str) -> Dict:
-        """Exit-management params keyed by strategy.
-
-        MR → TradeManager's own quick-exit constants (byte-identical to before).
-        TF → ride profile from `bot_config.tf` (no partial/BE/Stage-2; wide trail)
-             — MUST mirror TrendFollowingBacktester._resolve_trade so live == train.
-        """
-        if strategy_id == "TF":
-            tf = bot_config.tf
-            return {
-                "use_partial": bool(getattr(tf, "mgmt_use_partial", False)),
-                "use_be": bool(getattr(tf, "mgmt_use_breakeven", False)),
-                "use_tp_step": bool(getattr(tf, "mgmt_use_tp_step", False)),
-                "trail_activation_r": float(getattr(tf, "mgmt_trail_activation_r", 1.5)),
-                "trail_sl_behind_r": float(getattr(tf, "mgmt_trail_sl_behind_r", 2.0)),
-                "trail_sl_floor_r": float(getattr(tf, "mgmt_trail_sl_floor_r", 1.0)),
-                "trail_tp_ahead_r": float(getattr(tf, "mgmt_trail_tp_ahead_r", 2.0)),
-            }
-        # MR / default — current class constants (unchanged)
+    def _exit_profile(self) -> Dict:
+        """MR exit-management params (quick-exit: partial/BE/Stage-2/trail)."""
         return {
             "use_partial": True,
             "use_be": True,
@@ -641,7 +624,7 @@ class TradeManager:
 
         # v8.1 Phase4 fix-A: per-strategy trail R-values (MR 0.5/1.0/1.0 ; TF 2.0/2.0/1.0)
         if prof is None:
-            prof = self._exit_profile(getattr(state, "strategy_id", "MR"))
+            prof = self._exit_profile()
         trail_sl_behind = sl_distance * prof["trail_sl_behind_r"]
         trail_tp_ahead = sl_distance * prof["trail_tp_ahead_r"]
         sl_floor_dist = sl_distance * prof["trail_sl_floor_r"]

@@ -257,12 +257,9 @@ class TechnicalIndicators:
         minus_di = 100 * minus_dm.ewm(alpha=1/period, min_periods=period).mean() / atr_smooth
 
         dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)
-        # v8.x (TF early-entry redesign): persist the directional components that were
-        # previously computed here then DISCARDED. +DI/-DI and their spread are LEADING
-        # directional signals — the +DI/-DI cross is Wilder's actual early trend-entry
-        # trigger and LEADS the ADX line (ADX is a double-EWM smoothing of DX, so it lags
-        # the underlying DI event by construction). Additive only: df['adx'] is unchanged,
-        # so existing readers (MR gate, obs, GBM) are unaffected.
+        # Persist the directional components (Wilder +DI/-DI + spread) that complete the
+        # ADX computation. Additive only: df['adx'] is unchanged, so existing readers
+        # (MR gate, obs, GBM) are unaffected.
         df['plus_di'] = plus_di
         df['minus_di'] = minus_di
         df['di_spread'] = plus_di - minus_di

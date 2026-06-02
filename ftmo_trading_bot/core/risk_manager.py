@@ -25,7 +25,6 @@ from enum import Enum
 from config.settings import bot_config, get_symbol_config
 from core.mt5_connector import MT5Connector
 from core.time_manager import TimeManager
-from core.strategy_risk_book import StrategyRiskBook
 
 
 class BotState(Enum):
@@ -106,10 +105,6 @@ class RiskManager:
         # ใช้ใน can_open_trade กัน 2 ไม้เดิมพันธีมเดียวกันใน 10 นาที (5-21 20:18-20:19 case)
         self._last_open_theme: Optional[str] = None
 
-        # v8.1 Phase 2: per-strategy risk ledger (dual-strategy MR+TF). Consulted
-        # in can_open_trade ONLY when bot_config.tf.enabled → single-strategy MR
-        # is unaffected. Persisted in bot_state.json schema 9.
-        self._strategy_book = StrategyRiskBook(connector)
 
         # === Cooldown / Anti-Revenge-Trading State (v2) ===
         # เวลาที่โดน SL ล่าสุดของแต่ละ symbol (ISO string)
@@ -274,7 +269,6 @@ class RiskManager:
         self._last_daily_loss_alert_pct = 0.0  # v8.0.49: reset throttle วันใหม่
         self._daily_profit_locked = False      # v8.0.17: reset daily profit cap
         self._daily_loss_locked = False        # v8.0.22: reset daily loss cap
-        self._strategy_book.reset_day(str(broker_today))  # v8.1: reset per-strategy ledger
 
         # Reset cooldown / revenge-trading counters ข้ามวัน (รวม weekend rollover)
         # Reason: ขาดทุน 3 ไม้วันศุกร์ไม่ควรทำให้เช้าวันจันทร์ halt ทันที
@@ -599,11 +593,7 @@ class RiskManager:
         return False
 
     def _effective_daily_loss_cap_pct(self) -> float:
-        """v8.1: global soft loss cap — 3.0% in dual-strategy mode (tf.enabled),
-        else the 2.5% single-strategy default (keeps MR behaviour unchanged)."""
-        if getattr(bot_config.tf, "enabled", False):
-            return float(getattr(self._config, "DAILY_LOSS_CAP_PCT_DUAL",
-                                 self._config.DAILY_LOSS_CAP_PCT))
+        """Global soft daily loss cap (single-strategy MR, 2.5%)."""
         return float(self._config.DAILY_LOSS_CAP_PCT)
 
     def is_daily_loss_locked(self) -> bool:
@@ -949,18 +939,6 @@ class RiskManager:
         if risk_amount > remaining_budget:
             return (False, f"❌ งบเสี่ยงรายวันไม่พอ (เหลือ: ${remaining_budget:,.2f}, ต้องการ: ${risk_amount:,.2f})")
 
-        # === ตรวจสอบที่ 5.5 (v8.1): Per-strategy sub-budget (dual-strategy only) ===
-        # MR 2.0% / TF 1.5% ของ initial balance. halt เฉพาะกลยุทธ์ที่งบหมด — อีกตัว
-        # เทรดต่อได้. no-op เมื่อ tf.enabled=False → MR ใช้ global budget เดิม.
-        if getattr(bot_config.tf, "enabled", False):
-            if self._strategy_book.is_halted(strategy_id, self._initial_balance):
-                return (False, f"🧯 {strategy_id} halted วันนี้ (sub-budget "
-                               f"{self._config.STRATEGY_SUB_BUDGET_PCT.get(strategy_id, 0):.1%} หมด)")
-            sub_remaining = self._strategy_book.remaining_budget(strategy_id, self._initial_balance)
-            if risk_amount > sub_remaining:
-                return (False, f"🧯 {strategy_id} sub-budget ไม่พอ "
-                               f"(เหลือ: ${sub_remaining:,.2f}, ต้องการ: ${risk_amount:,.2f})")
-
         # === ตรวจสอบที่ 6: SL ต้องมีค่า (ห้ามเทรดโดยไม่มี Stop Loss) ===
         if sl_distance_pips <= 0:
             return (False, "❌ ห้ามเทรดโดยไม่มี Stop Loss! (SL distance = 0)")
@@ -1223,8 +1201,6 @@ class RiskManager:
             "last_open_time_iso": self._last_open_time_iso,
             # --- v8 (v8.0.55): Cluster cooldown — theme of last open ---
             "last_open_theme": self._last_open_theme,
-            # --- v9 (v8.1): per-strategy risk ledger (dual-strategy MR+TF) ---
-            "strategy_book": self._strategy_book.to_dict(),
             "schema_version": 9,
             "last_updated": datetime.now().isoformat(),
         }
@@ -1318,8 +1294,6 @@ class RiskManager:
             # --- v8 (v8.0.55): Cluster cooldown — theme of last open ---
             self._last_open_theme = data.get("last_open_theme", None)
 
-            # --- v9 (v8.1): per-strategy risk ledger (fallback: schema 8 → empty) ---
-            self._strategy_book.from_dict(data.get("strategy_book"))
 
             # แปลงวันที่
             day_str = data.get("current_day", str(TimeManager.get_server_time().date()))
@@ -1359,8 +1333,6 @@ class RiskManager:
         # v8.0.80 (H2): นับ per-symbol ด้วย (mirror semantic ของ global counter)
         if symbol:
             self._daily_trades_by_symbol[symbol] = self._daily_trades_by_symbol.get(symbol, 0) + 1
-        # v8.1: attribute realized P/L to the strategy that opened the trade
-        self._strategy_book.record_realized(strategy_id, trade_pnl)
 
         # อัพเดท High Water Mark ถ้า Balance สูงขึ้น
         current_balance = self._connector.get_balance()

@@ -109,16 +109,6 @@ class FTMOConfig:
     #   Risk math: 3 × 0.70% = 2.1% max concurrent (vs DAILY_LOSS_CAP 2.5%, FTMO 4%)
     MAX_OPEN_POSITIONS: int = 3
 
-    # === Per-strategy allocation (v8.1 Phase 2 — dual-strategy MR+TF) ===
-    # Used only when bot_config.tf.enabled. Each strategy gets a distinct MT5
-    # magic (broker positions attributable), its own daily-loss sub-budget, slot
-    # cap, and risk-per-trade. The FTMO 4% hard breach guard + 3.0% global soft
-    # cap sit ABOVE these (portfolio-level). A strategy that hits its sub-budget
-    # halts ITSELF for the day without halting the other.
-    STRATEGY_MAGIC: dict = field(default_factory=lambda: {"MR": 123456, "TF": 123457})
-    STRATEGY_SUB_BUDGET_PCT: dict = field(default_factory=lambda: {"MR": 0.020, "TF": 0.015})
-    STRATEGY_SLOT_CAP: dict = field(default_factory=lambda: {"MR": 2, "TF": 1})  # sum=3=MAX_OPEN_POSITIONS
-    STRATEGY_RISK_PCT: dict = field(default_factory=lambda: {"MR": 0.0070, "TF": 0.0060})  # both ∈ [0.5%,0.85%]
 
     # === Min Seconds Between Opens (v8.0.26, DISABLED v8.0.74) ===
     # v8.0.74: ปิด — CLUSTER_COOLDOWN_ANY_SEC=300 ครอบ 60s อยู่แล้ว (ซ้ำซ้อน)
@@ -179,15 +169,6 @@ class FTMOConfig:
     #   HARD_STOP 4% (daily_start_equity, FTMO-aligned) = ยังเป็น hard cap สำหรับ breach
     DAILY_LOSS_CAP_ENABLED: bool = True
     DAILY_LOSS_CAP_PCT: float = 0.025       # 2.5% — soft cap (1.5pp buffer ก่อน FTMO 4%)
-    # v8.1 Phase 2: when dual-strategy (tf.enabled) is ON, the global soft cap is
-    # raised to this so a single strategy can halt itself (sub-budget MR 2.0% /
-    # TF 1.5%) BEFORE the portfolio cap trips and stops BOTH. Only applies when
-    # tf.enabled → single-strategy MR keeps the 2.5% cap unchanged.
-    # v8.1 Phase4 fix-G: 0.030 → 0.035 = exactly the sub-budget sum (MR 2.0% + TF 1.5%)
-    #   so each strategy can fully consume its allowance before the portfolio cap
-    #   binds (preserves the per-strategy isolation the design promises). Still < FTMO
-    #   4% hard breach guard (0.5pp buffer), which always closes everything first.
-    DAILY_LOSS_CAP_PCT_DUAL: float = 0.035  # 3.5% — global soft cap in dual-strategy mode
     
     # === จำนวนวันเทรดขั้นต่ำ ===
     MIN_TRADING_DAYS: int = 4  # ต้องเทรดอย่างน้อย 4 วัน
@@ -683,131 +664,6 @@ class MeanReversionConfig:
 
 
 # =============================================================================
-# 🌀 Market Regime Classifier (v8.1 — dual-strategy switch MR↔TF)
-# =============================================================================
-@dataclass
-class RegimeConfig:
-    """Thresholds for `MarketRegimeClassifier` (per-symbol regime gate).
-
-    ADX H1 is the PRIMARY separator. The 20–27 band is a statistical dead-zone
-    (wiki v8.0.51: ADX H1 25-30 = WR 25%, −$679) where NEITHER strategy trades.
-    Choppiness + slope are secondary confirmations. Hysteresis (confirm bars +
-    dwell + the wide AMBIGUOUS band) prevents flip-flapping.
-    """
-    # ADX H1 gates (primary)
-    adx_ranging_max: float = 20.0      # ADX < 20 → candidate RANGING (MR)
-    adx_trending_min: float = 27.0     # ADX > 27 → candidate TRENDING (TF)
-    # Choppiness confirmation (0-100)
-    chop_ranging_min: float = 60.0     # CHOP > 60 confirms RANGING
-    chop_trending_max: float = 40.0    # CHOP < 40 confirms TRENDING
-    # EMA slope per ATR (scale-invariant)
-    slope_ranging_max: float = 0.10    # |slope/atr| < 0.10 confirms RANGING
-    slope_trending_min: float = 0.18   # |slope/atr| > 0.18 confirms TRENDING
-    # Hysteresis
-    confirm_bars: int = 3              # new regime must repeat N scans before switching
-    min_dwell_sec: int = 1800          # min seconds between regime switches (per symbol)
-    # Data
-    h1_bars: int = 120                 # H1 bars fetched for classification
-    slope_window: int = 50             # bars for the trend slope fit
-
-
-# =============================================================================
-# 📈 Trend Following Strategy (v8.1 — runs in parallel with MR)
-# =============================================================================
-@dataclass
-class TrendFollowingConfig:
-    """Tunables for the v8.1 Trend Following strategy (entry on H1).
-
-    TF arms only on TRENDING regime (see RegimeConfig). It enters trend
-    pullbacks (EMA alignment + ADX strong + pullback-resume), uses a WIDE SL so
-    winners can run (opposite of MR's tight quick-TP).
-
-    `enabled` is the master switch for the whole dual-strategy machinery — when
-    False the live loop behaves exactly like single-strategy MR (no regime
-    routing, no TF). `paper_mode` logs TF signals without sending orders
-    (Phase 1 canary — observe regime separation before real TF execution).
-    """
-    # v8.1 Phase4 (1a canary go-live): dual-strategy ON, TF executes LIVE.
-    # ⚠️ enabling this ALSO regime-gates MR to RANGING-only (router). Revert to
-    # single-strategy MR instantly by setting enabled=False (or paper_mode=True to
-    # keep the regime split but stop TF orders).
-    # 2026-06-02: PAUSED (enabled True→False). TF entry has a confirmed STRUCTURAL
-    # late-entry problem — its lagging gates (ADX>27 level + full EMA21>50>200 stack
-    # incl. EMA200 + H4/D1 agree) only confirm a trend once it is mature/exhausted, so
-    # live entries cluster at ADX 36-40 / trend_age>=60. The 52,928-signal TF pool shows
-    # ADX 27-30 = +0.022R (only profitable bucket), monotonic decay above, runner rate
-    # only 6.5%. Live: 2 TF NZDUSD BUYs into a crash (lagging HTF stayed bullish), 1 SL
-    # -$57 + 1 open loser. Back to single-strategy MR (router=None, MR full again) until
-    # the entry is redesigned (leading detection: +DI/-DI cross + ADX rising + EMA21
-    # slope + fresh regime-flip arming; let GBM/RL learn the sweet spot — NOT a hardcoded
-    # ADX cap). See wiki/05-invariants.md. Revert canary: enabled=True.
-    enabled: bool = False              # PAUSED 2026-06-02 — TF structural late-entry (redesign pending)
-    paper_mode: bool = False           # (unused while enabled=False)
-
-    # Entry timeframe = H1; trend filter = H4/D1
-    entry_timeframe: str = "H1"
-    mtf_timeframe: str = "H4"
-    htf_timeframe: str = "D1"
-    scan_bars_h1: int = 300
-    scan_bars_h4: int = 200
-    scan_bars_d1: int = 120
-
-    # Trend rules
-    ema_fast: int = 21
-    ema_mid: int = 50
-    ema_slow: int = 200
-    adx_entry_min: float = 27.0        # require strong trend (mirror regime gate)
-    macd_confirm: bool = True
-    pullback_ema: int = 21             # pullback toward EMA21 then resume
-    pullback_max_atr: float = 2.5      # price within N×ATR of EMA21 = valid pullback (v8.1: 1.5→2.5 for signal density)
-    rsi_pullback_buy_max: float = 55.0  # BUY: RSI dipped (not overbought) on pullback
-    rsi_pullback_sell_min: float = 45.0 # SELL: RSI bounced (not oversold) on pullback
-
-    # SL / TP — WIDE (let winners run; opposite of MR)
-    sl_atr_mult: float = 2.0
-    sl_atr_mult_xau: float = 2.5
-    rr_ratio: float = 2.5
-    min_confluence_score: float = 60.0
-    min_confluence_score_training: float = 30.0
-
-    # === Early-entry redesign (2026-06-02, flag default OFF) — catch trend BIRTH ===
-    # When ON, TrendFollowingStrategy.analyze_with_data replaces the LAGGING gates
-    # (ADX>=27 LEVEL + full EMA21>50>200/close>EMA200 stack direction) with LEADING ones
-    # computed from the SAME H1 slice the backtester passes (parity-trivial): direction
-    # from +DI/-DI dominance (di_spread — leads the EMA stack; would have BLOCKED the
-    # NZDUSD falling-knife BUYs since -DI>+DI during the crash) + ADX RISING (trend
-    # building, not exhausting) + fast EMA21>EMA50 confirm. EMA200/H4/D1 demoted to SOFT
-    # confluence (no hard veto). NO hardcoded upper ADX cap — di_spread + adx_slope are
-    # emitted on the signal for the GBM/RL to LEARN the ADX-27-30 sweet spot. Legacy path
-    # is byte-identical when False. ⚠️ Requires TF pool rebuild + GBM + RL retrain +
-    # challenge-level (DD-aware) eval BEFORE enabling for real. See wiki/05-invariants.md.
-    early_entry: bool = field(default_factory=lambda: os.environ.get("BOT_TF_EARLY", "0") == "1")  # default OFF; env toggle for build/deploy
-    early_di_spread_min: float = field(default_factory=lambda: float(os.environ.get("BOT_TF_DI_MIN", "2.0")))  # min |+DI−−DI| for direction; lower = more trades. env BOT_TF_DI_MIN
-    early_adx_slope_lookback: int = 3   # H1 bars to measure ADX rising (trend building)
-    early_adx_floor: float = 20.0       # below = pure chop (= regime ranging_max); NOT an upper cap
-
-    # === Live trade-management (v8.1 Phase4 fix-A) — MUST mirror
-    # TrendFollowingBacktester._resolve_trade kwargs so live exits == training.
-    # TF RIDES: NO early break-even, NO partial close, NO Stage-2 TP-cap; only a
-    # wide trail (activate 1.5R, SL 2R behind best with a 1R floor, TP chase 2R).
-    # (MR keeps TradeManager's own quick-exit constants — this block is TF-only.)
-    mgmt_use_partial: bool = False
-    mgmt_use_breakeven: bool = False
-    mgmt_use_tp_step: bool = False
-    mgmt_trail_activation_r: float = 1.5
-    mgmt_trail_sl_behind_r: float = 2.0
-    mgmt_trail_sl_floor_r: float = 1.0
-    mgmt_trail_tp_ahead_r: float = 2.0
-
-    # Reward shaping (TF env, Phase 3) — reward holding winners, penalize early cut
-    runner_bonus: float = 0.50         # winner that runs far → bonus
-    early_cut_penalty: float = 0.30    # cutting a winner early
-    late_entry_penalty: float = 0.20   # entering an aged trend
-    base_loss_penalty: float = 0.10
-    duration_fine_coef: float = 0.01
-
-
-# =============================================================================
 # 📱 การตั้งค่าการแจ้งเตือน (Notifications)
 # =============================================================================
 @dataclass
@@ -877,8 +733,6 @@ class BotConfig:
     indicators: IndicatorConfig = field(default_factory=IndicatorConfig)
     ml: MLConfig = field(default_factory=MLConfig)
     mr: MeanReversionConfig = field(default_factory=MeanReversionConfig)
-    tf: TrendFollowingConfig = field(default_factory=TrendFollowingConfig)       # v8.1
-    regime: RegimeConfig = field(default_factory=RegimeConfig)                   # v8.1
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     
