@@ -822,8 +822,8 @@ PROFIT_TARGET_PCT = 0.10             # 10%
 ```python
 MAX_CORRELATED_POSITIONS = 99           # per-group guard ปิดไว้ (ใช้ 2 ตัวล่างแทน)
 MAX_USD_THEME_POSITIONS = 2             # จำกัดฝั่ง USD เดียวกันรวมทุกคู่ ≤ 2 (v7.1)
-MAX_SAME_CURRENCY_LEG_POSITIONS = 2     # 2026-06-02: อนุญาตเปิดทิศเดียวกันได้สูงสุด 2 ไม้ (เดิม 1, v8.0.79). ตั้ง 1 = กันเบิ้ล
-                                        #          (เช่น short EUR 2 ไม้ = EURUSD SELL + EURJPY SELL)
+MAX_SAME_CURRENCY_LEG_POSITIONS = 1     # 2026-06-03: กลับเป็น 1 (กันเบิ้ลทิศเดียว) หลัง challenge สอบตก —
+                                        #          cap=2 เปิดทาง GBPJPY BUY 2 ไม้ + USDJPY BUY แพ้ยกก้อน. ตั้ง 2 = ผ่อน
 ML_FILTER_THRESHOLD = 0.30              # signal ต้อง ML score ≥ 0.30 ก่อน agent (v8.0.3)
 COOLDOWN_AFTER_LOSS_MIN = 60            # 60 นาทีก่อนเปิดคู่เดิมหลัง SL
 CONSECUTIVE_LOSS_PAUSE_COUNT = 3        # หยุด 60 นาทีหลังแพ้ติด 3 ครั้ง (v6.13)

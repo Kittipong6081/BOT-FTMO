@@ -32,14 +32,20 @@ sys.path.insert(0, ROOT)
 _worker_backtester = None
 
 
-def _init_worker(data_dir: str):
-    """Worker initializer — load MR backtester once per process."""
+def _init_worker(data_dir: str, model_live_exit: bool = False):
+    """Worker initializer — load MR backtester once per process.
+
+    model_live_exit (2026-06-03): when True, episode outcomes are resolved via the
+    LIVE exit machinery (BE@0.3R + 33% partial @0.8R + Stage-2 lock) instead of the
+    full-position "ride" — used by walk_forward_eval to measure the sim↔live gap.
+    """
     global _worker_backtester
     import io, contextlib
     from ml.mean_reversion_backtester import MeanReversionBacktester
 
     with contextlib.redirect_stdout(io.StringIO()):
         _worker_backtester = MeanReversionBacktester(data_dir)
+        _worker_backtester.model_live_exit = bool(model_live_exit)
 
 
 def _build_one_episode(task):
@@ -60,7 +66,15 @@ def _build_one_episode(task):
         return None
 
 
-def _pick_pool_tasks(data_dir: str, pool_size: int, max_days: int, seed: int = 42):
+def _pick_pool_tasks(data_dir: str, pool_size: int, max_days: int, seed: int = 42,
+                     start_frac: float = 0.0, end_frac: float = 1.0):
+    """Pick (symbol, start_bar) tasks for episode generation.
+
+    start_frac / end_frac (in [0, 1]) restrict the chronological window of M15
+    start-bars sampled per symbol — used by walk_forward_eval.py for out-of-TIME
+    folds (M15 bars are time-ordered, so a bar-index fraction == a time slice).
+    Defaults (0.0, 1.0) reproduce the original full-history behaviour byte-for-byte.
+    """
     import io, contextlib
     from ml.mean_reversion_backtester import MeanReversionBacktester
 
@@ -71,14 +85,23 @@ def _pick_pool_tasks(data_dir: str, pool_size: int, max_days: int, seed: int = 4
     if not symbols:
         raise RuntimeError("No symbols with enough data")
 
+    start_frac = max(0.0, min(1.0, float(start_frac)))
+    end_frac = max(start_frac, min(1.0, float(end_frac)))
+
     rng = np.random.default_rng(seed)
     n_per_symbol = max(1, pool_size // len(symbols))
     tasks = []
     for symbol in symbols:
         m15_len = len(bt._m15_cache[symbol])
         needed = bt.get_min_bars_for_episode(max_days)
-        min_start = bt.MIN_M15_BARS
-        max_start = m15_len - needed
+        usable_lo = bt.MIN_M15_BARS
+        usable_hi = m15_len - needed
+        if usable_hi <= usable_lo:
+            continue
+        # Restrict start-bar range to the chronological [start_frac, end_frac] window
+        span = usable_hi - usable_lo
+        min_start = usable_lo + int(span * start_frac)
+        max_start = usable_lo + int(span * end_frac)
         if max_start <= min_start:
             continue
         starts = np.linspace(min_start, max_start, n_per_symbol, dtype=int)
@@ -94,7 +117,9 @@ def _pick_pool_tasks(data_dir: str, pool_size: int, max_days: int, seed: int = 4
 
 
 def build_pool(data_dir: str, pool_size: int, max_days: int, save_path: str,
-               workers: int = 8, seed: int = 42) -> int:
+               workers: int = 8, seed: int = 42,
+               start_frac: float = 0.0, end_frac: float = 1.0,
+               model_live_exit: bool = False) -> int:
     print("=" * 72)
     print(" MR Signal Pool Builder (v8.0)")
     print("=" * 72)
@@ -106,13 +131,17 @@ def build_pool(data_dir: str, pool_size: int, max_days: int, save_path: str,
 
     t_start = time.time()
 
+    if (start_frac, end_frac) != (0.0, 1.0):
+        print(f"   Time window: frac [{start_frac:.2f}, {end_frac:.2f}] (chronological M15 slice)")
     print("→ Picking (symbol, start_bar) combinations...")
-    tasks, symbols = _pick_pool_tasks(data_dir, pool_size, max_days, seed)
+    tasks, symbols = _pick_pool_tasks(data_dir, pool_size, max_days, seed, start_frac, end_frac)
     print(f"   Symbols: {', '.join(symbols)}")
     print(f"   Tasks:   {len(tasks)} episodes\n")
 
+    if model_live_exit:
+        print("   ⚙️ model_live_exit=ON → outcomes resolved via LIVE exit (BE/partial), not 'ride'")
     print(f"→ Spawning {workers} workers (loads MR backtester ~5s each)...")
-    pool = Pool(processes=workers, initializer=_init_worker, initargs=(data_dir,))
+    pool = Pool(processes=workers, initializer=_init_worker, initargs=(data_dir, model_live_exit))
 
     print(f"→ Building MR episodes in parallel...\n")
     results = []
@@ -160,6 +189,12 @@ def main():
     parser.add_argument("--data_dir", default=None)
     parser.add_argument("--save_path", default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--start_frac", type=float, default=0.0,
+                        help="Chronological window start (0-1) of M15 bars to sample from (walk-forward folds)")
+    parser.add_argument("--end_frac", type=float, default=1.0,
+                        help="Chronological window end (0-1) of M15 bars to sample from")
+    parser.add_argument("--model_live_exit", action="store_true",
+                        help="Resolve outcomes via LIVE exit (BE+partial) instead of full 'ride' — sim↔live gap test")
     args = parser.parse_args()
 
     if args.data_dir is None:
@@ -178,6 +213,9 @@ def main():
         save_path=args.save_path,
         workers=args.workers,
         seed=args.seed,
+        start_frac=args.start_frac,
+        end_frac=args.end_frac,
+        model_live_exit=args.model_live_exit,
     )
 
 

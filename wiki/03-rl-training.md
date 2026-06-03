@@ -1,12 +1,12 @@
-# 03 — RL Training (Obs 35 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-06-02 (🧹 TF removed — MR-only) | Scope: RL env, obs space, reward shaping (MR), PPO hyperparams, curriculum, aux task.
+# 03 — RL Training (Obs 36 dims, MR Reward Shaping, PPO + Auxiliary Task)
+> Last Updated: 2026-06-03 (✅ Fix#1 — obs 35→36 `trend_eff_h1` regime feature, retrained + walk-forward verified) | Scope: RL env, obs space, reward shaping (MR), PPO hyperparams, curriculum, aux task.
 >
-> **Obs layout (mr_v8)** — 35-dim (PPO net + VecNormalize). (TF `tf_v2` layout removed 2026-06-02.):
-> - **MR (mr_v8)** → `MeanReversionFilterEnv._get_obs` ↔ `FTMOTradingBot._build_signal_observation` ↔ `models/mr/`. obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=1−adx/50.
+> **Obs layout (mr_v8)** — **36-dim** (PPO net + VecNormalize). (TF `tf_v2` layout removed 2026-06-02.):
+> - **MR (mr_v8)** → `MeanReversionFilterEnv._get_obs` ↔ `FTMOTradingBot._build_signal_observation` ↔ `models/mr/`. obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=1−adx/50, **obs[35]=trend_eff_h1 (Fix#1)**.
 > The obs must stay synced across its 3 places (env `_get_obs` ↔ live `_build_signal_observation` ↔ `models/mr/`).
 >
 >
-> **⚠️ Obs dim = 35** (index 0-34). The "26 dims" once cited for v8.0.74b never reached the live `OBS_DIM` — `SelfLearningAgent.OBS_DIM`, `MeanReversionFilterEnv.observation_space`, and `models/mr/vec_normalize_mr.pkl` all agree at **35** (verified by `parity_audit` 3-way sync). obs[27,28] (chronos) hardwired 0.
+> **⚠️ Obs dim = 36** (index 0-35; **Fix#1 2026-06-03 added obs[35]=`trend_eff_h1`**, the 1-day signed efficiency = persistent-trend regime). `SelfLearningAgent.OBS_DIM=36`, `MeanReversionFilterEnv.observation_space=(36,)`, and the retrained `models/mr/vec_normalize_mr.pkl` all agree at **36** (verified leakage/parity/obs_parity_check 3-way). obs[27,28] (chronos) hardwired 0. (Pre-Fix#1 baseline = 35-dim at `models/mr/best.pre_fix1/`.)
 >
 > **v8.0.80 status** — `MeanReversionFilterEnv.step` now applies the entry-confirm forced-SKIP (C3) to match the parent env + live executor (was missing → ~33% train/live mismatch). `MeanReversionBacktester` anchors H1/H4 per scan-bar (H6, was day-start-stale). Live `_build_signal_observation` obs[16] reuses temporal-augmented `ml_score` (H3) and obs[21] = cumulative trades-opened-today /3 (H4) — both now match this env. **C3 + H6 require pool rebuild + retrain.** See [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6).
 >
@@ -49,7 +49,7 @@
 
 ---
 
-## Observation Space Layout (35 dims)
+## Observation Space Layout (36 dims)
 
 **Must be kept in sync in three places**:
 
@@ -181,6 +181,14 @@
 | 34 | `band_squeeze_ratio` | `TechnicalIndicators.calculate_keltner` | `1 - width/avg_width_50`, clip [0, 1] |
 
 **Why v8.0.74**: BE-Whipsaw 64% (9/14 trades) — bot entered mid-trend instead of at overextended extremes. Keltner Channel (EMA ± N×ATR) adapts to volatility unlike fixed S/R. Three live filters added: KC entry (price must be outside band), EMA slope (blocks steep trends), consecutive outside (≥3 bars = sustained trend not spike).
+
+### Fix#1 Persistent-Trend Regime [35] (2026-06-03)
+
+| Idx | Feature | Source | Normalization |
+|-----|---------|--------|---------------|
+| 35 | `trend_eff_h1` | `TechnicalIndicators.calculate_signed_efficiency(h1, 24)` | signed Kaufman ER `(close[-1]−close[-25])/Σ|Δclose|`, clip [−1, 1] |
+
+**Why Fix#1**: the FTMO challenge died fading **persistent (slow) downtrends** that ADX can't see (ADX win% flat ~50% across all buckets; June EUR losers ADX 13-16 yet drifting down). `trend_eff_h1` (1-day signed efficiency) separates MR fade outcome cleanly on the 977k pool: chop (|ER|<0.1)=+0.078/win54% → strong-trend (0.6+)=−0.206/win39% (monotonic). Retrain (obs 36): DD 5.80→2.63%, walk-forward+live-exit beats baseline on every fold (recent EV/trade $106→$119). ⚠️ Live `MRSignal.trend_eff_h1` (`LiveMRScanner.analyze_with_data`) MUST mirror the backtester `calculate_signed_efficiency(h1_slice, 24)` for parity. Take-rate response is mild (still TAKEs ~67% at |ER|>0.6) → optional hard-gate booster pending. See [`05-invariants.md` Fix#1](05-invariants.md#-version-log-entry--fix1-obs-3536-trend_eff_h1-regime-feature--retrain-promoted-2026-06-03-rebuildregime-aware).
 
 ---
 
@@ -339,6 +347,14 @@ Sum if pass  : +7.0 max
 ```
 
 Verdict: Δ Pass Rate ≤ 5 pp = HEALTHY, 5-10 pp = MILD, > 10 pp = OVERFIT (exits 1).
+
+**⚠️ Out-of-TIME verification** (`scripts/walk_forward_eval.py`, 2026-06-03 — root-cause of the FTMO challenge fail): `holdout_eval.py` resamples the **same OHLCV history** by seed → it cannot see regime shift, which is how the 2026-06 challenge died (sim Pass ~88% yet bled live). `walk_forward_eval.py` splits OHLCV by **TIME** (M15 bar-index is chronological) into folds and evals the deployed model per fold:
+
+```bash
+.venv/bin/python ftmo_trading_bot/scripts/walk_forward_eval.py --pool_size 600 --n_episodes 800 --workers 8
+```
+
+Folds: `older` [0.00,0.55] · `mid` [0.55,0.78] · `recent` [0.82,1.00] (out-of-time, closest to the live-fail regime; 0.78→0.82 embargo gap). Requires `build_mr_signal_pool.py --start_frac/--end_frac` (added same date — **backward-compatible**: defaults `0.0/1.0` reproduce full-history pools byte-for-byte). **Real result (n=600 eps/fold, 800 eval — the n=16 smoke "100→20% decay" was pure noise, discarded): Pass 81.2 / 78.4 / 89.8% (older/mid/recent), EV/trade $228/$205/$217, DD <5%, breach 0 → STABLE across time (Δ Pass −8.5pp).** ⇒ the model is **NOT time-overfit in sim**; the FTMO fail is the **sim↔live execution gap**, not a backtest-regime miss. `--model_live_exit` (added 2026-06-03) rebuilds fold pools with the LIVE exit (BE@0.3R + 33% partial @0.8R) instead of full "ride" → measures how much of the gap is exit-realization (expect Pass/EV to drop toward the live payoff 0.59). Mode 2 (retrain-on-older → test-on-recent = true OOS) is still the next gate. Full audit: `~/.claude/plans/hedge-fund-quant-flickering-pudding.md`.
 
 **Manual path** (3 steps):
 

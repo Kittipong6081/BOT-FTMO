@@ -1,16 +1,14 @@
 {
-  "version": "v8.0.81",
-  "date": "2026-05-30",
-  "obs_dim": 35,
-  "pass_rate_train": 0.869,
-  "pass_rate_holdout": 0.890,
-  "delta_pass_pp": -2.1,
-  "holdout_verdict": "HEALTHY (gap <= 5pp)",
-  "breach_rate": 0.0,
-  "win_rate": 0.695,
-  "take_rate": 0.472,
-  "total_dd_max": 0.058,
-  "daily_dd_max": 0.030,
-  "profit_avg": 9664.13,
-  "notes": "v8.0.80 audit fixes (C1/C2/C3/H1-H8) + v8.0.81 removed wrong M15-ADX>25 reward penalty. Holdout 89.0% beats v8.0.80 (87.6%) on same seed-999 pool. RL-only retrain (pool 5000 + GBM unchanged). Prev model kept at best/*.v8080_validated."
+  "iteration": 0,
+  "metrics": {
+    "pass_rate": 0.872,
+    "breach_rate": 0.0,
+    "profitable_rate": 0.987,
+    "win_rate": 0.7038413857219394,
+    "take_rate": 0.4667338610606674,
+    "total_dd_max": 0.026252882952389044,
+    "daily_dd_max": 0.0264500790257523,
+    "profit_avg": 9711.742320263993
+  },
+  "ts": "2026-06-03T16:08:07+00:00"
 }

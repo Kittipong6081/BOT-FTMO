@@ -410,6 +410,34 @@ class TechnicalIndicators:
             return 50.0
         return float(np.clip(val, 0.0, 100.0))
 
+    @staticmethod
+    def calculate_signed_efficiency(df: pd.DataFrame, period: int = 32) -> float:
+        """Fix#1 (2026-06-03) — Signed Kaufman Efficiency Ratio over `period` bars.
+
+        Captures **persistent (slow) trend** that ADX misses — the regime that
+        killed the June challenge (MR fading a smooth multi-bar downtrend at
+        ADX 13-16 = "ranging" by ADX yet drifting down).
+
+            signed_ER = (close[-1] − close[-1-period]) / Σ |close.diff()|   over period bars
+
+          • → +1  = efficient UPtrend   (price walks a near-straight line up)
+          •    0  = choppy / range       (lots of back-and-forth, net ≈ 0)
+          • → −1  = efficient DOWNtrend  (near-straight line down)
+
+        Unlike `price_roc`/`ema_slope_norm` (immediate dip-quality), this is the
+        net-vs-path RATIO over a window → distinguishes "dip in a range" (bounces,
+        MR wins) from "dip in a trend" (continues, MR dies). Closed bars only
+        (no leakage). Returns 0.0 if insufficient/flat data.
+        """
+        if df is None or "close" not in df or len(df) < period + 1:
+            return 0.0
+        close = df["close"].iloc[-(period + 1):]
+        net = float(close.iloc[-1] - close.iloc[0])
+        path = float(close.diff().abs().sum())
+        if path <= 0 or not np.isfinite(path):
+            return 0.0
+        return float(np.clip(net / path, -1.0, 1.0))
+
     # =========================================================================
     # 🚀 Price ROC — การเปลี่ยนแปลงราคาล่าสุด (Momentum)
     # =========================================================================

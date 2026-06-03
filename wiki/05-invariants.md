@@ -1,5 +1,39 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-06-02 | Scope: red flags, version log, migration notes (latest: **TF/dual-strategy REMOVED** — single-strategy MR only)
+> Last Updated: 2026-06-03 | Scope: red flags, version log, migration notes (latest: **Fix#1 — obs 35→36 regime feature `trend_eff_h1`, RETRAINED + walk-forward verified**)
+
+## 📝 Version Log Entry — Fix#1: obs 35→36 (`trend_eff_h1` regime feature) — RETRAIN, PROMOTED (2026-06-03, rebuild/regime-aware)
+
+**⛔ OBS DIM IS NOW 36 (was 35).** Must stay synced in 3 places: `SelfLearningAgent.OBS_DIM=36` · `MeanReversionFilterEnv._get_obs` (appends obs[35]) · `FTMOTradingBot._build_signal_observation` (appends obs[35]). Plus live `MRSignal.trend_eff_h1` (computed in `LiveMRScanner.analyze_with_data`) + `MeanReversionBacktester` sig_dict (computed from `h1_slice`). `MeanReversionFilterEnv.observation_space` overridden to (36,). leakage/parity/obs_parity_check all exit 0 @ 36.
+
+**Why**: the FTMO challenge died (−9.87%) because MR **fades persistent (slow) downtrends** that the ADX trend filter can't see (audit: ADX win% flat ~50% across ALL ADX buckets; June EUR losers were ADX 13-16 = "ranging" by ADX yet drifting down; all 10 June trades bought into negative `price_roc`).
+
+**Feature**: NEW `TechnicalIndicators.calculate_signed_efficiency(df, period=32)` = signed Kaufman Efficiency Ratio = `(close[-1]−close[-1-period]) / Σ|close.diff()|` ∈ [−1,+1] (+1 efficient uptrend · 0 chop · −1 efficient downtrend). Used as **`trend_eff_h1`** = signed efficiency on **H1, period 24** (~1 day). **Validated on the 977k-signal pool: MR fade meanOut declines monotonically with |ER_h1|** — chop (|ER|<0.10)=+0.078/win54% → strong-trend (0.60+)=−0.206/win39%; EV crosses 0 at |ER_h1|≈0.30. (ADX gave no such separation.)
+
+**Result (retrain, 5000-pool, obs 36)**: Pass 87.2% (≈ baseline 88%), Win 70.4%, **Total DD 2.63% (vs baseline 5.80% — halved)**, Profitable 98.7%, take 46.7%, breach 0%. **Walk-forward + `model_live_exit` (honest, out-of-TIME) BEATS baseline on every fold** (recent: Pass 54.2→61.0, EV/trade $106→$119, DD 4.9→4.2; mid: Pass 50.9→54.6; older: DD 3.9→2.7). No fold regressed. Promoted to `models/mr/best/` (pipeline auto-snapshot); baseline preserved at `models/mr/best.pre_fix1/` + `data/*.pre_fix1` (obs 35) for rollback.
+
+**Caveats**: (1) take-rate response is **mild** — the agent still TAKEs ~67% even in the |ER|>0.6 (−0.18 EV) zone; the win is more DD-reduction than aggressive trend-avoidance. Optional **hard gate** (block |ER_h1|≥0.45 in pool+live) is a pending booster. (2) Still SIM — does NOT close the sim↔live execution gap (Fix#3). **Do NOT trust for live until Fix#3 (spread/slippage + concurrent correlation in the backtester) + paper-forward.** (3) Mode-2 true-OOS (retrain-on-older→test-recent) not yet run. NOT yet committed (branch `rebuild/regime-aware`). Revert: restore `*.pre_fix1` + `git checkout` the obs-36 edits (6 files) + delete the fix1 pool/GBM.
+
+## 📝 Version Log Entry — same-direction cap 2→1 REVERT (2026-06-03, rebuild/regime-aware, live-only)
+
+**Context**: FTMO challenge FAILED (account 10,000 → ~9,013 = −9.87%, hit the 10% total-DD wall, 2026-06-03). Full audit in `~/.claude/plans/hedge-fund-quant-flickering-pudding.md`. First remediation from the approved **regime-aware rebuild** plan.
+
+**Change**: `FTMOConfig.MAX_SAME_CURRENCY_LEG_POSITIONS` **2 → 1** (reverts the 2026-06-02 raise; back to the v8.0.79 single-leg guard). The bot again allows only **1 position per same direction on a shared non-USD currency leg**.
+
+**Why**: The live `ftmo_trades.xlsx` (1–3 มิ.ย., 9 closed trades) shows cap=2 directly enabled a correlated short-JPY BUY cluster — **GBPJPY BUY ×2** (T8 −$2.36 + T10 −$64.98, opened 16 min apart) plus **USDJPY BUY** = 3 correlated BUYs inside 16 min, **all lost (−$138)**. With cap=1 the 2nd GBPJPY BUY would have been blocked. (Separately, the audit confirmed there is NO directional execution bug — the KC-slope entry filter is symmetric, blocking 80 BUY + 67 SELL; the all-BUY outcome is signal imbalance + a magnitude-based slope filter that misses slow trends → folds into the planned regime/slow-trend detector, not a separate fix.)
+
+**Scope**: Live-only — `MeanReversionBacktester`/pool does not run this RL-blind guard → **no retrain**. Affected: `config/settings.py` (`MAX_SAME_CURRENCY_LEG_POSITIONS`). Deploy = VPS git pull + restart. Revert: set back to `2`.
+
+## 📝 Version Log Entry — dual-strategy scaffolding RECOVERED + out-of-time eval (2026-06-03, rebuild/regime-aware, flag OFF — MR identical)
+
+**Why**: the approved regime-aware rebuild (see `~/.claude/plans/hedge-fund-quant-flickering-pudding.md`) restores the dual-strategy scaffolding deleted in v8.2.0 (`95c124e`) as the editable base for **Fix#1** (data-driven regime gate) + **Fix#2** (early-entry trend engine). Recovery only — no live behavior change yet (integration is the later phase).
+
+**Recovered from `git 95c124e^`** (10 `.py`, binaries skipped — TF models/pkl will be retrained): `strategy/{regime_classifier,strategy_router,trend_following_strategy}.py`, `ml/{trend_following_backtester,trend_following_env}.py`, `core/strategy_risk_book.py`, `scripts/{build_tf_signal_pool,train_tf_signal_quality,train_tf_signal_filter,auto_train_pipeline_tf}.py`.
+
+**Config restored in `config/settings.py`** (flag OFF): `RegimeConfig` + `TrendFollowingConfig` classes, `BotConfig.regime`/`BotConfig.tf` fields, `FTMOConfig.{STRATEGY_MAGIC,STRATEGY_SUB_BUDGET_PCT,STRATEGY_SLOT_CAP,STRATEGY_RISK_PCT,DAILY_LOSS_CAP_PCT_DUAL}`. `bot_config.tf.enabled = False` ⇒ `main.py` does not route through these (they are inert). `TrendFollowingConfig.early_*` (Fix#2 scaffold: +DI/−DI cross + ADX rising, NO hardcoded ADX cap) ships **OFF** — needs TF pool/GBM/RL rebuild + DD-aware eval before enabling.
+
+**Verification**: all 6 recovered modules import clean; `import main` OK; **leakage + parity exit 0** (MR obs 35-dim byte-identical — scaffolding does not touch the live MR path). ⚠️ The hardcoded `RegimeConfig` thresholds (ADX [20,27] dead-zone) are the Fix#1 *replacement target*, not endorsed.
+
+**New tool**: `scripts/walk_forward_eval.py` — out-of-TIME eval (folds by time, not seed). **Real result (n=600/fold): Pass 81/78/90% older/mid/recent = STABLE → NOT time-overfit** (the n=16 smoke "100→20% decay" was noise). ⇒ the FTMO fail is the **sim↔live execution gap**, not a backtest-regime overfit → root-cause #1 re-prioritized to backtester realism (`--model_live_exit` BE/partial + spread/slippage + concurrent correlation). See `wiki/03-rl-training.md` + the plan file.
 
 ## 📝 Version Log Entry — TF / dual-strategy REMOVED (2026-06-02) — back to single-strategy MR
 
@@ -9,7 +43,7 @@
 
 **Shared files reverted to single-strategy MR**: `main.py` (removed `_strategies`/`_router`/`_regime_classifier`/`_rl_agents`/`_quality_models` dicts + `_strategy_for`/`_rl_agent_for`/`_quality_model_for`/`_build_obs_tf`/`_build_obs_for`/`_open_position_owners`/`_compute_symbol_regime`/`_compute_live_regime` + router scan/TF-paper branches → direct `self._strategy`/`self._rl_agent`/`self._quality_model`/`_build_signal_observation`). `core/risk_manager.py` (removed `StrategyRiskBook` import+instantiation+save/load/record/halt; daily-cap → single-strategy 2.5%). `execution/trade_executor.py` (removed `_check_strategy_conflict`; per-strategy magic helpers → single magic 123456; `risk_pct=None`→default 0.70%; dropped `strategy_id=` kwargs). `execution/trade_manager.py` (`_exit_profile()` parameterless → MR profile). `config/settings.py` (removed `TrendFollowingConfig`/`RegimeConfig`/`bot_config.tf`/`bot_config.regime` + `STRATEGY_MAGIC`/`STRATEGY_SLOT_CAP`/`STRATEGY_SUB_BUDGET_PCT`/`STRATEGY_RISK_PCT`/`DAILY_LOSS_CAP_PCT_DUAL`). `strategy/indicators.py` (TF comment removed).
 
-**KEPT (not TF)**: `StrategyBase` (LiveMRScanner's base, trimmed), the vestigial `strategy_id="MR"`/`obs_layout_id="mr_v8"` literals (logger/notifier read them via forgiving `.get` → Excel "Strategy"/"Obs Layout" columns still populate), `calculate_adx` +DI/-DI/di_spread (generic ADX completion), `MAX_SAME_CURRENCY_LEG_POSITIONS=2`, `CLOSED_BAR_ONLY` flag, RL `--seed`. `calculate_choppiness` is now orphaned dead code (harmless; no MR caller).
+**KEPT (not TF)**: `StrategyBase` (LiveMRScanner's base, trimmed), the vestigial `strategy_id="MR"`/`obs_layout_id="mr_v8"` literals (logger/notifier read them via forgiving `.get` → Excel "Strategy"/"Obs Layout" columns still populate), `calculate_adx` +DI/-DI/di_spread (generic ADX completion), `MAX_SAME_CURRENCY_LEG_POSITIONS` (=2 at removal; **reverted to 1 on 2026-06-03** — see top entry), `CLOSED_BAR_ONLY` flag, RL `--seed`. `calculate_choppiness` is now orphaned dead code (harmless; no MR caller).
 
 **Verification**: `import main` clean (no dangling refs); `leakage_audit` + `parity_audit` exit 0 (obs 35-dim 3-way sync, `adx` byte-identical 19.614282); **MR eval (5000 ep): Pass 87.8% / Profitable 98.1% / Win 68.8% / Total DD 5.80% — matches the v8.0.80 baseline (~88%, DD 5.80%) → MR unchanged.** ⛔ `bot_state.json` NOT deleted (FTMO anchor); the stale `strategy_book`/schema-9 key is simply ignored on load. Deploy = VPS git pull + restart. ⚠️ The other wiki pages still contain historical TF rows (02-modules/03-rl-training/04-operations) — they describe removed code; this entry is the source of truth.
 

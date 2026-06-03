@@ -376,8 +376,11 @@ def audit_vec_normalize() -> int:
             with open(vecn, "rb") as f:
                 vn = pickle.load(f)
             mean = vn.obs_rms.mean if hasattr(vn, "obs_rms") else None
-            if mean is None or len(mean) != 35:
-                print(f"  ❌ vec_normalize_mr.pkl obs_rms invalid")
+            from ml.rl_agent import SelfLearningAgent
+            _expected_dim = SelfLearningAgent.OBS_DIM   # read dynamically (no stale hardcode)
+            if mean is None or len(mean) != _expected_dim:
+                print(f"  ❌ vec_normalize_mr.pkl obs_rms invalid "
+                      f"(len={None if mean is None else len(mean)}, expected {_expected_dim})")
                 fails += 1
             else:
                 print(f"  ✓ vec_normalize_mr.pkl loaded — obs_rms.mean shape {mean.shape}")

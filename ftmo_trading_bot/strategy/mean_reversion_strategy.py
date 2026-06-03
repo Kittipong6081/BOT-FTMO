@@ -117,6 +117,11 @@ class MRSignal:
     # v8.0.75: ATR z-score (regime) — used by dynamic slope filter (live-only)
     atr_zscore_30bars: float = 0.0
 
+    # Fix#1 (2026-06-03): 1-day signed Kaufman efficiency on H1 (persistent-trend regime).
+    # +1 efficient uptrend · 0 chop · −1 efficient downtrend. obs[35]. Mirrors
+    # MeanReversionBacktester (calculate_signed_efficiency(h1, 24)) for train/live parity.
+    trend_eff_h1: float = 0.0
+
     # v8.1: strategy origin tag — propagated through the whole live pipeline
     # (obs routing, executor magic, per-strategy risk ledger). MR signals = "MR".
     strategy_id: str = "MR"
@@ -468,6 +473,12 @@ class MeanReversionStrategy:
             TechnicalIndicators.compute_atr_zscore_30bars(ltf_df)
         )
 
+        # Fix#1 (2026-06-03): 1-day signed efficiency on H1 = persistent-trend regime (obs[35]).
+        # MUST mirror MeanReversionBacktester (calculate_signed_efficiency(h1_slice, 24)) for parity.
+        trend_eff_h1_val = float(
+            TechnicalIndicators.calculate_signed_efficiency(h1_df, 24)
+        ) if h1_df is not None else 0.0
+
         if score < self.MIN_CONFLUENCE_SCORE:
             return self._no_signal(
                 symbol, atr_value,
@@ -506,6 +517,7 @@ class MeanReversionStrategy:
             consecutive_outside=consecutive_outside_val,
             band_squeeze_ratio=band_squeeze_ratio_val,
             atr_zscore_30bars=atr_zscore_val,
+            trend_eff_h1=trend_eff_h1_val,
             reasons=[
                 f"BB%B={bb_pctb:.2f} (extreme={bb_extreme:.2f})",
                 f"RSI={rsi_value:.1f} (extreme={rsi_extreme:.2f})",

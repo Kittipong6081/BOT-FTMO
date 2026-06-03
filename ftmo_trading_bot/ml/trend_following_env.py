@@ -1,71 +1,54 @@
 """
 ===============================================================================
-FTMO Trading Bot — Mean Reversion Filter Environment (v8.0)
+FTMO Trading Bot — Trend Following Filter Environment (v8.1 Phase 3)
 ===============================================================================
-RL environment for the MR-strategy pivot. Inherits the SMC env's plumbing
-(observation builder, FTMO state machine, correlation simulator, episode
-machinery) and overrides:
+RL env for the TF strategy. Inherits all FTMOSignalFilterEnv plumbing (obs
+builder, FTMO state machine, correlation simulator, episode machinery) and
+overrides reward shaping with INVERTED incentives vs MR:
 
-  • `step()`  — reward shaping per the v8.0 spec
-                  - Quick TP bonus: large reward when TP hits in <= 5 M15 bars
-                  - Slow win bonus: smaller bonus for late TP wins
-                  - Prolonged floating loss penalty: severe penalty for trades
-                    that bleed for many bars before SL
-                  - Capital-preservation focus: every losing trade pays a
-                    "duration fine" proportional to how long it floated red
-  • `_get_obs()` — keeps 32-dim shape (so the trainer + VecNormalize stay
-                   compatible) but reinterprets a few SMC slots:
-                       obs[4]  = bb_extreme score      (was ob_norm)
-                       obs[10] = bb_band_width / ATR   (was ob_size_atr)
-                       obs[26] = trend_strength_inverse for MR
-                                (high when ADX low — ranging markets are
-                                 friendly to MR)
-  • Pool path defaults to `data/mr_signal_pool_*.pkl` so the SMC pool stays
-    untouched.
+  • MR rewards quick small TPs + penalizes prolonged holds.
+  • TF rewards RUNNERS (outcome >= 2R, scaled with size) + small bonus for
+    modest wins, and penalizes losing trades entered on an AGED trend
+    (late entry). The "let winners run" behaviour is baked into the
+    TrendFollowingBacktester trail (Stage-2 cap disabled) → the agent's job is
+    to TAKE the trend-continuation setups that turn into runners and SKIP the
+    choppy/late ones.
 
-The env relies on extra fields produced by `MeanReversionBacktester`:
-  - `bars_to_resolution`  (int)   — speed of TP/SL hit
-  - `is_quick_tp`         (bool)  — winner that resolved in <= 5 bars
-  - `bb_extreme`          (float) — strength of BB band penetration
-  - `bb_band_width_atr`   (float) — BB band width / ATR (vol regime)
-  - `reversal_wick_ratio` (float) — rejection wick / candle body
+Same 35-dim obs shape (so VecNormalize + network arch stay identical) — three
+slots reinterpreted for TF semantics (tf_v1 layout):
+    obs[4]  = trend_strength / 100          (was bb_extreme)
+    obs[10] = trend_age_bars / 30           (was bb_band_width/ATR)
+    obs[26] = adx / 50  (trending = good)   (MR used 1 - adx/50)
+
+Reads TF-specific pool fields produced by TrendFollowingBacktester:
+  - `trend_age_bars` (int), `pullback_depth_atr` (float), `adx_at_entry` (float),
+    `is_runner` (bool) — plus the shared `outcome_pnl_ratio`, `bars_to_resolution`.
 ===============================================================================
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Optional
 
 import numpy as np
-import gymnasium as gym
-from gymnasium import spaces
 
 from ml.signal_filter_env import FTMOSignalFilterEnv
 
 
-class MeanReversionFilterEnv(FTMOSignalFilterEnv):
-    """Mean-reversion variant — quick-TP bonus + prolonged-loss penalty.
+class TrendFollowingFilterEnv(FTMOSignalFilterEnv):
+    """Trend-following variant — runner bonus + late-entry penalty."""
 
-    Drop-in replacement for `FTMOSignalFilterEnv` consumed by the same
-    PPO trainer. Same obs shape (32,), same action shape (1,) so the
-    network architecture stays identical.
-    """
-
-    # ─── MR reward-shaping parameters (override via constructor) ──────
-    QUICK_TP_BARS: int = 5             # winner resolved in <= 5 bars = "quick"
-    QUICK_TP_BONUS: float = 0.50       # reward bonus for quick TP wins
-    SLOW_WIN_BONUS: float = 0.20       # smaller bonus for slow wins
-    PROLONGED_LOSS_BARS: int = 12      # losing trade floating > 12 bars = bad
-    PROLONGED_LOSS_PENALTY: float = 0.40
-    BASE_LOSS_PENALTY: float = 0.10    # baseline (any losing trade)
-    DURATION_FINE_COEF: float = 0.02   # per-bar fine for losing trades
-    DURATION_FINE_CAP: float = 0.30    # cap so it doesn't dominate
-    # v8.0.81: ADX_VIOLATION_PENALTY removed — it fired on M15 ADX > 25 (sig['adx']),
-    # but the strategy's real trend veto is H1 ADX > 30 (hard-gated at pool-build, so
-    # EVERY pool signal already has H1 ADX ≤ 30). M15 ADX of a valid MR signal is often
-    # 25-40 (M15 is noisier) → the penalty punished ~half of legitimate signals for a
-    # trend the H1 filter already cleared. A penalty on H1 ADX would never fire (all ≤ 30),
-    # so the correct action is to drop it. (constants kept = removed)
+    # ─── TF reward-shaping parameters (override via constructor) ──────
+    # v8.1 runner-tune: favour big runners over small +1R wins so the agent
+    # prefers setups that turn into trends (RUNNER_BONUS↑, SLOW_WIN_BONUS↓).
+    RUNNER_R: float = 2.0              # outcome >= 2R counts as a "runner"
+    RUNNER_BONUS: float = 0.70         # base bonus for a runner win (was 0.50)
+    RUNNER_SCALE: float = 0.25         # extra per R above RUNNER_R (capped)
+    RUNNER_SCALE_CAP: float = 0.75
+    SLOW_WIN_BONUS: float = 0.10       # modest win (0 < outcome < RUNNER_R) (was 0.15)
+    BASE_LOSS_PENALTY: float = 0.10    # any losing trade
+    LATE_ENTRY_TREND_AGE: int = 60     # H1 bars — trend "too mature" to enter
+    LATE_ENTRY_PENALTY: float = 0.20   # losing trade entered on an aged trend
 
     def __init__(
         self,
@@ -77,12 +60,11 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
         outcome_noise_std: float = 0.05,
         ml_filter_threshold: float = 0.0,
         risk_per_trade: Optional[float] = None,
-        # MR-specific overrides
-        quick_tp_bonus: Optional[float] = None,
+        # TF-specific overrides
+        runner_bonus: Optional[float] = None,
         slow_win_bonus: Optional[float] = None,
-        prolonged_loss_penalty: Optional[float] = None,
+        late_entry_penalty: Optional[float] = None,
         base_loss_penalty: Optional[float] = None,
-        duration_fine_coef: Optional[float] = None,
     ):
         super().__init__(
             data_dir=data_dir,
@@ -94,44 +76,34 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
             ml_filter_threshold=ml_filter_threshold,
             risk_per_trade=risk_per_trade,
         )
-        # Override reward params if caller provided
-        if quick_tp_bonus is not None:
-            self.QUICK_TP_BONUS = float(quick_tp_bonus)
+        if runner_bonus is not None:
+            self.RUNNER_BONUS = float(runner_bonus)
         if slow_win_bonus is not None:
             self.SLOW_WIN_BONUS = float(slow_win_bonus)
-        if prolonged_loss_penalty is not None:
-            self.PROLONGED_LOSS_PENALTY = float(prolonged_loss_penalty)
+        if late_entry_penalty is not None:
+            self.LATE_ENTRY_PENALTY = float(late_entry_penalty)
         if base_loss_penalty is not None:
             self.BASE_LOSS_PENALTY = float(base_loss_penalty)
-        if duration_fine_coef is not None:
-            self.DURATION_FINE_COEF = float(duration_fine_coef)
 
-        # Fix#1 (2026-06-03): obs 35 → 36 (append obs[35]=trend_eff_h1, the 1-day
-        # persistent-trend regime). Override the base env's (35,) Box so VecNormalize/PPO
-        # size to 36. Base env stays 35 for any other (unused) subclass.
-        self.observation_space = spaces.Box(
-            low=-5.0, high=5.0, shape=(36,), dtype=np.float32
-        )
-
-    # ─── Override observation builder (semantic + obs[35] regime) ──────
+    # ─── Observation builder (semantic only — same 35-dim shape, tf_v1) ─────
 
     def _get_obs(self) -> np.ndarray:
-        """36-dim obs — reinterpret three SMC slots for MR + obs[35]=trend_eff_h1."""
-        obs = super()._get_obs()   # 35-dim (base env)
-        if self._signal_idx < len(self._signals):
-            sig = self._signals[self._signal_idx]
-            obs[4] = float(np.clip(sig.get("bb_extreme", 0.0), 0.0, 1.0))
-            bbw_atr = float(sig.get("bb_band_width_atr", 0.0))
-            obs[10] = float(np.clip(bbw_atr / 3.0, 0.0, 1.0))
-            adx = float(sig.get("adx", 0.0))
-            obs[26] = float(np.clip(1.0 - adx / 50.0, 0.0, 1.0))
-            trend_eff_h1 = float(np.clip(sig.get("trend_eff_h1", 0.0), -1.0, 1.0))
-        else:
-            trend_eff_h1 = 0.0
-        # Fix#1 (2026-06-03): obs[35] = 1-day signed efficiency (persistent-trend regime)
-        return np.append(obs, np.float32(trend_eff_h1)).astype(np.float32)
+        obs = super()._get_obs()
+        if self._signal_idx >= len(self._signals):
+            return obs
+        sig = self._signals[self._signal_idx]
+        obs[4] = float(np.clip(sig.get("trend_strength", 0.0) / 100.0, 0.0, 1.0))
+        obs[10] = float(np.clip(sig.get("trend_age_bars", 0) / 30.0, 0.0, 1.0))
+        adx = float(sig.get("adx", 0.0))
+        obs[26] = float(np.clip(adx / 50.0, 0.0, 1.0))   # trending = good (vs MR inverse)
+        # tf_v2 (early-entry): repurpose the dead Chronos slots [27]/[28] for the leading
+        # signals so the RL can rank early/building vs late/exhausted entries (the base
+        # _get_obs left these = 0; MR never overrides them → MR obs unchanged).
+        obs[27] = float(np.clip(sig.get("di_spread", 0.0) / 50.0, -1.0, 1.0))
+        obs[28] = float(np.clip(sig.get("adx_slope", 0.0) / 10.0, -1.0, 1.0))
+        return obs
 
-    # ─── Override step() — same plumbing, MR-specific reward ───────────
+    # ─── step() — same plumbing, TF reward (runners > quick TP) ────────────
 
     def step(self, action):
         action = np.asarray(action, dtype=np.float32).flatten()
@@ -141,34 +113,28 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
         pnl = 0.0
         was_clamped = False
 
-        # Day rollover
         if sig["day"] != self._current_day:
             self._update_daily_dd()
             self._current_day = sig["day"]
             self._start_new_day()
 
-        # Drop stale open positions (correlation simulator)
         if self._open_positions:
             cutoff = self._signal_idx - self.HOLD_SIGNALS_APPROX
             self._open_positions = [
                 op for op in self._open_positions if op["opened_at_idx"] >= cutoff
             ]
 
-        # Floating PnL state — kept zeroed (same leak-free policy as v7.2.1)
         self._floating_pnl_norm = 0.0
         self._open_losing_count_norm = 0.0
 
-        # Correlation block — forced SKIP
         correlation_forced_skip = False
         if take and self._is_correlation_blocked(sig):
             take = False
             correlation_forced_skip = True
             self._correlation_forced_skips += 1
 
-        # v8.0.80 (C3): Entry-confirmation forced SKIP — mirror live executor +
-        # parent FTMOSignalFilterEnv.step. เดิม MR env (override เต็ม ไม่เรียก super)
-        # ตกด่านนี้ → agent ฝึก TAKE บนสัญญาณ ~33% (true_frac≈0.669) ที่ live จะ block
-        # → train/live distribution mismatch. ตอนนี้ force SKIP เหมือน live.
+        # TF has no MR-style entry-confirm gate; pool sets entry_confirm_passed=True.
+        # Keep the hook for parity with parent (no-op for TF).
         entry_confirm_forced_skip = False
         if take and not sig.get("entry_confirm_passed", True):
             take = False
@@ -177,9 +143,8 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
 
         outcome = float(sig.get("outcome_pnl_ratio", 0.0))
         ml_score = float(sig.get("ml_score", 0.5))
-        bars_to_res = int(sig.get("bars_to_resolution", self.QUICK_TP_BARS + 1))
-        is_quick_tp = bool(sig.get("is_quick_tp", False))
-        adx_value = float(sig.get("adx", 0.0))
+        bars_to_res = int(sig.get("bars_to_resolution", 0))
+        trend_age = int(sig.get("trend_age_bars", 0))
 
         # ─── 1. TAKE branch ───────────────────────────────────────────────
         if take and self._trades_today < self.MAX_TRADES_PER_DAY:
@@ -228,10 +193,9 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
             target_amount = self.INITIAL_BALANCE * self.TARGET_PCT
             self.target_progress_pct = (profit / target_amount) * 100.0
 
-            # ─── MR-specific reward (the core pivot) ────────────────────
+            # ─── TF-specific reward (runners > quick TP) ────────────────
             pnl_norm = pnl / max(risk_amount, 1.0)
 
-            # Spread cost (same as parent — keep cost awareness)
             spread_pips_trade = float(sig.get("spread_pips", 0.0))
             sl_pips_trade = float(sig.get("sl_distance_pips", 0.0))
             if sl_pips_trade > 0 and spread_pips_trade > 0:
@@ -240,36 +204,23 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
 
             reward = float(np.clip(pnl_norm, -1.0, 3.0))
 
-            # Win shaping
             if pnl_norm > 0:
-                # Capital preservation reward: dense, scales with speed
-                if is_quick_tp or bars_to_res <= self.QUICK_TP_BARS:
-                    reward += self.QUICK_TP_BONUS
+                # Reward RUNNERS: base bonus + scale with how far it ran
+                if outcome >= self.RUNNER_R:
+                    reward += self.RUNNER_BONUS + min(
+                        (outcome - self.RUNNER_R) * self.RUNNER_SCALE,
+                        self.RUNNER_SCALE_CAP,
+                    )
                 else:
                     reward += self.SLOW_WIN_BONUS
-                # ML quality bonus carried over (policy learns to align with
-                # quality model when both agree on a winner)
                 if ml_score >= 0.40:
                     reward += 0.15
             else:
-                # Loss shaping — capital-preservation pressure
-                # Base penalty for any losing trade
+                # Loss shaping — penalize entering an already-mature trend that reversed
                 reward -= self.BASE_LOSS_PENALTY
-                # Duration fine — proportional to how long the trade bled red.
-                # bars_to_res is bounded by the resolution window; cap fine.
-                duration_fine = min(
-                    self.DURATION_FINE_COEF * max(0, bars_to_res - 1),
-                    self.DURATION_FINE_CAP,
-                )
-                reward -= duration_fine
-                # Prolonged-loss penalty — severe, fires when bars >= threshold
-                if bars_to_res >= self.PROLONGED_LOSS_BARS:
-                    reward -= self.PROLONGED_LOSS_PENALTY
+                if trend_age >= self.LATE_ENTRY_TREND_AGE:
+                    reward -= self.LATE_ENTRY_PENALTY
 
-            # v8.0.81: removed M15-ADX>25 penalty (wrong timeframe vs the H1>30 hard gate
-            # already applied at pool-build → it punished valid MR signals). See class const note.
-
-            # Phase-wise activity / DD shaping (kept from parent — works for MR)
             if not self.enable_risk_penalty:
                 reward += 0.02
             else:
@@ -278,34 +229,27 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
                 if was_clamped:
                     reward -= 0.25
 
-        # ─── 2. SKIP branch — Oracle feedback (chart-reading label) ────
+        # ─── 2. SKIP branch — oracle feedback ──────────────────────────────
         else:
             self._total_skips += 1
             reward = 0.0
-
             is_p1 = not self.enable_risk_penalty
-            # MR-tuned oracle weights — leaner than SMC because RR 1:1 means
-            # missed winners hurt less (smaller absolute outcome).
-            if outcome >= 0.5:
-                reward -= 0.20 if is_p1 else 0.55
+            # TF oracle: missing a RUNNER is the costliest mistake (TF's raison d'être).
+            if outcome >= self.RUNNER_R:
+                reward -= 0.30 if is_p1 else 0.70
                 if ml_score >= 0.40:
                     reward -= 0.15 if is_p1 else 0.30
-            elif outcome >= 0.1:
-                reward -= 0.05 if is_p1 else 0.10
+            elif outcome >= 0.5:
+                reward -= 0.10 if is_p1 else 0.20
             elif outcome <= -0.5:
-                # Smart skip — reward MORE for MR because capital preservation
-                # is the headline objective
                 reward += 0.30 if is_p1 else 0.45
                 if ml_score < 0.36:
                     reward += 0.15
             elif outcome <= -0.1:
                 reward += 0.10
-
-            # Passive SKIP cost — slightly higher than SMC env so policy
-            # doesn't drift to SKIP-all under MR's lower per-trade reward.
             reward -= 0.012
 
-        # ─── 3. Progress shaping + milestones ──────────────────────────
+        # ─── 3. Progress shaping + milestones (identical to parent/MR) ─────
         progress_delta = self.target_progress_pct - self._last_progress
         if progress_delta > 0:
             reward += 0.05 * progress_delta
@@ -314,28 +258,16 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
         self._last_progress = self.target_progress_pct
 
         if self.enable_risk_penalty:
-            if (
-                not self._mid_check_day10_fired
-                and self._current_day >= 10
-                and self.target_progress_pct < 20.0
-                and self._total_takes < 3
-            ):
+            if (not self._mid_check_day10_fired and self._current_day >= 10
+                    and self.target_progress_pct < 20.0 and self._total_takes < 3):
                 reward -= 0.2
                 self._mid_check_day10_fired = True
-            if (
-                not self._mid_check_day20_fired
-                and self._current_day >= 20
-                and self.target_progress_pct < 40.0
-                and self._total_takes < 6
-            ):
+            if (not self._mid_check_day20_fired and self._current_day >= 20
+                    and self.target_progress_pct < 40.0 and self._total_takes < 6):
                 reward -= 0.3
                 self._mid_check_day20_fired = True
-            if (
-                not self._mid_check_day35_fired
-                and self._current_day >= 35
-                and self.target_progress_pct < 60.0
-                and self._total_takes < 12
-            ):
+            if (not self._mid_check_day35_fired and self._current_day >= 35
+                    and self.target_progress_pct < 60.0 and self._total_takes < 12):
                 reward -= 0.7
                 self._mid_check_day35_fired = True
 
@@ -358,9 +290,8 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
             if self.enable_risk_penalty:
                 terminated = True
 
-        # ─── 4. Episode end ──────────────────────────────────────────
+        # ─── 4. Episode end ──────────────────────────────────────────────
         self._signal_idx += 1
-
         truncated = False
         if self._signal_idx >= len(self._signals):
             truncated = True
@@ -372,11 +303,8 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
                     reward -= 0.3
                 elif self.target_progress_pct < 30.0:
                     reward -= 0.3
-                if (
-                    self._current_day >= 40
-                    and (self._total_takes < 15)
-                    and not self._peak_passed
-                ):
+                if (self._current_day >= 40 and self._total_takes < 15
+                        and not self._peak_passed):
                     reward -= 1.0
             else:
                 if take_rate < 0.03:
@@ -397,7 +325,7 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
             "clamped": was_clamped,
             "aux_target": float(sig.get("outcome_pnl_ratio", 0.0)),
             "bars_to_resolution": bars_to_res,
-            "is_quick_tp": is_quick_tp,
+            "trend_age_bars": trend_age,
         }
 
         if terminated or truncated:
@@ -427,9 +355,9 @@ class MeanReversionFilterEnv(FTMOSignalFilterEnv):
                 "max_profit": self.peak_balance - self.INITIAL_BALANCE,
                 "max_daily_dd_pct": self.max_daily_dd_pct,
                 "correlation_forced_skips": self._correlation_forced_skips,
-                "entry_confirm_forced_skips": self._entry_confirm_forced_skips,  # v8.0.80 (C3)
+                "entry_confirm_forced_skips": self._entry_confirm_forced_skips,
             }
 
         info["correlation_forced_skip"] = correlation_forced_skip
-        info["entry_confirm_forced_skip"] = entry_confirm_forced_skip  # v8.0.80 (C3)
+        info["entry_confirm_forced_skip"] = entry_confirm_forced_skip
         return self._get_obs(), float(reward), terminated, truncated, info

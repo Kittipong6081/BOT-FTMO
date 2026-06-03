@@ -503,6 +503,8 @@ class FTMOTradingBot:
             float(np.clip(getattr(sig, "kc_distance_norm", 0.0), -1.0, 1.0)),
             float(np.clip(getattr(sig, "ema_slope_norm", 0.0), -1.0, 1.0)),
             float(np.clip(getattr(sig, "band_squeeze_ratio", 0.5), 0.0, 1.0)),
+            # Fix#1 [35] — 1-day signed efficiency (persistent-trend regime; ADX-blind killer)
+            float(np.clip(getattr(sig, "trend_eff_h1", 0.0), -1.0, 1.0)),
         ], dtype=np.float32)
         return obs
 

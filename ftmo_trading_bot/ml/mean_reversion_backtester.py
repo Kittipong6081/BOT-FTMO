@@ -328,6 +328,18 @@ class MeanReversionBacktester(StrategyBacktester):
                     "entry_confirm_passed": bool(entry_confirm_passed),
                 }
 
+                # Fix#1 (2026-06-03) DIAGNOSTIC — signed Kaufman efficiency ratio =
+                # persistent-(slow)-trend detector that ADX misses. NOT yet read by
+                # env/GBM/obs; stored to validate fade-outcome separation on a pool before
+                # wiring into the model. Closed bars only (ltf_slice/h1_slice = pre-signal).
+                try:
+                    from strategy.indicators import TechnicalIndicators as _TI
+                    sig_dict["trend_eff_m15"] = _TI.calculate_signed_efficiency(ltf_slice, 48)
+                    sig_dict["trend_eff_h1"] = _TI.calculate_signed_efficiency(h1_slice, 24)
+                except Exception:
+                    sig_dict["trend_eff_m15"] = 0.0
+                    sig_dict["trend_eff_h1"] = 0.0
+
                 # v7.1 temporal/regime features (so GBM trainer can reuse the same
                 # feature list) — best-effort import
                 try:

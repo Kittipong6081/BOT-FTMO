@@ -248,7 +248,18 @@ class FTMOConfig:
     #   correlated → ถ้าผิดทางโดน SL ทั้งคู่ = ~1.4% (2×0.70%) แต่ยังต่ำกว่า daily cap 4% +
     #   MAX_OPEN_POSITIONS=3 คุม total. (USD-theme cap ยัง = 2; opposing-theme block ทิศตรงข้าม
     #   ยังทำงาน). live-only (backtester ไม่ใช้ guard นี้ → ไม่ต้อง retrain). revert: ตั้งกลับ = 1
-    MAX_SAME_CURRENCY_LEG_POSITIONS: int = 2
+    # 2026-06-03 (rebuild/regime-aware): 2→1 REVERT — challenge audit พบ cap=2 เปิดทาง
+    #   GBPJPY BUY ซ้ำ 2 ไม้ (T8 −$2.36 + T10 −$64.98 ห่าง 16 นาที) + USDJPY BUY (short-JPY
+    #   cluster 3 ไม้ใน 16 นาที แพ้หมด −$138). กลับเป็น 1 = ห้าม double-bet ทิศเดียว/leg.
+    MAX_SAME_CURRENCY_LEG_POSITIONS: int = 1
+
+    # === Dual-strategy budgets (recovered 2026-06-03 from git 95c124e^; used by
+    #     StrategyRiskBook + dual wiring — inert while bot_config.tf.enabled=False) ===
+    STRATEGY_MAGIC: dict = field(default_factory=lambda: {"MR": 123456, "TF": 123457})
+    STRATEGY_SUB_BUDGET_PCT: dict = field(default_factory=lambda: {"MR": 0.020, "TF": 0.015})
+    STRATEGY_SLOT_CAP: dict = field(default_factory=lambda: {"MR": 2, "TF": 1})  # sum=3=MAX_OPEN_POSITIONS
+    STRATEGY_RISK_PCT: dict = field(default_factory=lambda: {"MR": 0.0070, "TF": 0.0060})
+    DAILY_LOSS_CAP_PCT_DUAL: float = 0.035      # global soft cap in dual-strategy mode
 
     # === Spread/ATR Liquidity Guard (v7.1, relaxed v7.1.1, v7.1.10) ===
     # ถ้า spread > SPREAD_ATR_RATIO_LIMIT × ATR → reject signal (สภาพคล่องแย่ / ตลาดเปิดผันผวน)
@@ -657,6 +668,107 @@ class MeanReversionConfig:
 
 
 # =============================================================================
+# 🧭 Market Regime + 📈 Trend Following (recovered 2026-06-03 from git 95c124e^)
+# =============================================================================
+# rebuild/regime-aware: dual-strategy scaffolding restored to be the editable base
+# for Fix#1 (data-driven regime gate) + Fix#2 (early-entry trend engine). Master
+# switch `bot_config.tf.enabled` defaults False → the live loop is single-strategy
+# MR (main.py does not route through these; they sit inert until wired in the
+# integration phase). leakage+parity must stay exit 0 (MR byte-identical).
+@dataclass
+class RegimeConfig:
+    """Thresholds for `MarketRegimeClassifier` (per-symbol regime gate).
+
+    ⚠️ Fix#1 target — these HARDCODED ADX/choppiness/slope thresholds are exactly
+    what the rebuild replaces with data-driven boundaries (validated on forward EV).
+    ADX H1 is the PRIMARY separator. The 20–27 band is a statistical dead-zone
+    (wiki v8.0.51: ADX H1 25-30 = WR 25%, −$679) where NEITHER strategy trades.
+    The audit showed ADX misses SLOW trends (Jun EUR pairs ADX 13-16 yet drifting
+    down) → the rebuild adds efficiency-ratio / linear-reg R² to catch them.
+    """
+    # ADX H1 gates (primary)
+    adx_ranging_max: float = 20.0      # ADX < 20 → candidate RANGING (MR)
+    adx_trending_min: float = 27.0     # ADX > 27 → candidate TRENDING (TF)
+    # Choppiness confirmation (0-100)
+    chop_ranging_min: float = 60.0     # CHOP > 60 confirms RANGING
+    chop_trending_max: float = 40.0    # CHOP < 40 confirms TRENDING
+    # EMA slope per ATR (scale-invariant)
+    slope_ranging_max: float = 0.10    # |slope/atr| < 0.10 confirms RANGING
+    slope_trending_min: float = 0.18   # |slope/atr| > 0.18 confirms TRENDING
+    # Hysteresis
+    confirm_bars: int = 3              # new regime must repeat N scans before switching
+    min_dwell_sec: int = 1800          # min seconds between regime switches (per symbol)
+    # Data
+    h1_bars: int = 120                 # H1 bars fetched for classification
+    slope_window: int = 50             # bars for the trend slope fit
+
+
+@dataclass
+class TrendFollowingConfig:
+    """Tunables for the Trend Following strategy (entry on H1).
+
+    `enabled` is the master switch for the whole dual-strategy machinery — when
+    False the live loop behaves exactly like single-strategy MR. Recovered with
+    enabled=False (paused). The `early_*` block (Fix#2) replaces the LAGGING entry
+    gates (ADX>=27 LEVEL + full EMA21>50>200 stack) with LEADING ones (+DI/−DI
+    cross + ADX RISING) — default OFF until the TF pool/GBM/RL are rebuilt + eval'd.
+    """
+    enabled: bool = False              # PAUSED — recovered flag-OFF (MR identical)
+    paper_mode: bool = False           # (unused while enabled=False)
+
+    # Entry timeframe = H1; trend filter = H4/D1
+    entry_timeframe: str = "H1"
+    mtf_timeframe: str = "H4"
+    htf_timeframe: str = "D1"
+    scan_bars_h1: int = 300
+    scan_bars_h4: int = 200
+    scan_bars_d1: int = 120
+
+    # Trend rules
+    ema_fast: int = 21
+    ema_mid: int = 50
+    ema_slow: int = 200
+    adx_entry_min: float = 27.0        # require strong trend (mirror regime gate)
+    macd_confirm: bool = True
+    pullback_ema: int = 21             # pullback toward EMA21 then resume
+    pullback_max_atr: float = 2.5      # price within N×ATR of EMA21 = valid pullback
+    rsi_pullback_buy_max: float = 55.0  # BUY: RSI dipped (not overbought) on pullback
+    rsi_pullback_sell_min: float = 45.0 # SELL: RSI bounced (not oversold) on pullback
+
+    # SL / TP — WIDE (let winners run; opposite of MR)
+    sl_atr_mult: float = 2.0
+    sl_atr_mult_xau: float = 2.5
+    rr_ratio: float = 2.5
+    min_confluence_score: float = 60.0
+    min_confluence_score_training: float = 30.0
+
+    # === Early-entry redesign (Fix#2, flag default OFF) — catch trend BIRTH ===
+    # Direction from +DI/−DI dominance (di_spread leads the EMA stack) + ADX RISING
+    # (building, not exhausting). NO hardcoded upper ADX cap — di_spread + adx_slope
+    # are emitted on the signal for GBM/RL to LEARN the ADX-27-30 sweet spot.
+    early_entry: bool = field(default_factory=lambda: os.environ.get("BOT_TF_EARLY", "0") == "1")
+    early_di_spread_min: float = field(default_factory=lambda: float(os.environ.get("BOT_TF_DI_MIN", "2.0")))
+    early_adx_slope_lookback: int = 3   # H1 bars to measure ADX rising (trend building)
+    early_adx_floor: float = 20.0       # below = pure chop; NOT an upper cap
+
+    # === Live trade-management — TF RIDES (no BE, no partial, wide trail) ===
+    mgmt_use_partial: bool = False
+    mgmt_use_breakeven: bool = False
+    mgmt_use_tp_step: bool = False
+    mgmt_trail_activation_r: float = 1.5
+    mgmt_trail_sl_behind_r: float = 2.0
+    mgmt_trail_sl_floor_r: float = 1.0
+    mgmt_trail_tp_ahead_r: float = 2.0
+
+    # Reward shaping (TF env) — reward holding winners, penalize early cut/late entry
+    runner_bonus: float = 0.50
+    early_cut_penalty: float = 0.30
+    late_entry_penalty: float = 0.20
+    base_loss_penalty: float = 0.10
+    duration_fine_coef: float = 0.01
+
+
+# =============================================================================
 # 📱 การตั้งค่าการแจ้งเตือน (Notifications)
 # =============================================================================
 @dataclass
@@ -726,6 +838,8 @@ class BotConfig:
     indicators: IndicatorConfig = field(default_factory=IndicatorConfig)
     ml: MLConfig = field(default_factory=MLConfig)
     mr: MeanReversionConfig = field(default_factory=MeanReversionConfig)
+    regime: RegimeConfig = field(default_factory=RegimeConfig)                   # recovered 2026-06-03 (rebuild/regime-aware)
+    tf: TrendFollowingConfig = field(default_factory=TrendFollowingConfig)       # recovered 2026-06-03 (flag OFF → MR identical)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     paths: PathConfig = field(default_factory=PathConfig)
     

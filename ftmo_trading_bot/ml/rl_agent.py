@@ -36,7 +36,9 @@ class SelfLearningAgent:
 
     # v8.0.74 — 32 → 35 (เพิ่ม kc_distance_norm, ema_slope_norm, band_squeeze_ratio)
     # v8.0.74b — ทดลอง 35→26 (Pass 69.5%) แพ้ 35 dims (73.5%) → revert กลับ 35
-    OBS_DIM: int = 35
+    # Fix#1 (2026-06-03) — 35 → 36: +obs[35]=trend_eff_h1 (1-day signed Kaufman efficiency
+    #   = persistent-(slow)-trend regime detector that ADX misses; the June fade-the-downtrend killer)
+    OBS_DIM: int = 36
 
     def __init__(
         self,

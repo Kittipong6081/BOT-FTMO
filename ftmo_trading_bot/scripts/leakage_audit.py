@@ -218,8 +218,10 @@ def audit_dynamic_obs() -> int:
 
     obs, info = env.reset(seed=42)
     print(f"  obs.shape = {obs.shape}")
-    if obs.shape[0] != 35:
-        print(f"     ❌ obs dim mismatch: {obs.shape[0]} != 35")
+    from ml.rl_agent import SelfLearningAgent
+    _expected_dim = SelfLearningAgent.OBS_DIM   # read dynamically (no stale hardcode)
+    if obs.shape[0] != _expected_dim:
+        print(f"     ❌ obs dim mismatch: {obs.shape[0]} != {_expected_dim}")
         return 1
 
     # Verify obs values are bounded reasonably (not raw outcome ratios)
