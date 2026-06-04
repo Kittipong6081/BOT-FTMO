@@ -1,5 +1,5 @@
 # 04 — Live Operations (Loop, FTMO State, News, Sessions)
-> Last Updated: 2026-06-03 (🔧 same-direction cap 2→1 revert — rebuild/regime-aware) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging
+> Last Updated: 2026-06-04 (🔧 TF engine ENV-gated `BOT_TF_ENABLED` — default OFF; Fix#2) | Scope: main loop, RiskManager state machine, FTMO rules, news, trading sessions, console quiet mode, live logging, TF enable switch
 >
 > **v8.0.80 loop/state changes** (→ [`05-invariants.md` v8.0.80](05-invariants.md#-version-log-entry--v8080-2026-05-30--production-audit-remediation-execution-safety--ftmo-breach-guard--trainlive-parity-retrain-required-for-c3h6)): (C2) `RiskManager.check_risk` runs an **always-on FTMO 4% daily-breach emergency close** before the state-gated `_check_daily_loss` — so a `DAILY_HALT` set by consec-loss/stop-out (which don't close positions) can no longer let open positions bleed past 4%. (H2) `max_trades_per_day` now uses a per-symbol counter. `main.run()` hourly stats / GBM-drift / periodic-status now fire on **wall-clock gates** (not `_loop_count % 720`), so the v8.0.70 adaptive 1s loop no longer fires them ~5× too often.
 
@@ -245,6 +245,29 @@ python main.py
 - ❌ Delete `bot_state.json` mid-challenge (DD anchor is lost).
 - ❌ Hand-edit `initial_balance`.
 - ❌ Change the MT5 account without resetting.
+
+---
+
+## Enabling the TF (Trend-Following) Engine — ENV-gated (Fix#2, 2026-06-04)
+
+`TrendFollowingConfig.enabled` / `paper_mode` are **environment-gated, default OFF** — the committed repo (and any VPS that `git pull`s it) stays **single-strategy MR** unless the operator opts in **per launch**. No code edit needed to toggle.
+
+```bash
+# Default — TF OFF, MR only (VPS-safe, byte-identical MR):
+python main.py
+
+# TF ON — fires LIVE orders on the connected account (demo or real):
+BOT_TF_ENABLED=1 python main.py
+
+# TF ON but LOG-ONLY (logs TF_PAPER signals, places NO orders — pure observation):
+BOT_TF_ENABLED=1 BOT_TF_PAPER=1 python main.py
+```
+
+To make it persistent on a given machine, add `BOT_TF_ENABLED=1` to that machine's `.env` (so the repo default stays OFF for everyone else).
+
+**What flips ON does**: loads the TF RL agent (`models/tf/`, obs 36) + TF GBM (`data/tf_signal_quality_model.pkl`) + `StrategyRouter` + `MarketRegimeClassifier`. Each symbol is routed by regime: RANGING→MR, TRENDING→TF, AMBIGUOUS→neither. ⚠️ **This regime-gates MR to RANGING-only** — MR stops trading trending symbols, so total MR volume drops. TF uses magic `123457`, its own sub-budget (`STRATEGY_RISK_PCT`/`SUB_BUDGET_PCT`) and slot cap, managed by `StrategyRiskBook`.
+
+⚠️ **Risk read (honest)**: TF eval = **Pass 6.8% SOLO** (thin — a low-frequency complement, not a solo passer) and is **NOT paper-forward proven**. The sim↔live gap is exactly what failed the last real challenge (−9.87%). **Recommended**: run `BOT_TF_ENABLED=1` on a **demo** account for ≥2–4 weeks first; only enable on a funded/real account after the complement proves out.
 
 ---
 

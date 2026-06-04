@@ -708,13 +708,20 @@ class TrendFollowingConfig:
     """Tunables for the Trend Following strategy (entry on H1).
 
     `enabled` is the master switch for the whole dual-strategy machinery — when
-    False the live loop behaves exactly like single-strategy MR. Recovered with
-    enabled=False (paused). The `early_*` block (Fix#2) replaces the LAGGING entry
-    gates (ADX>=27 LEVEL + full EMA21>50>200 stack) with LEADING ones (+DI/−DI
-    cross + ADX RISING) — default OFF until the TF pool/GBM/RL are rebuilt + eval'd.
+    False the live loop behaves exactly like single-strategy MR. The `early_*`
+    block (Fix#2) replaces the LAGGING entry gates (ADX>=27 LEVEL + full
+    EMA21>50>200 stack) with LEADING ones (+DI/−DI cross + ADX RISING).
+
+    ⚠️ Both switches are ENV-GATED, default OFF — so the committed repo (and any
+    VPS that `git pull`s it) stays single-strategy MR unless the operator opts in
+    PER LAUNCH. Enabling on a REAL account = TF (Pass 6.8% SOLO, NOT paper-forward
+    proven) fires live orders + regime-gates MR to RANGING-only. Recommended path:
+    demo first (`BOT_TF_ENABLED=1`), prove the complement, then real.
+      BOT_TF_ENABLED=1            → enable TF (fires live orders on the connected acct)
+      BOT_TF_ENABLED=1 BOT_TF_PAPER=1 → enable TF but LOG-ONLY (TF_PAPER, no live orders)
     """
-    enabled: bool = False              # PAUSED — recovered flag-OFF (MR identical)
-    paper_mode: bool = False           # (unused while enabled=False)
+    enabled: bool = os.getenv("BOT_TF_ENABLED", "False").lower() in ("true", "1", "yes")
+    paper_mode: bool = os.getenv("BOT_TF_PAPER", "False").lower() in ("true", "1", "yes")
 
     # Entry timeframe = H1; trend filter = H4/D1
     entry_timeframe: str = "H1"

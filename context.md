@@ -1,5 +1,5 @@
 # CONTEXT — FTMO Trading Bot (LLM Wiki Hub)
-> Last Updated: 2026-06-04 (✅ Fix#1 obs 36 committed; ✅ Fix#3 sim-realism retrained; ✅ Fix#2 TF obs→36 unified + flag-ON FUNCTIONAL, stays OFF) | Scope: Hub / Index — read this first, then drill into wiki/*
+> Last Updated: 2026-06-04 (✅ Fix#1 obs 36; ✅ Fix#3 sim-realism; ✅ Fix#2 TF obs→36 + flag-ON FUNCTIONAL, now ENV-gated `BOT_TF_ENABLED` default OFF) | Scope: Hub / Index — read this first, then drill into wiki/*
 
 ## TL;DR (LLM read first — 30-second scan)
 
