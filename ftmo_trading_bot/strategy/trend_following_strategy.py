@@ -79,8 +79,9 @@ class TrendFollowingStrategy:
         self.RSI_SELL_MIN = float(cfg.rsi_pullback_sell_min)
         self.MACD_CONFIRM = bool(cfg.macd_confirm)
         self.MIN_CONFLUENCE = float(cfg.min_confluence_score)
-        # Early-entry redesign (flag default OFF → legacy behaviour byte-identical)
-        self.EARLY_ENTRY = bool(getattr(cfg, "early_entry", False))
+        # Early-entry (Fix#2, ALWAYS ON 2026-06-04 — late-entry path deprecated, kept only
+        # as dead fallback; config default early_entry=True, no BOT_TF_EARLY switch)
+        self.EARLY_ENTRY = bool(getattr(cfg, "early_entry", True))
         self.EARLY_DI_SPREAD_MIN = float(getattr(cfg, "early_di_spread_min", 2.0))
         self.EARLY_ADX_SLOPE_LOOKBACK = int(getattr(cfg, "early_adx_slope_lookback", 3))
         self.EARLY_ADX_FLOOR = float(getattr(cfg, "early_adx_floor", 22.0))

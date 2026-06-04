@@ -749,11 +749,14 @@ class TrendFollowingConfig:
     min_confluence_score: float = 60.0
     min_confluence_score_training: float = 30.0
 
-    # === Early-entry redesign (Fix#2, flag default OFF) — catch trend BIRTH ===
-    # Direction from +DI/−DI dominance (di_spread leads the EMA stack) + ADX RISING
-    # (building, not exhausting). NO hardcoded upper ADX cap — di_spread + adx_slope
-    # are emitted on the signal for GBM/RL to LEARN the ADX-27-30 sweet spot.
-    early_entry: bool = field(default_factory=lambda: os.environ.get("BOT_TF_EARLY", "0") == "1")
+    # === Early-entry (Fix#2, 2026-06-04 ALWAYS ON — no toggle) — catch trend BIRTH ===
+    # The late-entry path (ADX≥27 LEVEL + EMA stack + EMA21 pullback) was the documented
+    # structural bug (enters mature/exhausted trends, trend_age≥60 = worst bucket −0.08R;
+    # the 2026-06-04 first live TF trade reproduced it: USDJPY trend_age=60, ADX 30.8).
+    # So early-entry is now the ONLY TF behaviour (no BOT_TF_EARLY switch): direction from
+    # +DI/−DI dominance (di_spread leads the EMA stack) + ADX RISING (building, not
+    # exhausting), tightened to the post-spread +EV band (ADX 22-33, adx_slope≥0.4).
+    early_entry: bool = True
     early_di_spread_min: float = field(default_factory=lambda: float(os.environ.get("BOT_TF_DI_MIN", "2.0")))
     early_adx_slope_lookback: int = 3   # H1 bars to measure ADX rising (trend building)
     early_adx_floor: float = 22.0       # Fix#2: 20→22 (post-spread ADX<22 = −EV); below = chop

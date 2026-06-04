@@ -263,7 +263,7 @@ BOT_TF_ENABLED=1 python main.py
 BOT_TF_ENABLED=1 BOT_TF_PAPER=1 python main.py
 ```
 
-To make it persistent on a given machine, add `BOT_TF_ENABLED=1` to that machine's `.env` (so the repo default stays OFF for everyone else).
+To make it persistent on a given machine, add `BOT_TF_ENABLED=1` to that machine's `.env` (so the repo default stays OFF for everyone else). **`BOT_TF_ENABLED` is the ONLY TF switch** — early-entry is now hardwired on (`TrendFollowingConfig.early_entry=True`, the `BOT_TF_EARLY` toggle was removed 2026-06-04), so TF always uses the +DI/−DI + ADX-rising gate, never the old late-entry one. ⚠️ A running bot does NOT hot-swap the model — after a TF retrain, STOP and restart to load the new model.
 
 **What flips ON does**: loads the TF RL agent (`models/tf/`, obs 36) + TF GBM (`data/tf_signal_quality_model.pkl`) + `StrategyRouter` + `MarketRegimeClassifier`. Each symbol is routed by regime: RANGING→MR, TRENDING→TF, AMBIGUOUS→neither. ⚠️ **This regime-gates MR to RANGING-only** — MR stops trading trending symbols, so total MR volume drops. TF uses magic `123457`, its own sub-budget (`STRATEGY_RISK_PCT`/`SUB_BUDGET_PCT`) and slot cap, managed by `StrategyRiskBook`.
 

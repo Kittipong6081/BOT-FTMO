@@ -1,5 +1,13 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-06-04 | Scope: red flags, version log, migration notes (latest: **Fix#2 — TF obs→36 unification + flag-ON functional (flag stays OFF, MR identical)**)
+> Last Updated: 2026-06-04 | Scope: red flags, version log, migration notes (latest: **TF early-entry ALWAYS ON — late-entry path deprecated, BOT_TF_EARLY toggle removed**)
+
+## 📝 Version Log Entry — TF early-entry ALWAYS ON (2026-06-04, rebuild/regime-aware, retrain in progress)
+
+**Context**: the FIRST live TF trade (2026-06-04, demo, `BOT_TF_ENABLED=1`) reproduced the exact structural late-entry bug — USDJPY BUY, `trend_age=60` (worst pool bucket), `ADX=30.8` (mature), high-vol, London open. Root cause: early-entry was gated behind a SEPARATE env `BOT_TF_EARLY` (default OFF) → live fell back to the legacy late-entry gate; AND the 2026-06-04 obs-36 retrain was run WITHOUT `BOT_TF_EARLY=1`, so the deployed model was *also* late-entry (pool: trend_age median 44, 37% ≥60, ADX median 32, 100% ADX≥27). Train/live matched but both were the OLD broken behaviour — Fix#2's actual early-entry improvement was never deployed.
+
+**Change**: **`TrendFollowingConfig.early_entry` is now hardwired `True` (no `BOT_TF_EARLY` switch)**. Early-entry (`+DI/−DI` dominance `di_spread` + ADX RISING `adx_slope`, band ADX 22–33 / slope≥0.4) is the ONLY TF entry behaviour. The late-entry branch in `TrendFollowingStrategy.analyze` (ADX≥27 LEVEL + EMA stack + EMA21 pullback) is kept only as dead fallback. `TrendFollowingScanner`/`TrendFollowingBacktester` both use `TrendFollowingStrategy` as their engine → pool-build + live now agree on early-entry from one config flag. The TF master switch `bot_config.tf.enabled` (env `BOT_TF_ENABLED`, default OFF) is UNCHANGED — still the single on/off for the whole dual-strategy machinery.
+
+**Status**: TF retrain (rebuild early-entry pool → GBM → PPO @ 36-dim) **IN PROGRESS** — the obs-36 late-entry model committed in `dd191a1` will be replaced. Late-entry pool/model preserved at `data/tf_signal_pool_3000.pkl.late_entry`. NOT yet committed/promoted. ⚠️ To run the fixed TF live: STOP the bot (running one won't hot-swap the model), then `BOT_TF_ENABLED=1 python main.py` to load the new early-entry model.
 
 ## 📝 Version Log Entry — Fix#2: TF obs 36 unification + flag-ON FUNCTIONAL (2026-06-04, rebuild/regime-aware, flag OFF — MR identical)
 
