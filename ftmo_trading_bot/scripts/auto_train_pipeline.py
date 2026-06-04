@@ -92,6 +92,11 @@ class HyperParams:
     # retrains (pool + GBM reused).
     rebuild_pool: bool = True
     rebuild_gbm: bool = True
+    # Fix#3 (2026-06-04): build pool with the LIVE exit (BE@0.3R + partial@0.8R) instead of
+    # full-position "ride" — so pool outcomes match what live realizes (sim↔live parity).
+    # Combined with the fixed spread cost (always on in the backtester) this closes the
+    # payoff-0.59 gap. Survives self-correct (rebuilds keep it on).
+    model_live_exit: bool = False
 
 
 @dataclass
@@ -188,6 +193,9 @@ def step_build_pool(hp: HyperParams, log: _DualLogger, dry_run: bool) -> str:
         "--pool_size", str(hp.pool_size),
         "--workers", str(hp.pool_workers),
     ]
+    if getattr(hp, "model_live_exit", False):
+        cmd.append("--model_live_exit")
+        log.info("   Fix#3: building pool with --model_live_exit (BE/partial, net-of-spread)")
     rc = _run_step(cmd, log, dry_run)
     if rc != 0:
         raise RuntimeError(f"Pool build failed (rc={rc})")
@@ -478,6 +486,9 @@ def main():
     parser.add_argument("--outcome_noise", type=float, default=0.05,
                         help="Outcome PnL noise std (regularization, anti-overfit). "
                              "Default 0.05; v8.0.10 retrain uses 0.08")
+    parser.add_argument("--model_live_exit", action="store_true",
+                        help="Fix#3: build pool with LIVE exit (BE@0.3R + partial@0.8R) instead "
+                             "of full ride → pool outcomes match live (sim↔live parity). Forces rebuild.")
     # Gates
     parser.add_argument("--target_pass_rate", type=float, default=0.08)
     parser.add_argument("--target_dd_max", type=float, default=0.06)
@@ -507,13 +518,16 @@ def main():
         ml_threshold=args.ml_threshold,
         risk_per_trade=args.risk_per_trade,
         outcome_noise=args.outcome_noise,
+        model_live_exit=args.model_live_exit,
         # v8.0.4: rebuild only if files don't already exist. Preserves pool/GBM
         # across pipeline restarts (e.g. when env constants change but pool
         # generation logic is unchanged).
-        rebuild_pool=not os.path.exists(
+        # Fix#3: --model_live_exit FORCES rebuild — any existing pool is the wrong kind
+        # (ride/no-live-exit), so it must be regenerated net-of-cost with live exits.
+        rebuild_pool=args.model_live_exit or not os.path.exists(
             os.path.join(ROOT, "data", f"mr_signal_pool_{args.pool_size}.pkl")
         ),
-        rebuild_gbm=not os.path.exists(
+        rebuild_gbm=args.model_live_exit or not os.path.exists(
             os.path.join(ROOT, "data", "mr_signal_quality_model.pkl")
         ),
     )

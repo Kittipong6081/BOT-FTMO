@@ -274,6 +274,16 @@ class MeanReversionBacktester(StrategyBacktester):
                 typical_spread_pips = self._TYPICAL_SPREAD_PIPS.get(symbol, 1.5)
                 sl_distance_pips = sl_distance_atr * (atr_val / pip_size)
 
+                # Fix#3 (2026-06-04): deduct a REALISTIC round-trip spread cost (R-units) from
+                # every outcome. The legacy ±0.2% multiplicative slippage in `_resolve_trade`
+                # did NOT model the FIXED bid-ask cost — which, on a tight RR≈1.0 MR trade
+                # (~10-15 pip SL), eats ~10% of every trade. This is the core sim↔live payoff
+                # gap (live realized payoff 0.59 vs sim ~1.0). Applies to both ride + live-exit
+                # resolves → pool outcomes are now net-of-cost, so the agent trains on what live
+                # actually realizes (flips marginal +EV wins to net losses, as in reality).
+                _spread_cost_r = float(typical_spread_pips) / max(float(sl_distance_pips), 1e-9)
+                trade_pnl = float(trade_pnl) - _spread_cost_r
+
                 # Build SMC-compat dict + MR extras
                 sig_dict: Dict = {
                     # Episode metadata

@@ -1,5 +1,19 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-06-03 | Scope: red flags, version log, migration notes (latest: **Fix#1 — obs 35→36 regime feature `trend_eff_h1`, RETRAINED + walk-forward verified**)
+> Last Updated: 2026-06-04 | Scope: red flags, version log, migration notes (latest: **Fix#3 — sim-realism (spread + live-exit training), best/ = realistic model**)
+
+## 📝 Version Log Entry — Fix#3: sim realism (spread + live-exit training) (2026-06-04, rebuild/regime-aware)
+
+**⛔ The backtester now models REALISTIC trade cost — pool outcomes are net-of-spread.** Any pool built from now on (including walk-forward folds) deducts cost. The deployed `models/mr/best/` is the **realistic-trained model** (Pass ~21% honest, not the optimistic 87%).
+
+**Why**: the walk-forward (Fix#1 era) proved the model is NOT time-overfit (stable across time folds) — so the FTMO fail was the **sim↔live EXECUTION gap**, not overfit. The sim was too optimistic in two ways the live account paid for (live realized payoff 0.59 vs sim ~1.0).
+
+**Two changes:**
+1. **Fixed spread cost (always-on)** — `MeanReversionBacktester.generate_episode_signals` deducts `typical_spread_pips / sl_distance_pips` (R-units) from every `outcome_pnl_ratio`. The legacy ±0.2% multiplicative slippage in `_resolve_trade` did NOT model the FIXED bid-ask cost which, on a tight RR≈1.0 MR trade (~10-15 pip SL), eats ~10% of every trade. Flips marginal +EV wins to net losses, as live does.
+2. **Live-exit training** — `auto_train_pipeline.py --model_live_exit` (+ `HyperParams.model_live_exit`, FORCES rebuild) builds the pool with `_resolve_trade_live_exit` (BE@0.3R + 33% partial@0.8R) instead of full "ride". So the agent trains on what live actually realizes (BE/partial scratches wins).
+
+**Result (5000-pool, obs 36, --model_live_exit)**: Pass 21.0%, Win 57.5%, Total DD 3.81%, Daily DD 2.40%, Profitable 96.2%, breach 0% → all gates passed, auto-promoted to `models/mr/best/`. **Verify (both obs-36 models on the realistic pool, n=600)**: Fix#3 **Pass 17.3% / Profit-per-ep $5,529** vs Fix#1 (ride-trained) **Pass 2.8% / $2,976** — Fix#3 passes FTMO **6× more** + ~2× profit. Fix#1 over-skips (17.5% take) when faced with real costs; Fix#3 takes 44.6% of still-+EV trades. (EV/trade alone favors Fix#1 $241 vs $184, but that's an artifact of taking far fewer trades — for FTMO, Pass-rate + total-profit are what matter.)
+
+**Caveats**: (1) the verify is slightly in-sample for Fix#3 (it trained on this pool); the 6× margin is too large for bias to flip, but a proper out-of-TIME walk-forward (build realistic fold pools) is the follow-up. (2) **HONEST baseline: the strategy passes FTMO only ~17-21% under realistic costs — the edge is THIN.** This is the real number (better than a fake 87% that dies live). It needs Fix#2 (trend engine) + entry-quality to become a reliable passer. (3) Concurrent-correlation modeling (3rd Fix#3 piece) deferred — hardest, episodes are per-symbol; handled live by corr caps. Fix#1 model preserved at `models/mr/best.fix1/`, pre-Fix#1 baseline at `models/mr/best.pre_fix1/`.
 
 ## 📝 Version Log Entry — Fix#1: obs 35→36 (`trend_eff_h1` regime feature) — RETRAIN, PROMOTED (2026-06-03, rebuild/regime-aware)
 
