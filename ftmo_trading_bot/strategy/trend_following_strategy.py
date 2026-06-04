@@ -83,7 +83,11 @@ class TrendFollowingStrategy:
         self.EARLY_ENTRY = bool(getattr(cfg, "early_entry", False))
         self.EARLY_DI_SPREAD_MIN = float(getattr(cfg, "early_di_spread_min", 2.0))
         self.EARLY_ADX_SLOPE_LOOKBACK = int(getattr(cfg, "early_adx_slope_lookback", 3))
-        self.EARLY_ADX_FLOOR = float(getattr(cfg, "early_adx_floor", 20.0))
+        self.EARLY_ADX_FLOOR = float(getattr(cfg, "early_adx_floor", 22.0))
+        # Fix#2 (2026-06-04) — concentrate on the post-spread +EV band (validation 250-ep pool:
+        # +EV only at ADX 22-30 + adx_slope≥~0.5; ADX>33 and weak-slope flip −EV after spread).
+        self.EARLY_ADX_SLOPE_MIN = float(getattr(cfg, "early_adx_slope_min", 0.4))  # require trend BUILDING, not barely rising
+        self.EARLY_ADX_MAX = float(getattr(cfg, "early_adx_max", 33.0))             # soft upper cap — skip EXHAUSTED trends (NOT a late-entry floor)
 
     # ─── helpers ──────────────────────────────────────────────────────────
 
@@ -204,12 +208,17 @@ class TrendFollowingStrategy:
                 trend, direction = -1, "SELL"
             else:
                 return self._no_signal(symbol, atr, [f"DI flat (spread {di_spread:+.1f}) — no clear direction"])
-            # Trend must be BUILDING (ADX rising), not exhausting — replaces ADX>=27 LEVEL.
-            if adx_slope <= 0:
-                return self._no_signal(symbol, atr, [f"ADX not rising (Δ{adx_slope:+.2f}) — trend not building"])
-            # Out of pure chop (floor only; NO upper cap — model learns the sweet spot).
+            # Trend must be BUILDING (ADX rising meaningfully) — Fix#2: ≥ slope_min, not just >0
+            # (post-spread validation: slope 0-0.5 = −EV, slope ≥0.5 = +EV).
+            if adx_slope < self.EARLY_ADX_SLOPE_MIN:
+                return self._no_signal(symbol, atr, [f"ADX rising too weak (Δ{adx_slope:+.2f} < {self.EARLY_ADX_SLOPE_MIN}) — trend not building"])
+            # ADX band: above chop floor, below exhaustion cap. Fix#2 — the cap is a SOFT
+            # upper bound to skip EXHAUSTED trends (post-spread: ADX>33 = −EV); it is NOT a
+            # late-entry LOWER bound (the old bug). di_spread/adx_slope still in obs for fine-tune.
             if adx < self.EARLY_ADX_FLOOR:
                 return self._no_signal(symbol, atr, [f"ADX {adx:.1f} < floor {self.EARLY_ADX_FLOOR} — chop"])
+            if adx > self.EARLY_ADX_MAX:
+                return self._no_signal(symbol, atr, [f"ADX {adx:.1f} > cap {self.EARLY_ADX_MAX} — trend exhausted"])
             # Fast EMA confirm (EMA21 vs EMA50 + slope) — NOT the slow EMA200 stack.
             fast_ok = (ema21 > ema50 and ema_slope > 0) if trend > 0 else (ema21 < ema50 and ema_slope < 0)
             if not fast_ok:

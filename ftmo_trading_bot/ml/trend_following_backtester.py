@@ -205,6 +205,14 @@ class TrendFollowingBacktester(StrategyBacktester):
                 typical_spread_pips = self._TYPICAL_SPREAD_PIPS.get(symbol, 1.5)
                 sl_distance_pips = sl_distance_atr * (atr_val / pip_size)
 
+                # Fix#2/Fix#3 (2026-06-04): deduct realistic round-trip spread cost (R-units)
+                # from every TF outcome — same realism fix as the MR backtester. TF rides
+                # winners (no BE/partial) so the exit gap doesn't apply, but spread does.
+                # On TF's wider SL (ATR×2.0-2.5, RR 2.5) the cost is a smaller % than MR's,
+                # but still real. Pool outcomes are now net-of-cost (honest, matches live).
+                _spread_cost_r = float(typical_spread_pips) / max(float(sl_distance_pips), 1e-9)
+                trade_pnl = float(trade_pnl) - _spread_cost_r
+
                 sig_dict: Dict = {
                     "day": day,
                     "symbol": symbol,

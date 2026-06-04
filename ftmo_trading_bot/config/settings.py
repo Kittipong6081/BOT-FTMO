@@ -749,7 +749,9 @@ class TrendFollowingConfig:
     early_entry: bool = field(default_factory=lambda: os.environ.get("BOT_TF_EARLY", "0") == "1")
     early_di_spread_min: float = field(default_factory=lambda: float(os.environ.get("BOT_TF_DI_MIN", "2.0")))
     early_adx_slope_lookback: int = 3   # H1 bars to measure ADX rising (trend building)
-    early_adx_floor: float = 20.0       # below = pure chop; NOT an upper cap
+    early_adx_floor: float = 22.0       # Fix#2: 20→22 (post-spread ADX<22 = −EV); below = chop
+    early_adx_slope_min: float = 0.4    # Fix#2: require ADX BUILDING (Δ≥0.4), not just >0 (slope 0-0.5 = −EV post-spread)
+    early_adx_max: float = 33.0         # Fix#2: SOFT upper cap — skip EXHAUSTED trends (ADX>33 = −EV); NOT a late-entry floor
 
     # === Live trade-management — TF RIDES (no BE, no partial, wide trail) ===
     mgmt_use_partial: bool = False
