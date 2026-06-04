@@ -213,6 +213,14 @@ class TrendFollowingBacktester(StrategyBacktester):
                 _spread_cost_r = float(typical_spread_pips) / max(float(sl_distance_pips), 1e-9)
                 trade_pnl = float(trade_pnl) - _spread_cost_r
 
+                # Fix#2 (2026-06-04): 1-day signed efficiency (obs[35]) — same feature as MR,
+                # so TF obs is 36-dim → both strategies share OBS_DIM=36 for the dual router.
+                try:
+                    from strategy.indicators import TechnicalIndicators as _TI
+                    _trend_eff_h1 = float(_TI.calculate_signed_efficiency(h1_slice, 24))
+                except Exception:
+                    _trend_eff_h1 = 0.0
+
                 sig_dict: Dict = {
                     "day": day,
                     "symbol": symbol,
@@ -229,6 +237,7 @@ class TrendFollowingBacktester(StrategyBacktester):
                     "sl_distance_atr": sl_distance_atr,
                     "sl_distance_pips": float(sl_distance_pips),
                     "outcome_pnl_ratio": float(trade_pnl),
+                    "trend_eff_h1": _trend_eff_h1,   # Fix#2: obs[35] (36-dim, shared with MR)
                     "pip_size": pip_size,
                     "rsi_value": signal.rsi_value,
                     "trend_strength": signal.trend_strength,

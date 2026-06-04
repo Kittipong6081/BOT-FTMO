@@ -194,6 +194,9 @@ class TrendFollowingStrategy:
         ema_slope = float(last.get("ema_slope_norm", 0.0))
         band_squeeze = float(last.get("band_squeeze_ratio", 0.5))
         ema50 = float(last.get("ema_medium", close))
+        # Fix#2 (2026-06-04): 1-day signed efficiency (obs[35]) — mirror MeanReversion/TF
+        # backtester (calculate_signed_efficiency(h1, 24)) so live TF obs is 36-dim too.
+        trend_eff_h1_val = float(TechnicalIndicators.calculate_signed_efficiency(h1, 24))
         _k = self.EARLY_ADX_SLOPE_LOOKBACK
         adx_slope = adx - (float(h1["adx"].iloc[-1 - _k]) if len(h1) > _k else adx)
         htf_align_raw = self._htf_trend(h4_df)
@@ -328,6 +331,7 @@ class TrendFollowingStrategy:
             d1_align=d1_align,
             di_spread=di_spread,
             adx_slope=adx_slope,
+            trend_eff_h1=trend_eff_h1_val,
             ema_slope_norm=ema_slope,          # real value (was MRSignal default 0.0 for TF)
             band_squeeze_ratio=band_squeeze,   # real value (fixes hardcoded 0.5 in TF pool)
             reasons=reasons,

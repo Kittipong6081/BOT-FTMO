@@ -1,8 +1,9 @@
 # 03 — RL Training (Obs 36 dims, MR Reward Shaping, PPO + Auxiliary Task)
-> Last Updated: 2026-06-04 (✅ Fix#1 obs 36; ✅ Fix#3 — backtester ALWAYS-ON spread cost + train-with-live-exit, best/ = realistic model) | Scope: RL env, obs space, reward shaping (MR), PPO hyperparams, curriculum, aux task.
+> Last Updated: 2026-06-04 (✅ Fix#1 obs 36; ✅ Fix#3 — backtester ALWAYS-ON spread cost + train-with-live-exit, best/ = realistic model; ✅ Fix#2 — TF `tf_v2` unified to 36-dim, flag OFF) | Scope: RL env, obs space, reward shaping (MR), PPO hyperparams, curriculum, aux task.
 >
-> **Obs layout (mr_v8)** — **36-dim** (PPO net + VecNormalize). (TF `tf_v2` layout removed 2026-06-02.):
+> **Obs layout — both engines 36-dim** (PPO net + VecNormalize). Fix#2 (2026-06-04) unified TF to MR's width so `StrategyRouter` can swap agents:
 > - **MR (mr_v8)** → `MeanReversionFilterEnv._get_obs` ↔ `FTMOTradingBot._build_signal_observation` ↔ `models/mr/`. obs[4]=bb_extreme, obs[10]=bb_band_width/3, obs[26]=1−adx/50, **obs[35]=trend_eff_h1 (Fix#1)**.
+> - **TF (tf_v2)** → `TrendFollowingFilterEnv._get_obs` ↔ `FTMOTradingBot._build_obs_tf` ↔ `models/tf/`. Base = MR builder (so **obs[35]=trend_eff_h1** flows through, from `TFSignal.trend_eff_h1`) + TF slot reinterpretations obs[4]=trend_strength, obs[10]=trend_age, obs[26]=adx/50, obs[27]=di_spread, obs[28]=adx_slope (early-entry). `models/tf/vec_normalize_tf.pkl` = (36,). **flag OFF (`tf.enabled=False`) — not live.**
 > The obs must stay synced across its 3 places (env `_get_obs` ↔ live `_build_signal_observation` ↔ `models/mr/`).
 >
 >

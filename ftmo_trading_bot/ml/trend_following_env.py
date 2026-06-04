@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+from gymnasium import spaces
 
 from ml.signal_filter_env import FTMOSignalFilterEnv
 
@@ -84,24 +85,32 @@ class TrendFollowingFilterEnv(FTMOSignalFilterEnv):
             self.LATE_ENTRY_PENALTY = float(late_entry_penalty)
         if base_loss_penalty is not None:
             self.BASE_LOSS_PENALTY = float(base_loss_penalty)
+        # Fix#2 (2026-06-04): obs 35 → 36 (append obs[35]=trend_eff_h1) so TF matches MR's
+        # 36-dim layout → both strategies share SelfLearningAgent.OBS_DIM=36 (dual-strategy
+        # router can load both agents). Base env stays 35.
+        self.observation_space = spaces.Box(
+            low=-5.0, high=5.0, shape=(36,), dtype=np.float32
+        )
 
-    # ─── Observation builder (semantic only — same 35-dim shape, tf_v1) ─────
+    # ─── Observation builder (semantic + obs[35]=trend_eff_h1, tf_v2 @ 36-dim) ─────
 
     def _get_obs(self) -> np.ndarray:
-        obs = super()._get_obs()
-        if self._signal_idx >= len(self._signals):
-            return obs
-        sig = self._signals[self._signal_idx]
-        obs[4] = float(np.clip(sig.get("trend_strength", 0.0) / 100.0, 0.0, 1.0))
-        obs[10] = float(np.clip(sig.get("trend_age_bars", 0) / 30.0, 0.0, 1.0))
-        adx = float(sig.get("adx", 0.0))
-        obs[26] = float(np.clip(adx / 50.0, 0.0, 1.0))   # trending = good (vs MR inverse)
-        # tf_v2 (early-entry): repurpose the dead Chronos slots [27]/[28] for the leading
-        # signals so the RL can rank early/building vs late/exhausted entries (the base
-        # _get_obs left these = 0; MR never overrides them → MR obs unchanged).
-        obs[27] = float(np.clip(sig.get("di_spread", 0.0) / 50.0, -1.0, 1.0))
-        obs[28] = float(np.clip(sig.get("adx_slope", 0.0) / 10.0, -1.0, 1.0))
-        return obs
+        obs = super()._get_obs()   # 35-dim base
+        if self._signal_idx < len(self._signals):
+            sig = self._signals[self._signal_idx]
+            obs[4] = float(np.clip(sig.get("trend_strength", 0.0) / 100.0, 0.0, 1.0))
+            obs[10] = float(np.clip(sig.get("trend_age_bars", 0) / 30.0, 0.0, 1.0))
+            adx = float(sig.get("adx", 0.0))
+            obs[26] = float(np.clip(adx / 50.0, 0.0, 1.0))   # trending = good (vs MR inverse)
+            # tf_v2 (early-entry): repurpose the dead Chronos slots [27]/[28] for the leading
+            # signals so the RL can rank early/building vs late/exhausted entries.
+            obs[27] = float(np.clip(sig.get("di_spread", 0.0) / 50.0, -1.0, 1.0))
+            obs[28] = float(np.clip(sig.get("adx_slope", 0.0) / 10.0, -1.0, 1.0))
+            trend_eff_h1 = float(np.clip(sig.get("trend_eff_h1", 0.0), -1.0, 1.0))
+        else:
+            trend_eff_h1 = 0.0
+        # Fix#2: obs[35] = 1-day signed efficiency (shared regime feature with MR)
+        return np.append(obs, np.float32(trend_eff_h1)).astype(np.float32)
 
     # ─── step() — same plumbing, TF reward (runners > quick TP) ────────────
 

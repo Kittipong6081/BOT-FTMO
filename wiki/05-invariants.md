@@ -1,5 +1,23 @@
 # 05 — Invariants & Gotchas (Rules Not to Break)
-> Last Updated: 2026-06-04 | Scope: red flags, version log, migration notes (latest: **Fix#3 — sim-realism (spread + live-exit training), best/ = realistic model**)
+> Last Updated: 2026-06-04 | Scope: red flags, version log, migration notes (latest: **Fix#2 — TF obs→36 unification + flag-ON functional (flag stays OFF, MR identical)**)
+
+## 📝 Version Log Entry — Fix#2: TF obs 36 unification + flag-ON FUNCTIONAL (2026-06-04, rebuild/regime-aware, flag OFF — MR identical)
+
+**Context**: completes the regime-aware rebuild's second engine. `bot_config.tf.enabled` stays **False** (live = single-strategy MR, byte-identical); this entry lands the *capability* so flipping the flag works, not a live enable.
+
+**⛔ TF obs is now 36 (was 35) — MR=TF unified.** Both strategies share the same 36-dim layout so `StrategyRouter` can hot-swap agents. Synced: `TrendFollowingFilterEnv.observation_space=(36,)` + `_get_obs` appends **obs[35]=trend_eff_h1** (`np.append`, clip [−1,1], 0.0 fallback); `TrendFollowingBacktester` sig_dict adds `trend_eff_h1 = calculate_signed_efficiency(h1_slice, 24)`; live `TFSignal.trend_eff_h1` (computed in `TrendFollowingStrategy` from `calculate_signed_efficiency(h1, 24)`); `FTMOTradingBot._build_obs_tf` delegates to the 36-dim `_build_signal_observation` base (obs[35] flows through) then reinterprets TF slots obs[4]/[10]/[26]/[27]/[28]. `SelfLearningAgent.OBS_DIM=36` already (Fix#1). Both `models/tf/` and `models/tf/best/` vec_normalize now (36,) — strict load passes.
+
+**🐛 Stale-pool bug (caught + fixed)**: the first 36-dim TF retrain silently reused an OLD pool built before the backtester edit → every sig_dict lacked `trend_eff_h1` → `_get_obs` fell back to obs[35]≡0.0 (dead feature). VecNormalize would learn mean≈0/var≈0 for obs[35]; a real live value would normalize to a ±clip spike → destabilized inference. **Fix**: killed the run, moved the stale pool aside, rebuilt the 3000-ep pool WITH the feature (`--rebuild_pool`), retrained clean. Verified rebuilt pool: 52,856 signals, `trend_eff_h1` present on 100%, ER∈[−0.632,+0.678], 99.9% nonzero.
+
+**Early-entry design (Fix#2 core)**: replaces the LAGGING gate (ADX≥27 LEVEL + full EMA21>50>200 stack) with LEADING ones — `+DI/−DI` dominance (`di_spread`) + ADX **rising** (`adx_slope`), no hardcoded ADX cap (`early_adx_floor=22`, `early_adx_slope_min=0.4`, `early_adx_max=33.0` in `TrendFollowingConfig`). Enters at ADX median ~25.6 (vs old ~36) and is **bidirectional** (SELL in downtrends). `TrendFollowingBacktester` also deducts the Fix#3 fixed round-trip spread cost (parity with MR; TF rides → no BE/partial gap).
+
+**Result (TF retrain, 3000-pool, obs 36, realistic spread)**: Win 93.4%, Take 53.1%, Profitable 96.6%, Total DD 0.82%, Daily DD 1.20%, breach 0%, **Pass 6.8% SOLO** → **FAILS the pipeline pass-gate by design**: TF is a low-frequency *complement*, not a solo 10%-sprinter. Because it doesn't pass, the pipeline did NOT auto-promote to `best/`; the 36-dim model was copied to `best/` manually so the live loader (best/ first) lands on a 36-dim model instead of the stale 35-dim one.
+
+**flag-ON now functional**: dual `main.py` + `core/risk_manager.py` + `execution/trade_executor.py` + `execution/trade_manager.py` restored from git `95c124e^`, then M1-removal (`0cdd94e`) + Max-DD soft-warning throttle (`8dbf5d7`) re-applied via `git apply --3way` (verified: M1 last-bar block gone, throttle present). Integration test with `tf.enabled=True`: `FTMOTradingBot()` loads `_rl_agents={MR,TF}` (both obs 36), `_quality_models={MR,TF}`, `_router=StrategyRouter`, `_regime_classifier=MarketRegimeClassifier`. Offline routing (synthetic H1): strong uptrend (ADX 100, CHOP 12.7) → TRENDING→**TF**; choppy noise (ADX 4.1, CHOP 60.5) → RANGING→**MR**.
+
+**Verification**: leakage + parity + obs_parity_check all **exit 0**; `import main` clean; flag-OFF MR path byte-identical (obs 36 from Fix#1, unchanged). Data pool `data/tf_signal_pool_3000.pkl` is gitignored; `models/tf/` committed (was untracked). Revert: `tf.enabled` is already False (nothing to disable live); to drop the engine, restore single-strategy `main.py`/executor/manager/risk_manager from a pre-rebuild commit.
+
+**⚠️ Do NOT enable `tf.enabled=True` for live** until walk-forward (realistic) + paper-forward prove TF adds value as a complement. Pass 6.8% solo is the honest read — thin edge.
 
 ## 📝 Version Log Entry — Fix#3: sim realism (spread + live-exit training) (2026-06-04, rebuild/regime-aware)
 

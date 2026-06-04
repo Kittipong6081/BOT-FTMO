@@ -2,17 +2,17 @@
   "history": [
     {
       "iteration": 0,
-      "timestamp": "2026-05-07T08:06:14+00:00",
-      "duration_sec": 4792.321270942688,
+      "timestamp": "2026-06-03T21:14:35+00:00",
+      "duration_sec": 10997.299272060394,
       "hyperparams": {
         "timesteps_p1": 5000000,
-        "timesteps_p2": 5000000,
+        "timesteps_p2": 2000000,
         "n_envs": 8,
         "pool_size": 5000,
         "pool_workers": 8,
         "outcome_noise": 0.08,
-        "ml_threshold": 0.4,
-        "risk_per_trade": 0.0099,
+        "ml_threshold": 0.3,
+        "risk_per_trade": 0.007,
         "lr_p1": 0.0003,
         "lr_p2": 5e-05,
         "quick_tp_bonus": 0.5,
@@ -21,17 +21,18 @@
         "base_loss_penalty": 0.1,
         "duration_fine_coef": 0.02,
         "rebuild_pool": true,
-        "rebuild_gbm": true
+        "rebuild_gbm": true,
+        "model_live_exit": true
       },
       "metrics": {
-        "pass_rate": 0.587,
+        "pass_rate": 0.21,
         "breach_rate": 0.0,
-        "profitable_rate": 0.8818,
-        "win_rate": 0.6153718110596923,
-        "take_rate": 0.4603290519980277,
-        "total_dd_max": 0.058,
-        "daily_dd_max": 0.0300000000000001,
-        "profit_avg": 7088.233648663249
+        "profitable_rate": 0.9624,
+        "win_rate": 0.5748376168917685,
+        "take_rate": 0.43798132191100214,
+        "total_dd_max": 0.0381307901366656,
+        "daily_dd_max": 0.02395673066097923,
+        "profit_avg": 5664.295385451798
       },
       "decision": "pass",
       "notes": "all_gates_passed",
@@ -40,16 +41,16 @@
     }
   ],
   "best_metrics": {
-    "pass_rate": 0.587,
+    "pass_rate": 0.21,
     "breach_rate": 0.0,
-    "profitable_rate": 0.8818,
-    "win_rate": 0.6153718110596923,
-    "take_rate": 0.4603290519980277,
-    "total_dd_max": 0.058,
-    "daily_dd_max": 0.0300000000000001,
-    "profit_avg": 7088.233648663249
+    "profitable_rate": 0.9624,
+    "win_rate": 0.5748376168917685,
+    "take_rate": 0.43798132191100214,
+    "total_dd_max": 0.0381307901366656,
+    "daily_dd_max": 0.02395673066097923,
+    "profit_avg": 5664.295385451798
   },
   "best_iteration": 0,
-  "elapsed_hours": 1.3312016191747453,
+  "elapsed_hours": 3.0548077214426463,
   "finished": true
 }
