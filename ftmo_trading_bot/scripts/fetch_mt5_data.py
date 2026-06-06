@@ -176,8 +176,8 @@ def main():
     parser.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS),
                         help="คอมม่า-คั่น เช่น EURUSD,GBPUSD")
     parser.add_argument("--timeframe", default="ALL",
-                        choices=list(TIMEFRAMES.keys()) + ["ALL"],
-                        help="timeframe ที่ต้องการ (default: ALL = M1+M5+M15+H1+H4+D1)")
+                        help="ALL (= M1+M5+M15+H1+H4+D1) | TF เดียว | หลาย TF คั่นคอมม่า "
+                             "เช่น D1,M5,M15,H1,H4 (TF ที่รองรับ: M1,M5,M15,H1,H4,D1)")
     parser.add_argument("--years", type=int, default=3, help="ดึงย้อนหลังกี่ปี")
     parser.add_argument("--out_dir", default=None,
                         help="โฟลเดอร์ปลายทาง (default: ftmo_trading_bot/data/ohlcv)")
@@ -222,10 +222,15 @@ def main():
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
-    if args.timeframe == "ALL":
+    if args.timeframe.strip().upper() == "ALL":
         tf_list = list(TIMEFRAMES.keys())
     else:
-        tf_list = [args.timeframe]
+        tf_list = [t.strip().upper() for t in args.timeframe.split(",") if t.strip()]
+        invalid = [t for t in tf_list if t not in TIMEFRAMES]
+        if invalid:
+            print(f"❌ timeframe ไม่รองรับ: {invalid} (รองรับ: {list(TIMEFRAMES.keys())})")
+            mt5.shutdown()
+            sys.exit(1)
 
     total_files = len(symbols) * len(tf_list)
     print(f"📥 ดึงข้อมูล {', '.join(tf_list)} ของ {len(symbols)} symbols "
