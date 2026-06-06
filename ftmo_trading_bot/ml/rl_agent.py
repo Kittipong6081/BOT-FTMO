@@ -35,10 +35,10 @@ class SelfLearningAgent:
     """AI Agent สำหรับกรอง signal จาก SMC Strategy — ตัดสินใจ TAKE/SKIP"""
 
     # v8.0.74 — 32 → 35 (เพิ่ม kc_distance_norm, ema_slope_norm, band_squeeze_ratio)
-    # v8.0.74b — ทดลอง 35→26 (Pass 69.5%) แพ้ 35 dims (73.5%) → revert กลับ 35
-    # Fix#1 (2026-06-03) — 35 → 36: +obs[35]=trend_eff_h1 (1-day signed Kaufman efficiency
-    #   = persistent-(slow)-trend regime detector that ADX misses; the June fade-the-downtrend killer)
-    OBS_DIM: int = 36
+    # rebuild/smc-v2 — SMC obs layout `smc_v1` = 24 dims (was MR 36). Must stay in
+    # sync across SMCFilterEnv._get_obs, FTMOTradingBot._build_signal_observation,
+    # and this constant (run scripts/obs_parity_check.py after any change).
+    OBS_DIM: int = 24
 
     def __init__(
         self,

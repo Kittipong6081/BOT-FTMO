@@ -28,15 +28,9 @@ from config.settings import bot_config, get_symbol_config
 from core.mt5_connector import MT5Connector
 from core.risk_manager import RiskManager, BotState
 from core.position_sizer import PositionSizer
-# v8.0 (2026-05-06): live path uses Mean Reversion strategy by default.
-# `LiveMRScanner` is a drop-in replacement for `SMCStrategy` (same
-# `scan_all_symbols()` + `_ltf_data`/`_mtf_data` accessors). SMC code is kept
-# in `strategy/smc_strategy.py` as a deprecated reference module — the live
-# entry no longer imports it.
-from strategy.mean_reversion_strategy import (
-    LiveMRScanner as SMCStrategy,   # alias for backward-compat in this file
-    MRSignalType as SignalType,
-)
+# rebuild/smc-v2: live path is strict Smart Money Concepts (SMCScanner).
+from strategy.smc_strategy import SMCScanner
+from strategy.smc.types import SMCSignalType as SignalType
 from execution.trade_executor import TradeExecutor
 from execution.trade_manager import TradeManager
 from analytics.trade_logger import TradeLogger
@@ -77,31 +71,11 @@ class FTMOTradingBot:
         self._connector = MT5Connector()
         self._risk_manager = RiskManager(self._connector)
         self._position_sizer = PositionSizer(self._connector)
-        self._strategy = SMCStrategy(self._connector)
-        # v8.1: strategy registry keyed by STRATEGY_ID. obs/live-context route
-        # every signal to the scanner that produced it via `_strategy_for(sig)`
-        # → กัน cross-strategy cache contamination (extends v8.0.79 per-symbol fix).
+        self._strategy = SMCScanner(self._connector)
+        # single-strategy SMC. registry kept so `_strategy_for(sig)` keeps
+        # routing per-symbol cache reads (get_ltf/mtf/htf_data) by strategy_id.
         self._strategies = {self._strategy.STRATEGY_ID: self._strategy}
-        # v8.1 Phase 1: dual-strategy router (regime gate MR↔TF). Master switch
-        # `bot_config.tf.enabled` (default False) — when OFF the scan loop runs
-        # single-strategy MR exactly as before (router stays None). When ON, the
-        # router classifies each symbol's regime and arms MR (RANGING) or TF
-        # (TRENDING); TF runs in paper_mode (log-only) until Phase 2.
         self._router = None
-        if getattr(bot_config.tf, "enabled", False):
-            try:
-                from strategy.trend_following_strategy import TrendFollowingScanner
-                from strategy.regime_classifier import MarketRegimeClassifier
-                from strategy.strategy_router import StrategyRouter
-                tf_scanner = TrendFollowingScanner(self._connector)
-                self._strategies[tf_scanner.STRATEGY_ID] = tf_scanner
-                self._regime_classifier = MarketRegimeClassifier(self._connector)
-                self._router = StrategyRouter(self._strategies, self._regime_classifier)
-                print(f"🧭 [Router] dual-strategy ON — MR+TF (TF paper_mode="
-                      f"{getattr(bot_config.tf, 'paper_mode', True)})")
-            except Exception as e:
-                print(f"⚠️ [Router] dual-strategy init failed ({e}) — falling back to MR-only")
-                self._router = None
         # Project root — ใช้ทั้ง TradeLogger + NewsCalendarScheduler
         _project_root = os.path.dirname(os.path.abspath(__file__))
         # v6.9: TradeLogger เปิดอีกครั้ง — เก็บ live demo data สำหรับวิเคราะห์
@@ -123,98 +97,47 @@ class FTMOTradingBot:
         )
         self._trade_manager = TradeManager(self._connector, self._risk_manager, self._executor)
         
-        # === AI Signal Filter Agent (Phase 5, v8.0: MR model first, SMC fallback) ===
-        # v8.0 — live now expects MR model under models/mr/. Load order:
-        #   1. models/mr/ppo_mr_filter.zip (rename to ppo_signal_filter.zip
-        #      because SelfLearningAgent.model_path is hardcoded). The
-        #      auto_train_pipeline copies the best MR model to this name.
-        #   2. fallback to legacy models/ppo_signal_filter.zip
+        # === RL Signal Filter Agent (Brain 3) — SMC model ===
+        # Load order: models/smc/best/ first, then models/smc/. Absent until the
+        # SMC training pipeline (P5) produces ppo_smc_filter.zip → bot then runs
+        # on the SMC rules alone (every passing setup taken).
         self._rl_agent = None
-        _mr_model_dir = os.path.join(bot_config.paths.model_dir, "mr")
-        _candidate_dirs = (
-            [_mr_model_dir] if os.path.isdir(_mr_model_dir) else []
-        ) + [bot_config.paths.model_dir]
-        for _md in _candidate_dirs:
-            try:
-                _agent = SelfLearningAgent(model_dir=_md, verbose=1)
-                # MR pipeline names model `ppo_mr_filter.zip`. SelfLearningAgent
-                # expects `ppo_signal_filter.zip` — accept either via override.
-                _mr_zip = os.path.join(_md, "ppo_mr_filter.zip")
-                _mr_vec = os.path.join(_md, "vec_normalize_mr.pkl")
-                if os.path.exists(_mr_zip):
-                    _agent.model_path = _mr_zip
-                if os.path.exists(_mr_vec):
-                    _agent.vec_normalize_path = _mr_vec
-                _agent.initialize_model(strict=True)
-                self._rl_agent = _agent
-                print(f"   ✅ RL agent loaded from {_md}")
-                break
-            except Exception as e:
-                print(f"   ⚠️ RL agent load from {_md} failed: {e}")
-        if self._rl_agent is None:
-            print(f"⚠️ [Bot] AI Signal Filter ไม่พร้อม — ใช้ MR strategy โดยตรง")
-
-        # === v8.1 Phase 3: per-strategy RL agents (MR + TF) ===
-        # MR agent above stays as self._rl_agent (back-compat). TF agent loads from
-        # models/tf/ if the trained model exists (Phase 3 training output). If
-        # absent, TF has no agent → TF execution is impossible → forced paper.
-        self._rl_agents = {"MR": self._rl_agent} if self._rl_agent is not None else {}
-        _tf_model_dir = os.path.join(bot_config.paths.model_dir, "tf")
-        for _tfd in ([os.path.join(_tf_model_dir, "best"), _tf_model_dir]):
-            _tf_zip = os.path.join(_tfd, "ppo_tf_filter.zip")
-            _tf_vec = os.path.join(_tfd, "vec_normalize_tf.pkl")
-            if not os.path.exists(_tf_zip):
+        _smc_model_dir = os.path.join(bot_config.paths.model_dir, "smc")
+        for _md in ([os.path.join(_smc_model_dir, "best"), _smc_model_dir]):
+            _zip = os.path.join(_md, "ppo_smc_filter.zip")
+            _vec = os.path.join(_md, "vec_normalize_smc.pkl")
+            if not os.path.exists(_zip):
                 continue
             try:
-                _tf_agent = SelfLearningAgent(model_dir=_tfd, verbose=1)
-                _tf_agent.model_path = _tf_zip
-                if os.path.exists(_tf_vec):
-                    _tf_agent.vec_normalize_path = _tf_vec
-                _tf_agent.initialize_model(strict=True)
-                self._rl_agents["TF"] = _tf_agent
-                print(f"   ✅ TF RL agent loaded from {_tfd}")
+                _agent = SelfLearningAgent(model_dir=_md, verbose=1)
+                _agent.model_path = _zip
+                if os.path.exists(_vec):
+                    _agent.vec_normalize_path = _vec
+                _agent.initialize_model(strict=True)
+                self._rl_agent = _agent
+                print(f"   ✅ SMC RL agent loaded from {_md}")
                 break
             except Exception as e:
-                print(f"   ⚠️ TF RL agent load from {_tfd} failed: {e}")
+                print(f"   ⚠️ SMC RL agent load from {_md} failed: {e}")
+        if self._rl_agent is None:
+            print("⚠️ [Bot] SMC RL agent ไม่พร้อม — รันด้วยกฎ SMC โดยตรง (ยังไม่ได้เทรน)")
 
-        # === ML Signal Quality Model (GBM, AUC ~0.59) ===
-        # ให้ probability ว่า signal จะ win → feed เป็น obs feature ให้ RL agent
-        # v8.0: prefer MR-trained GBM (mr_signal_quality_model.pkl) over legacy SMC GBM
+        # === ML Signal Quality Model (GBM, Brain 2) — SMC ===
+        # P(setup wins) → feeds obs[16] + the ML gate. Absent until SMC GBM
+        # trained (P5) → neutral 0.5.
         self._quality_model = None
         try:
-            import os as _os
             from ml.signal_quality import SignalQualityModel
-            _mr_gbm = _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)),
-                "data", "mr_signal_quality_model.pkl"
-            )
-            _mpath = _mr_gbm if _os.path.exists(_mr_gbm) else _os.path.join(
-                _os.path.dirname(_os.path.abspath(__file__)),
-                "data", "signal_quality_model.pkl"
-            )
-            if _os.path.exists(_mpath):
-                self._quality_model = SignalQualityModel(_mpath)
-                print(f"✅ [Bot] โหลด ML Quality Model สำเร็จ")
+            _gbm = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "data", "smc_signal_quality_model.pkl")
+            if os.path.exists(_gbm):
+                self._quality_model = SignalQualityModel(_gbm)
+                print("✅ [Bot] โหลด SMC ML Quality Model สำเร็จ")
             else:
-                print(f"⚠️ [Bot] ML Quality Model ไม่พบที่ {_mpath} — obs[ml_score]=0.5 (neutral)")
+                print("⚠️ [Bot] SMC ML Quality Model ไม่พบ — obs[ml_score]=0.5 (neutral)")
         except Exception as e:
             print(f"⚠️ [Bot] ML Quality Model load fail: {e}")
-
-        # === v8.1 Phase 3: per-strategy GBM quality models (MR + TF) ===
-        self._quality_models = {"MR": self._quality_model} if self._quality_model is not None else {}
-        try:
-            from ml.signal_quality import SignalQualityModel as _SQM
-            _tf_gbm = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "data", "tf_signal_quality_model.pkl")
-            if os.path.exists(_tf_gbm):
-                self._quality_models["TF"] = _SQM(_tf_gbm)
-                print(f"✅ [Bot] โหลด TF ML Quality Model สำเร็จ")
-        except Exception as e:
-            print(f"⚠️ [Bot] TF ML Quality Model load fail: {e}")
-
-        # v8.0.74: Chronos removed — obs[27,28] hardwired 0.0 (live OBS_DIM=35, ดู
-        # _build_signal_observation; chronos slots ยังอยู่ในเวกเตอร์แต่เป็น 0)
-        self._chronos = None
 
         # === News Calendar Auto-Scheduler (อัพเดททุกอาทิตย์ 23:30 EET) ===
         # _project_root กำหนดข้างบนแล้ว
@@ -388,146 +311,6 @@ class FTMOTradingBot:
     # 🧠 RL Agent — Live Observation & Daily Re-tune
     # =========================================================================
 
-    def _compute_symbol_regime(self, symbol: str) -> dict:
-        """
-        คำนวณ regime signal ของ 1 symbol จาก H1 100 แท่งล่าสุด
-
-        Returns:
-            dict หรือ None ถ้าดึงข้อมูลไม่ได้
-        """
-        try:
-            df = self._connector.get_ohlcv(symbol, "H1", count=100)
-            if df is None or len(df) < 50:
-                return None
-
-            high = df["high"].values
-            low = df["low"].values
-            close = df["close"].values
-            n = len(close)
-
-            # True Range → ATR
-            hl = high[1:] - low[1:]
-            hc = np.abs(high[1:] - close[:-1])
-            lc = np.abs(low[1:] - close[:-1])
-            tr = np.maximum(np.maximum(hl, hc), lc)
-
-            atr_recent = float(np.mean(tr[-14:]))
-            atr_baseline = float(np.mean(tr))
-            atr_std = float(np.std(tr)) or 1e-8
-            atr_zscore = (atr_recent - atr_baseline) / atr_std
-
-            # ATR pips — JPY pairs ใช้ pip_size 0.01, คู่อื่น 0.0001
-            pip_size = 0.01 if float(np.mean(close)) > 50 else 0.0001
-            atr_pips = atr_recent / pip_size
-
-            # Trend slope (normalized to ATR/bar — scale-invariant ข้าม symbols)
-            window = min(50, n)
-            y = close[-window:]
-            x = np.arange(window, dtype=np.float64)
-            slope = float(np.polyfit(x, y, 1)[0])
-            slope_per_atr = slope / max(atr_recent, 1e-8)
-
-            # จำแนก regime
-            if abs(slope_per_atr) > 0.15:
-                regime = "trending"
-            elif atr_zscore > 1.0:
-                regime = "volatile"
-            elif atr_zscore < -0.8:
-                regime = "quiet"
-            else:
-                regime = "ranging"
-
-            # Multi-window slope consistency
-            consistent = 0
-            total = 0
-            for w in (20, 40, 60, 80, min(100, n)):
-                if w > n:
-                    continue
-                yy = close[-w:]
-                xx = np.arange(w, dtype=np.float64)
-                s = float(np.polyfit(xx, yy, 1)[0])
-                total += 1
-                if np.sign(s) == np.sign(slope) and abs(s) > 0:
-                    consistent += 1
-            consistency = (consistent / total) if total > 0 else 0.0
-
-            return {
-                "regime": regime,
-                "atr_zscore": atr_zscore,
-                "atr_pips": atr_pips,
-                "slope_sign": int(np.sign(slope_per_atr)),
-                "consistency": consistency,
-            }
-        except Exception:
-            return None
-
-    def _compute_live_regime(self) -> dict:
-        """
-        คำนวณ regime aggregate จาก **ทุก symbols ที่บอทเทรด** (bot_config.symbols.symbols)
-        สะท้อนสถานะ portfolio จริง ไม่ bias ไปทาง EURUSD อย่างเดียว
-
-        Aggregation:
-        - regime_trend_norm: majority vote (trending=+1, ranging=-1, อื่น=0)
-        - atr_zscore: mean ข้าม symbols (normalize แล้ว)
-        - volatility_norm: mean ของ atr_pips/pair_baseline — ใช้ baseline 12 สำหรับ non-JPY, 120 สำหรับ JPY
-        - regime_consistency: mean ของ per-symbol consistency
-
-        Returns:
-            dict: {regime_trend_norm, atr_zscore, volatility_norm, regime_consistency}
-        """
-        default = {
-            "regime_trend_norm": 0.0,
-            "atr_zscore": 0.0,
-            "volatility_norm": 0.0,
-            "regime_consistency": 0.0,
-        }
-        try:
-            symbols = bot_config.symbols.symbols
-            per_symbol = []
-            for sym in symbols:
-                info = self._compute_symbol_regime(sym)
-                if info is not None:
-                    per_symbol.append((sym, info))
-
-            if not per_symbol:
-                return default
-
-            # Regime vote: trending=+1, ranging=-1, อื่น=0
-            regime_votes = []
-            for _, info in per_symbol:
-                if info["regime"] == "trending":
-                    regime_votes.append(1.0)
-                elif info["regime"] == "ranging":
-                    regime_votes.append(-1.0)
-                else:
-                    regime_votes.append(0.0)
-            regime_trend_norm = float(np.mean(regime_votes))
-
-            # ATR z-score: mean (แต่ละ symbol z-score ของตัวเอง → scale เปรียบเทียบได้)
-            atr_zscore = float(np.mean([info["atr_zscore"] for _, info in per_symbol]))
-
-            # Volatility norm: normalize atr_pips ต่อ baseline ของ pair type
-            # Non-JPY baseline ~12 pips, JPY baseline ~80 pips (H1 ATR ปกติ)
-            vol_norms = []
-            for sym, info in per_symbol:
-                is_jpy = sym.endswith("JPY")
-                baseline = 80.0 if is_jpy else 12.0
-                scale = 40.0 if is_jpy else 6.0
-                vol_norms.append((info["atr_pips"] - baseline) / scale)
-            volatility_norm = float(np.mean(vol_norms))
-
-            consistency = float(np.mean([info["consistency"] for _, info in per_symbol]))
-
-            return {
-                "regime_trend_norm": float(np.clip(regime_trend_norm, -1.0, 1.0)),
-                "atr_zscore": float(np.clip(atr_zscore, -3.0, 3.0)),
-                "volatility_norm": float(np.clip(volatility_norm, -2.0, 2.0)),
-                "regime_consistency": float(np.clip(consistency, 0.0, 1.0)),
-            }
-        except Exception as e:
-            print(f"⚠️ [RL] compute_live_regime ล้มเหลว: {e}")
-            return default
-
     def _get_challenge_day(self, today: date) -> int:
         """
         นับวันที่ของ FTMO challenge (business days ตั้งแต่เริ่ม)
@@ -569,12 +352,15 @@ class FTMOTradingBot:
         return max(1, business)
 
     def _build_signal_observation(self, sig, live_context: Optional[Dict] = None) -> np.ndarray:
-        """
-        สร้าง 35-dim observation จาก TradeSignal + portfolio state สำหรับ Signal Filter Agent
-        ต้อง match กับ FTMOSignalFilterEnv._get_obs() ลำดับและ scale (obs index 0-34)
+        """Build the 24-dim SMC observation (smc_v1) from an SMCSignal + portfolio
+        state. MUST match SMCFilterEnv._get_obs() order + scale (obs[0..23]).
 
-        v8.0.80 (H3): รับ live_context เพื่อใช้ ml_score ที่คำนวณพร้อม temporal features
-        (เดิม re-score sig ดิบ → 6 temporal features ตก 0.0 → obs[16] ≠ training ≠ ML gate)
+        Layout: [0-11] SMC signal core (confluence, rr, dir, sl/atr, htf_bias,
+        is_choch, sweep_age, ob_grade, fvg_mit, zone_pos, has_ob, has_fvg);
+        [12-15] LTF regime (rsi, adx, atr_chg, price_roc); [16] ml_score;
+        [17-23] FTMO portfolio (total_dd, daily_dd, progress, day, trades_today,
+        recent_wr, consec_losses). live_context supplies the temporal-augmented
+        ml_score (matches the ML gate + training).
         """
         try:
             risk = self._risk_manager.get_risk_status()
@@ -589,24 +375,22 @@ class FTMOTradingBot:
         target_amount = initial * 0.10
         progress = (profit / target_amount) * 100.0 if target_amount > 0 else 0.0
 
-        # Signal features
+        # SMC signal features (smc_v1)
         confluence_norm = (sig.confluence_score - 50.0) / 50.0
         rr_norm = (sig.rr_ratio - 1.0) / 4.0
         direction = 1.0 if sig.signal_type.value == "BUY" else -1.0
         atr_val = max(sig.atr_value, 1e-8)
-        atr_pips = atr_val / (0.01 if sig.entry_price > 50 else 0.0001)
-        atr_norm = (atr_pips - 15.0) / 10.0
-        ob_norm = float(getattr(sig, "bb_extreme", None) or sig.ob_score / 100.0)
-        bias_align = direction * sig.market_bias
         sl_atr = sig.sl_distance / atr_val
-        rsi_norm = (sig.rsi_value - 50.0) / 50.0
-        macd_norm = sig.macd_histogram / atr_val
-        trend_str = sig.trend_strength / 100.0
-        bb_bw_atr = float(getattr(sig, "bb_band_width_atr", 0.0) or 0.0)
-        ob_size_atr = min(bb_bw_atr / 3.0, 1.0) if bb_bw_atr > 0.0 else 0.0
-        adx_norm = sig.adx / 100.0
-        stoch_norm = (sig.stoch_k - 50.0) / 50.0
-        bb_pctb = sig.bb_pctb
+        htf_bias = float(getattr(sig, "htf_bias", 0))
+        is_choch = 1.0 if getattr(sig, "structure_event", "") == "CHOCH" else 0.0
+        sweep_age = getattr(sig, "sweep_age_bars", 0) / 20.0
+        ob_grade = float(getattr(sig, "ob_grade", 0.0))
+        fvg_mit = float(getattr(sig, "fvg_mitigation", 0.0))
+        zone_pos = float(getattr(sig, "entry_zone_pos", 0.5))
+        has_ob = 1.0 if getattr(sig, "has_ob", False) else 0.0
+        has_fvg = 1.0 if getattr(sig, "has_fvg", False) else 0.0
+        rsi_n = sig.rsi_value / 100.0
+        adx_n = sig.adx / 50.0
         atr_chg = sig.atr_change_ratio
         price_roc = sig.price_roc
 
@@ -657,27 +441,27 @@ class FTMOTradingBot:
             pass
 
         obs = np.array([
-            # Signal core [0-11]
+            # SMC signal core [0-11]
             float(np.clip(confluence_norm, -1.0, 1.0)),
             float(np.clip(rr_norm, 0.0, 1.0)),
             float(direction),
-            float(np.clip(atr_norm, -2.0, 2.0)),
-            float(np.clip(ob_norm, 0.0, 1.0)),
-            float(np.clip(bias_align, -1.0, 1.0)),
-            float(np.clip(sl_atr, 0.0, 2.0)),
-            float(np.clip(rsi_norm, -1.0, 1.0)),
-            float(np.clip(macd_norm, -2.0, 2.0)),
-            float(np.clip(trend_str, 0.0, 1.0)),
-            float(np.clip(ob_size_atr, 0.0, 3.0)),
-            float(np.clip(adx_norm, 0.0, 1.0)),
-            # Market regime [12-15]
-            float(np.clip(stoch_norm, -1.0, 1.0)),
-            float(np.clip(bb_pctb, -0.5, 1.5)),
+            float(np.clip(sl_atr, 0.0, 3.0)),
+            float(np.clip(htf_bias, -1.0, 1.0)),
+            float(is_choch),
+            float(np.clip(sweep_age, 0.0, 1.0)),
+            float(np.clip(ob_grade, 0.0, 1.0)),
+            float(np.clip(fvg_mit, 0.0, 1.0)),
+            float(np.clip(zone_pos, 0.0, 1.0)),
+            float(has_ob),
+            float(has_fvg),
+            # Market regime (LTF) [12-15]
+            float(np.clip(rsi_n, 0.0, 1.0)),
+            float(np.clip(adx_n, 0.0, 1.0)),
             float(np.clip(atr_chg, -1.0, 1.0)),
             float(np.clip(price_roc, -3.0, 3.0)),
             # ML quality [16]
             float(np.clip(ml_score_norm, -1.0, 1.0)),
-            # Portfolio [17-23]
+            # Portfolio / FTMO state [17-23]
             float(np.clip(-total_dd / 0.10, -5.0, 0.0)),
             float(np.clip(-daily_dd / 0.05, -5.0, 0.0)),
             float(np.clip(progress / 100.0, -1.0, 2.0)),
@@ -685,25 +469,6 @@ class FTMOTradingBot:
             float(np.clip(trades_today_n, 0.0, 1.0)),
             float(np.clip(recent_wr_norm, -1.0, 1.0)),
             float(np.clip(consec_losses / 5.0, 0.0, 1.0)),
-            # Cost/Flip/HTF [24-26]
-            float(np.clip(self._build_spread_pct_of_atr(sig, atr_pips), 0.0, 3.0)),
-            float(self._has_opposite_recently_closed(sig)),
-            float(np.clip(1.0 - sig.adx / 50.0, 0.0, 1.0))
-            if hasattr(sig, "adx") and sig.adx is not None
-            else float(np.clip(bias_align, -1.0, 1.0)),
-            # Chronos [27-28] (disabled — always 0)
-            0.0,
-            0.0,
-            # Portfolio realtime + session [29-31]
-            float(np.clip(self._compute_floating_pnl_norm(), -3.0, 1.0)),
-            float(np.clip(self._compute_open_losing_count_norm(), 0.0, 1.0)),
-            float(np.clip(self._compute_mins_since_session_norm(), 0.0, 1.0)),
-            # Keltner [32-34]
-            float(np.clip(getattr(sig, "kc_distance_norm", 0.0), -1.0, 1.0)),
-            float(np.clip(getattr(sig, "ema_slope_norm", 0.0), -1.0, 1.0)),
-            float(np.clip(getattr(sig, "band_squeeze_ratio", 0.5), 0.0, 1.0)),
-            # Fix#1 [35] — 1-day signed efficiency (persistent-trend regime; ADX-blind killer)
-            float(np.clip(getattr(sig, "trend_eff_h1", 0.0), -1.0, 1.0)),
         ], dtype=np.float32)
         return obs
 
@@ -829,44 +594,15 @@ class FTMOTradingBot:
         return owners
 
     def _rl_agent_for(self, sig):
-        """v8.1: RL agent for the signal's strategy (MR/TF). None if not loaded."""
-        return self._rl_agents.get(getattr(sig, "strategy_id", "MR")) if self._rl_agents else None
+        """Single-strategy SMC: the one RL agent (None until trained)."""
+        return self._rl_agent
 
     def _quality_model_for(self, sig):
-        """v8.1: GBM quality model for the signal's strategy (MR/TF).
-
-        v8.1 Phase4 fix-B: NO MR fallback for non-MR signals — a TF signal must
-        never be scored by the MR GBM (different feature keys → garbage score that
-        would gate the trade + feed obs[16] + corrupt the log). Returns None if the
-        strategy's own GBM is missing; the run-loop `_tf_ready` gate also requires
-        a TF GBM, so a live TF trade is never scored by the wrong model.
-        """
-        sid = getattr(sig, "strategy_id", "MR")
-        models = getattr(self, "_quality_models", None) or {}
-        if sid == "MR":
-            return models.get("MR") or self._quality_model
-        return models.get(sid)  # non-MR: own model only, no fallback
-
-    def _build_obs_tf(self, sig, live_context: Optional[Dict] = None) -> np.ndarray:
-        """v8.1: TF obs (tf_v2 @ 36-dim) — base builder (incl. obs[35]=trend_eff_h1)
-        + TF slot reinterpretations, mirroring TrendFollowingFilterEnv._get_obs
-        (obs[4]/[10]/[26] trend slots, obs[27]/[28] early-entry, obs[35] shared)."""
-        obs = self._build_signal_observation(sig, live_context=live_context)
-        try:
-            obs[4] = float(np.clip(getattr(sig, "trend_strength", 0.0) / 100.0, 0.0, 1.0))
-            obs[10] = float(np.clip(getattr(sig, "trend_age_bars", 0) / 30.0, 0.0, 1.0))
-            obs[26] = float(np.clip(getattr(sig, "adx", 0.0) / 50.0, 0.0, 1.0))
-            # tf_v2 (early-entry): mirror TrendFollowingFilterEnv._get_obs [27]/[28]
-            obs[27] = float(np.clip(getattr(sig, "di_spread", 0.0) / 50.0, -1.0, 1.0))
-            obs[28] = float(np.clip(getattr(sig, "adx_slope", 0.0) / 10.0, -1.0, 1.0))
-        except Exception:
-            pass
-        return obs
+        """Single-strategy SMC: the one GBM quality model (None until trained)."""
+        return self._quality_model
 
     def _build_obs_for(self, sig, live_context: Optional[Dict] = None) -> np.ndarray:
-        """v8.1: dispatch obs build by strategy_id (MR mr_v8 / TF tf_v1)."""
-        if getattr(sig, "strategy_id", "MR") == "TF":
-            return self._build_obs_tf(sig, live_context=live_context)
+        """SMC observation (smc_v1, 24-dim)."""
         return self._build_signal_observation(sig, live_context=live_context)
 
     def _build_live_context(self, sig) -> Dict:
@@ -1368,43 +1104,10 @@ class FTMOTradingBot:
                 if _scan_due:
                     self._last_signal_scan_ts = _now_ts
                     try:
-                        # v8.1 Phase4 fix-F: when dual-strategy is ON, re-sync broker
-                        # positions BEFORE scan/execute so _active_trades reflects reality
-                        # (orphans re-attached) → conflict filter / slot cap / same-symbol
-                        # see the true open set. Gated on router so MR-only mode is
-                        # byte-identical (no extra pre-scan sync).
-                        if self._router is not None:
-                            try:
-                                self._executor.sync_with_mt5()
-                            except Exception as _e:
-                                print(f"⚠️ [Bot] pre-scan sync error: {_e}")
-                        # v8.1 Phase 1: router-aware scan. When dual-strategy is
-                        # OFF (router None) this is byte-identical to before.
-                        if self._router is not None:
-                            open_owner = self._open_position_owners()
-                            signals, _regime_map = self._router.scan(
-                                self._strategy._symbols, open_owner=open_owner
-                            )
-                        else:
-                            signals = self._strategy.scan_all_symbols()
+                        signals = self._strategy.scan_all_symbols()
                         for sig in signals:
                             # === v6.9: Build live_context สำหรับ logging + executor ===
                             live_context = self._build_live_context(sig)
-
-                            # === v8.1: TF paper-trade (log-only) ===
-                            # TF executes for real only when paper_mode is OFF AND a
-                            # trained TF RL agent is loaded (Phase 3 output). Otherwise
-                            # log TF_PAPER + skip (observe regime separation safely).
-                            if getattr(sig, "strategy_id", "MR") == "TF":
-                                # v8.1 Phase4 fix-B: require BOTH the TF RL agent AND
-                                # the TF GBM before any live TF trade (GBM routing
-                                # must be as guarded as RL routing — no MR-model leak).
-                                _tf_ready = ("TF" in self._rl_agents
-                                             and "TF" in self._quality_models
-                                             and not getattr(bot_config.tf, "paper_mode", True))
-                                if not _tf_ready:
-                                    self._log_signal_scan(sig, live_context, result="TF_PAPER")
-                                    continue
 
                             # === ML quality gate (live ↔ training distribution sync, v8.0.3) ===
                             # FTMOSignalFilterEnv กรอง signals ที่ ml_score < 0.30 ตอน train

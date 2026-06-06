@@ -2,7 +2,7 @@
 ===============================================================================
 Fetch OHLCV Data from MT5 → CSV (สำหรับ RL Training)
 ===============================================================================
-ดึงข้อมูลแท่งเทียน M1 + M15 + H1 + H4 ของ 10 symbols จาก MetaTrader 5 broker
+ดึงข้อมูลแท่งเทียน M1 + M5 + M15 + H1 + H4 + D1 ของ 10 symbols จาก MetaTrader 5 broker
 แล้วบันทึกเป็น CSV ที่ ftmo_trading_bot/data/ohlcv/{SYMBOL}_{TF}.csv
 
 Usage:
@@ -10,14 +10,17 @@ Usage:
     python scripts/fetch_mt5_data.py --years 5                    # ดึง 5 ปี
     python scripts/fetch_mt5_data.py --symbols EURUSD,GBPUSD      # เฉพาะบาง symbol
     python scripts/fetch_mt5_data.py --timeframe M15              # เฉพาะ M15 อย่างเดียว
-    python scripts/fetch_mt5_data.py --timeframe M1               # เฉพาะ M1 (v8.0.55 — train-live parity)
-    python scripts/fetch_mt5_data.py --timeframe M1 --years 1     # M1 1 ปี (~80MB/symbol)
+    python scripts/fetch_mt5_data.py --timeframe D1               # เฉพาะ D1 (SMC HTF bias)
+    python scripts/fetch_mt5_data.py --timeframe M5               # เฉพาะ M5 (SMC LTF entry)
 
-หมายเหตุ M1 (v8.0.55):
-    - M1 มี 1440 bars/วัน (15x ของ M15) → ขนาดไฟล์ใหญ่ ~80-100 MB/symbol/ปี
-    - ใช้ใน MeanReversionBacktester proxy entry_confirm (mirror live M1 check)
-    - แนะนำ --years 1 หรือ 2 (เพียงพอสำหรับ MR training pool 5000 eps)
-    - Broker บางที่มี max bars limit ต่ำ — script จะ cap อัตโนมัติ
+หมายเหตุ low-TF (M1 / M5):
+    - M1 = 1440 bars/วัน, M5 = 288 bars/วัน → ไฟล์ใหญ่ + broker มัก cap max bars
+      (เครื่องนี้เห็น M1 ลึกแค่ ~3 เดือน) → script จะ cap อัตโนมัติ
+    - ถ้า M5 ลึกไม่พอ training pool, SMC fallback ใช้ M15 เป็น LTF entry ได้
+
+หมายเหตุ SMC MTF (rebuild/smc-v2):
+    - D1 = HTF bias (history ยาวพอแน่นอน, ~1 bar/วัน)
+    - H4/H1 = structure, M15/M5 = entry refinement
 
 Prerequisites:
     - MT5 terminal เปิดอยู่ + login broker แล้ว
@@ -47,10 +50,13 @@ DEFAULT_SYMBOLS = [
 
 TIMEFRAMES = {
     # v8.0.55: M1 added for train-live parity (MeanReversionBacktester entry_confirm)
+    # rebuild/smc-v2: M5 (LTF entry) + D1 (HTF bias) added for SMC MTF
     "M1": mt5.TIMEFRAME_M1,
+    "M5": mt5.TIMEFRAME_M5,
     "M15": mt5.TIMEFRAME_M15,
     "H1": mt5.TIMEFRAME_H1,
     "H4": mt5.TIMEFRAME_H4,
+    "D1": mt5.TIMEFRAME_D1,
 }
 
 
@@ -98,7 +104,7 @@ def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
     # คำนวณจำนวนแท่งที่ต้องการ
     # v8.0.55: M1 = 1440 bars/day (Forex market: 24/5 ≈ 5 days/week, ใช้ 365 × bars_per_day
     #         approximation พอเพียงสำหรับ chunked fetch — broker max bars เป็น cap จริง)
-    bars_per_day = {"M1": 1440, "M15": 96, "H1": 24, "H4": 6}[timeframe_key]
+    bars_per_day = {"M1": 1440, "M5": 288, "M15": 96, "H1": 24, "H4": 6, "D1": 1}[timeframe_key]
     requested_count = years * 365 * bars_per_day
 
     # ตรวจสอบขีดจำกัด Terminal (Max bars)
@@ -116,7 +122,7 @@ def fetch_symbol(symbol: str, timeframe_key: str, years: int) -> pd.DataFrame:
 
     all_rates = []
     # v8.0.55: M1 ใช้ chunk ใหญ่กว่าเพื่อลดจำนวน round-trip (M1 = 15x ของ M15)
-    chunk_size = 50000 if timeframe_key == "M1" else 20000
+    chunk_size = 50000 if timeframe_key in ("M1", "M5") else 20000
     pos = 0
     
     print(f"  📥 {symbol}: เริ่มดึงข้อมูลแบบ chunk (เป้าหมาย {limit:,} bars)...", end="", flush=True)
@@ -171,7 +177,7 @@ def main():
                         help="คอมม่า-คั่น เช่น EURUSD,GBPUSD")
     parser.add_argument("--timeframe", default="ALL",
                         choices=list(TIMEFRAMES.keys()) + ["ALL"],
-                        help="timeframe ที่ต้องการ (default: ALL = M15+H1+H4)")
+                        help="timeframe ที่ต้องการ (default: ALL = M1+M5+M15+H1+H4+D1)")
     parser.add_argument("--years", type=int, default=3, help="ดึงย้อนหลังกี่ปี")
     parser.add_argument("--out_dir", default=None,
                         help="โฟลเดอร์ปลายทาง (default: ftmo_trading_bot/data/ohlcv)")

@@ -104,6 +104,7 @@ class TradeManager:
     TRAIL_TP_AHEAD_R: float = 1.0       # TP chase 1R ข้างหน้า best
     TRAIL_MIN_STEP_PIPS: float = 1.0    # ไม่ modify ถ้าระยะ < 1 pip (กัน excessive orders)
     TRAIL_ATR_MULTIPLIER: float = 1.0   # legacy — unused (compat with old TrailingState init)
+    STRUCTURE_TRAIL_BUFFER_ATR: float = 0.1  # SMC: SL placed this ×ATR behind the trailed swing
 
     def __init__(
         self,
@@ -122,6 +123,9 @@ class TradeManager:
         self._connector = connector
         self._risk_manager = risk_manager
         self._executor = executor
+        # SMC structure-based trailing — re-detect swings on the entry TF (M15)
+        from strategy.smc.swing import SwingEngine
+        self._swing = SwingEngine()
 
         # สถานะ Trailing ของแต่ละ Position
         self._trail_states: Dict[int, TrailingState] = {}
@@ -316,44 +320,76 @@ class TradeManager:
         if prof["use_tp_step"] and not state.tp_step_done and best_rr >= self.TP_STEP_TRIGGER_RR:
             self._tp_step(trade, state)
 
-        # === Stage 3: Trail activation — per-strategy R (MR 1.0R / TF 1.5R) ===
+        # === Stage 3: Trail activation — SMC structure trail (fallback: TP-chase) ===
         if current_rr >= prof["trail_activation_r"]:
             state.trailing_active = True
             trade.trailing_active = True
-            self._update_trailing_stop(trade, state, current_price, prof)
+            if prof.get("trail_mode") == "structure":
+                self._structure_trail(trade, state, current_price)
+            else:
+                self._update_trailing_stop(trade, state, current_price, prof)
 
     # =========================================================================
     # 🧭 Per-strategy exit profile (v8.1 Phase4 fix-A)
     # =========================================================================
 
     def _exit_profile(self, strategy_id: str) -> Dict:
-        """Exit-management params keyed by strategy.
+        """SMC exit profile (rebuild/smc-v2).
 
-        MR → TradeManager's own quick-exit constants (byte-identical to before).
-        TF → ride profile from `bot_config.tf` (no partial/BE/Stage-2; wide trail)
-             — MUST mirror TrendFollowingBacktester._resolve_trade so live == train.
+        TP1 partial (33% @ PARTIAL_TRIGGER_RR) → BE @ BE_TRIGGER_RR (locked early
+        for FTMO capital protection — stricter than textbook "BE after TP1") →
+        the runner rides toward the structural liquidity TP with STRUCTURE-based
+        trailing (SL behind each new confirmed swing on the entry TF), not a
+        fixed-pip/ATR trail. `trail_mode="structure"` routes Stage 3.
         """
-        if strategy_id == "TF":
-            tf = bot_config.tf
-            return {
-                "use_partial": bool(getattr(tf, "mgmt_use_partial", False)),
-                "use_be": bool(getattr(tf, "mgmt_use_breakeven", False)),
-                "use_tp_step": bool(getattr(tf, "mgmt_use_tp_step", False)),
-                "trail_activation_r": float(getattr(tf, "mgmt_trail_activation_r", 1.5)),
-                "trail_sl_behind_r": float(getattr(tf, "mgmt_trail_sl_behind_r", 2.0)),
-                "trail_sl_floor_r": float(getattr(tf, "mgmt_trail_sl_floor_r", 1.0)),
-                "trail_tp_ahead_r": float(getattr(tf, "mgmt_trail_tp_ahead_r", 2.0)),
-            }
-        # MR / default — current class constants (unchanged)
         return {
             "use_partial": True,
             "use_be": True,
-            "use_tp_step": True,
+            "use_tp_step": False,
+            "trail_mode": "structure",
             "trail_activation_r": self.TRAIL_ACTIVATION_RR,
             "trail_sl_behind_r": self.TRAIL_SL_BEHIND_R,
             "trail_sl_floor_r": self.TRAIL_SL_FLOOR_RR,
             "trail_tp_ahead_r": self.TRAIL_TP_AHEAD_R,
         }
+
+    def _structure_trail(self, trade: ExecutedTrade, state: TrailingState,
+                         current_price: float):
+        """SMC structure trail: move SL just behind the most recent confirmed
+        swing on the entry timeframe (M15) — longs trail behind the nearest swing
+        low below price, shorts behind the nearest swing high above. `_modify_sl`
+        enforces broker min-stop + never-loosen, so this only ever tightens."""
+        try:
+            m15 = self._connector.get_ohlcv(trade.symbol, "M15", 200)
+            if m15 is None or len(m15) < 30:
+                return
+            from strategy.smc.types import SwingType
+            swings = self._swing.analyze(m15)
+            buf = max(trade.atr_value, 1e-8) * self.STRUCTURE_TRAIL_BUFFER_ATR
+            if trade.trade_type == "BUY":
+                lows = [s.price for s in swings
+                        if s.swing_type is SwingType.LOW and s.price < current_price]
+                if not lows:
+                    return
+                new_sl = max(lows) - buf
+                if new_sl > state.current_sl and new_sl < current_price:
+                    if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
+                        state.current_sl = new_sl
+                        trade.final_sl_at_close = new_sl
+                        self._save_trail_states()
+            else:
+                highs = [s.price for s in swings
+                         if s.swing_type is SwingType.HIGH and s.price > current_price]
+                if not highs:
+                    return
+                new_sl = min(highs) + buf
+                if new_sl < state.current_sl and new_sl > current_price:
+                    if self._modify_sl(trade.ticket, trade.symbol, new_sl, trade.tp_price):
+                        state.current_sl = new_sl
+                        trade.final_sl_at_close = new_sl
+                        self._save_trail_states()
+        except Exception:
+            pass
 
     # =========================================================================
     # 🔒 Break-Even Move (เลื่อน SL มาจุดคุ้มทุน)

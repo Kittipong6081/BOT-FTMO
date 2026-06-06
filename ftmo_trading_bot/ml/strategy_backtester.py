@@ -117,22 +117,8 @@ class StrategyBacktester:
             except Exception as e:
                 print(f"⚠️ [Backtester] ML quality model load failed: {e}")
 
-        # Chronos forecaster (optional — disabled when BOT_DISABLE_CHRONOS=1)
+        # rebuild/smc-v2: Chronos forecaster removed (was dead — obs[27,28] hardwired 0)
         self._chronos = None
-        try:
-            from config.settings import bot_config as _bc
-            if getattr(_bc.ml, "CHRONOS_ENABLED", True):
-                from ml.chronos_forecaster import ChronosForecaster
-                self._chronos = ChronosForecaster(
-                    model_name=_bc.ml.CHRONOS_MODEL_NAME,
-                    device=_bc.ml.CHRONOS_DEVICE,
-                    prediction_length=_bc.ml.CHRONOS_PREDICTION_LENGTH,
-                    context_length=_bc.ml.CHRONOS_CONTEXT_LENGTH,
-                    verbose=1,
-                )
-        except Exception as e:
-            print(f"⚠️ [Backtester] Chronos init failed: {e} → obs[27,28] = 0")
-            self._chronos = None
 
         self._m15_cache: Dict[str, pd.DataFrame] = {}
         self._h1_cache: Dict[str, pd.DataFrame] = {}
